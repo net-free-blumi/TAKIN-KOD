@@ -438,13 +438,44 @@ export function getMainBotStatus() {
   return mainBotStatus;
 }
 
-export async function requestMainBotPairingCode(customPhone) {
-  if (!mainBotSock) throw new Error("הבוט הראשי אינו מאותחל כעת");
-  const phone = cleanPhone(customPhone || mainBotStatus.phone);
+export async function requestMainBotPairingCode(customPhone, callbacks = {}, options = {}) {
+  const usersData = loadUsersData();
+  const phone = cleanPhone(customPhone || usersData.botPhone || mainBotStatus.phone || "972555081810");
   mainBotStatus.phone = phone;
-  const code = await mainBotSock.requestPairingCode(phone);
-  mainBotStatus.pairingCode = code;
-  return code;
+
+  if (options.forceReset) {
+    if (fs.existsSync(BOT_AUTH_DIR)) {
+      try {
+        fs.rmSync(BOT_AUTH_DIR, { recursive: true, force: true });
+        fs.mkdirSync(BOT_AUTH_DIR, { recursive: true });
+      } catch (e) {}
+    }
+  }
+
+  // אם הבוט הראשי אינו מאותחל או שהסוקט נסגר - מאתחלים אותו אוטומטית במקום לזרוק שגיאה
+  if (!mainBotSock) {
+    console.log(`🔄 [הבוט הראשי] מאתחל סוקט Baileys חדש עבור הפקת קוד צימוד למספר: ${phone}...`);
+    await startMainBot(callbacks);
+    // המתנה לייצוב חיבור ה-WebSocket של Baileys
+    await new Promise((r) => setTimeout(r, 2200));
+  }
+
+  if (!mainBotSock) {
+    throw new Error("לא ניתן לאתחל את תהליך הבוט הראשי. אנא בצע 'איפוס חיבור נקי' ונסה שוב.");
+  }
+
+  // המתנה קצרה לווידוא שהסוקט מוכן לקבלת בקשת קוד צימוד
+  await new Promise((r) => setTimeout(r, 800));
+
+  try {
+    const code = await mainBotSock.requestPairingCode(phone);
+    mainBotStatus.pairingCode = code;
+    console.log(`🔑 [הבוט הראשי] הופק קוד צימוד בהצלחה עבור ${phone}: ${code}`);
+    return code;
+  } catch (err) {
+    console.error(`שגיאה בהפקת קוד צימוד לבוט הראשי (${phone}):`, err.message);
+    throw new Error(`שגיאה בהפקת קוד צימוד: ${err.message || "נא לוודא שהמספר תקין או ללחוץ על 'איפוס חיבור נקי'"}`);
+  }
 }
 
 export async function resetMainBotAuth(callbacks = {}) {
@@ -465,6 +496,9 @@ export async function resetMainBotAuth(callbacks = {}) {
     mainBotStatus.qr = null;
     mainBotStatus.qrTimestamp = null;
     mainBotStatus.lastDisconnectReason = "איפוס סשן נקי לבקשת המנהל";
+    
+    // משהים קלות כדי לוודא שכל המשאבים שוחררו
+    await new Promise((r) => setTimeout(r, 600));
     return await startMainBot(callbacks);
   } catch (err) {
     console.error("שגיאה באיפוס אותנטיקציית הבוט הראשי:", err.message);

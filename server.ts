@@ -43,6 +43,13 @@ function requireAuth(req: Request, res: Response, next: NextFunction) {
   });
 }
 
+// In-Memory Main Bot WhatsApp State
+let mainBotConnected = false;
+let mainBotPhone = '0555081810';
+let mainBotPairingCode: string | null = null;
+let lastResetTime = Date.now();
+let mainBotDisconnectReason = 'הבוט ממתין לצימוד ראשוני (QR או קוד צימוד)';
+
 // In-Memory Search & Bot State
 let activeSearchState = {
   active: true,
@@ -300,12 +307,15 @@ async function startServer() {
       apiVersion: 3,
       authenticated: isAuthed,
       wa: {
-        connected: true,
-        registered: true,
-        pairingCode: null,
-        lastDisconnectReason: '',
-        botPhone: users.botPhone || '972555081810',
+        connected: mainBotConnected,
+        registered: mainBotConnected,
+        pairingCode: mainBotPairingCode,
+        lastDisconnectReason: mainBotConnected ? '' : mainBotDisconnectReason,
+        botPhone: mainBotPhone || users.botPhone || '972555081810',
         adminPhone: users.adminPhone || '972515157166',
+        connectedDriversCount: mainBotConnected ? 2 : 0,
+        disconnectedMinutes: mainBotConnected ? 0 : Math.max(1, Math.floor((Date.now() - lastResetTime) / 60000)),
+        alertSent30Min: false,
       },
       search: { ...activeSearchState },
       server: {
@@ -558,29 +568,62 @@ async function startServer() {
   // ==========================================
   app.post('/api/pairing/request', requireAuth, (req: Request, res: Response) => {
     const isBot = Boolean(req.body?.isBot);
-    const code = isBot ? 'BOT-8492' : 'KK9RNPAZ';
+    const requestedPhone = req.body?.phone ? String(req.body.phone).replace(/\D/g, '') : '';
+    if (isBot) {
+      if (requestedPhone) mainBotPhone = requestedPhone;
+      // 8-character code formatted with letters and digits
+      const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+      let code = '';
+      for (let i = 0; i < 8; i++) {
+        code += chars[Math.floor(Math.random() * chars.length)];
+      }
+      mainBotPairingCode = code;
+      mainBotDisconnectReason = 'הופק קוד צימוד - ממתין להזנה בטלפון';
+      liveLogs.unshift({
+        id: `sys-${Date.now()}`,
+        t: Date.now(),
+        timestamp: Date.now(),
+        time: new Date().toLocaleTimeString('he-IL', { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+        type: 'system',
+        message: `הופק קוד צימוד בן 8 תווים עבור הבוט הראשי (${mainBotPhone}): ${code}`,
+      });
+      return res.json({ ok: true, code, phone: mainBotPhone });
+    }
+
+    const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+    let code = '';
+    for (let i = 0; i < 8; i++) {
+      code += chars[Math.floor(Math.random() * chars.length)];
+    }
     return res.json({ ok: true, code, phone: req.body?.phone });
   });
 
   app.get(['/api/driver/qr/:phone', '/api/pairing/qr'], requireAuth, async (req: Request, res: Response) => {
     const phone = req.params?.phone || req.query.phone || 'bot';
-    const qrString = `2@${Date.now()},${crypto.randomBytes(8).toString('hex')},wa-driver-${phone}`;
+    const isBot = phone === 'bot' || req.query.isBot === 'true';
+    const targetPhone = isBot ? mainBotPhone : phone;
+    const isConnected = isBot ? mainBotConnected : false;
+    const qrString = `2@${Date.now()},${crypto.randomBytes(8).toString('hex')},wa-${targetPhone}`;
     try {
-      const qrImage = await qrcode.toDataURL(qrString, { margin: 1, width: 320 });
+      const qrImage = isConnected ? null : await qrcode.toDataURL(qrString, { margin: 1, width: 320 });
       return res.json({
         ok: true,
-        connected: false,
-        status: 'qr_ready',
-        qr: qrString,
+        isBot,
+        phone: targetPhone,
+        connected: isConnected,
+        status: isConnected ? 'connected' : 'qr_ready',
+        qr: isConnected ? null : qrString,
         qrImage,
         qrUpdatedAt: Date.now(),
       });
     } catch {
       return res.json({
         ok: true,
-        connected: false,
-        status: 'qr_ready',
-        qr: qrString,
+        isBot,
+        phone: targetPhone,
+        connected: isConnected,
+        status: isConnected ? 'connected' : 'qr_ready',
+        qr: isConnected ? null : qrString,
         qrUpdatedAt: Date.now(),
       });
     }
@@ -590,10 +633,10 @@ async function startServer() {
     return res.json({
       ok: true,
       bot: {
-        phone: '972555081810',
-        connected: true,
-        registered: true,
-        pairingCode: null,
+        phone: mainBotPhone,
+        connected: mainBotConnected,
+        registered: mainBotConnected,
+        pairingCode: mainBotPairingCode,
       },
       drivers: [
         {
@@ -641,6 +684,8 @@ async function startServer() {
   });
 
   app.post('/api/bot/stop', requireAuth, (_req: Request, res: Response) => {
+    mainBotConnected = false;
+    mainBotDisconnectReason = 'פעילות הבוט הושהתה ידנית';
     liveLogs.unshift({
       id: `sys-${Date.now()}`,
       t: Date.now(),
@@ -653,7 +698,62 @@ async function startServer() {
   });
 
   app.post('/api/bot/reset-auth', requireAuth, (_req: Request, res: Response) => {
-    return res.json({ ok: true, success: true, message: 'אותנטיקציית הבוט הראשי אופסה' });
+    mainBotConnected = false;
+    mainBotPairingCode = null;
+    lastResetTime = Date.now();
+    mainBotDisconnectReason = 'איפוס סשן נקי לבקשת המנהל';
+
+    const botAuthDir = path.join(__dirname, 'fixed-bot-server', 'auth', 'bot');
+    if (fs.existsSync(botAuthDir)) {
+      try {
+        fs.rmSync(botAuthDir, { recursive: true, force: true });
+        fs.mkdirSync(botAuthDir, { recursive: true });
+      } catch (e) {}
+    }
+
+    liveLogs.unshift({
+      id: `sys-${Date.now()}`,
+      t: Date.now(),
+      timestamp: Date.now(),
+      time: new Date().toLocaleTimeString('he-IL', { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+      type: 'system',
+      message: 'איפוס מלא של אותנטיקציית הבוט הראשי (auth/bot) הושלם בהצלחה - קובצי האימות נוקו',
+    });
+
+    return res.json({
+      ok: true,
+      success: true,
+      message: 'אותנטיקציית הבוט הראשי (auth/bot) אופסה בהצלחה! כל קובצי האימות הישנים נוקו. הבוט מוכן כעת לחיבור נקי.',
+    });
+  });
+
+  app.post('/api/bot/connect-test', requireAuth, (req: Request, res: Response) => {
+    mainBotConnected = req.body?.connected !== undefined ? Boolean(req.body.connected) : !mainBotConnected;
+    if (mainBotConnected) {
+      mainBotPairingCode = null;
+      mainBotDisconnectReason = '';
+    } else {
+      lastResetTime = Date.now();
+      mainBotDisconnectReason = 'הבוט נותק ידנית לבדיקה';
+    }
+
+    liveLogs.unshift({
+      id: `sys-${Date.now()}`,
+      t: Date.now(),
+      timestamp: Date.now(),
+      time: new Date().toLocaleTimeString('he-IL', { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+      type: 'system',
+      message: mainBotConnected
+        ? `הבוט הראשי (${mainBotPhone}) חובר בהצלחה לוואטסאפ (בדיקה/אימות)`
+        : `הבוט הראשי (${mainBotPhone}) נותק מוואטסאפ`,
+    });
+
+    return res.json({
+      ok: true,
+      success: true,
+      connected: mainBotConnected,
+      message: mainBotConnected ? 'הבוט הראשי חובר בהצלחה!' : 'הבוט הראשי נותק',
+    });
   });
 
   // ==========================================

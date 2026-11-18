@@ -617,6 +617,23 @@ export async function resetMainBotAuthApi(): Promise<{
   });
 }
 
+// בדיקת/הדמיית חיבור בוט ישירה
+export async function testConnectBotApi(connected: boolean = true): Promise<{
+  ok: boolean;
+  success?: boolean;
+  message?: string;
+  error?: string;
+}> {
+  const cfg = loadConfig();
+  if (cfg.useDemoMode) {
+    return { ok: true, success: true, message: connected ? 'הבוט סומן כמחובר בהצלחה' : 'הבוט סומן כמנותק' };
+  }
+  return await request<any>('/api/bot/connect-test', {
+    method: 'POST',
+    body: JSON.stringify({ connected }),
+  });
+}
+
 // שידור הודעה בוואטסאפ לכל הנהגים
 export async function sendBroadcast(message: string, targetType: 'all' | 'connected'): Promise<{
   ok: boolean;

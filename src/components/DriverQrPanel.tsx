@@ -20,7 +20,7 @@ const STATUS_TEXT: Record<string, string> = {
 };
 
 export const DriverQrPanel: React.FC<DriverQrPanelProps> = ({ phone, onConnected }) => {
-  const [active, setActive] = useState(false);
+  const [active, setActive] = useState(() => phone === 'bot');
   const [state, setState] = useState<DriverQrState | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [imageUrl, setImageUrl] = useState<string | null>(null);
@@ -115,9 +115,9 @@ export const DriverQrPanel: React.FC<DriverQrPanelProps> = ({ phone, onConnected
     };
   }, [active, phone]);
 
-  // החלפת מספר באמצע = איפוס תצוגה
+  // החלפת מספר באמצע = איפוס תצוגה (אוטומטי עבור bot)
   useEffect(() => {
-    setActive(false);
+    setActive(phone === 'bot');
     setState(null);
     setImageUrl(null);
     setError(null);
@@ -177,11 +177,14 @@ export const DriverQrPanel: React.FC<DriverQrPanelProps> = ({ phone, onConnected
             </div>
           ) : (
             <>
-              <div className="mx-auto w-[240px] h-[240px] sm:w-[280px] sm:h-[280px] rounded-xl bg-white flex items-center justify-center p-2">
+              <div className="mx-auto w-[240px] h-[240px] sm:w-[280px] sm:h-[280px] rounded-xl bg-white flex items-center justify-center p-2 shadow-lg">
                 {imageUrl ? (
-                  <img src={imageUrl} alt="WhatsApp QR" className="w-full h-full" />
+                  <img src={imageUrl} alt="WhatsApp QR" className="w-full h-full object-contain" />
                 ) : (
-                  <Loader2 className="w-8 h-8 text-slate-500 animate-spin" />
+                  <div className="flex flex-col items-center gap-2">
+                    <Loader2 className="w-8 h-8 text-slate-500 animate-spin" />
+                    <span className="text-[11px] text-slate-500">טוען קוד QR...</span>
+                  </div>
                 )}
               </div>
               <div className="text-[11px] text-teal-200 flex items-center justify-center gap-1.5">
@@ -194,14 +197,28 @@ export const DriverQrPanel: React.FC<DriverQrPanelProps> = ({ phone, onConnected
                   last disconnect: {state.lastDisconnectReason}
                 </div>
               )}
-              <button
-                type="button"
-                onClick={stop}
-                className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-[11px] font-bold inline-flex items-center gap-1.5 cursor-pointer"
-              >
-                <Square className="w-3 h-3" />
-                בטל וסגור סשן
-              </button>
+              <div className="flex items-center justify-center gap-2 pt-1">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setImageUrl(null);
+                    lastQrRef.current = null;
+                    start();
+                  }}
+                  className="px-3 py-1.5 rounded-lg bg-teal-500/20 hover:bg-teal-500/30 text-teal-300 text-[11px] font-bold inline-flex items-center gap-1.5 cursor-pointer transition-colors"
+                >
+                  <RefreshCw className="w-3 h-3" />
+                  רענן קוד QR עכשיו
+                </button>
+                <button
+                  type="button"
+                  onClick={stop}
+                  className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-[11px] font-bold inline-flex items-center gap-1.5 cursor-pointer transition-colors"
+                >
+                  <Square className="w-3 h-3" />
+                  בטל וסגור סשן
+                </button>
+              </div>
             </>
           )}
         </div>

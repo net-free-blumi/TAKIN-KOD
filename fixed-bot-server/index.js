@@ -2360,7 +2360,16 @@ startDashboard({
   sendApprovalAndOnboarding: (phone, name) => sendApprovalAndOnboarding(phone, name),
   requestPairingCodeForPhone: async (phone, isBot = false, options = {}) => {
     if (isBot) {
-      return await requestMainBotPairingCode(phone);
+      return await requestMainBotPairingCode(
+        phone,
+        {
+          onMessage: handleIncomingMessage,
+          onReaction: handleReaction,
+          onStatusChange: handleMainBotStatusChange,
+          onEvent: recordEvent,
+        },
+        options
+      );
     }
     return await requestDriverPairingCode(
       phone,

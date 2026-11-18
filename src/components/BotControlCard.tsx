@@ -15,10 +15,13 @@ import {
   Download,
   BellRing,
   Clock,
-  RefreshCw
+  RefreshCw,
+  CheckCircle2,
+  Sparkles,
+  PhoneCall
 } from 'lucide-react';
 import { WhatsAppState } from '../types.ts';
-import { syncFromGitHubApi, requestPairingCodeApi, resetMainBotAuthApi } from '../services/api.ts';
+import { syncFromGitHubApi, requestPairingCodeApi, resetMainBotAuthApi, testConnectBotApi } from '../services/api.ts';
 import { DriverQrPanel } from './DriverQrPanel.tsx';
 
 interface BotControlCardProps {
@@ -26,6 +29,7 @@ interface BotControlCardProps {
   onRestartBot: () => Promise<void>;
   onStopBot: () => Promise<void>;
   loading: boolean;
+  onRefreshData?: () => Promise<void>;
 }
 
 export const BotControlCard: React.FC<BotControlCardProps> = ({
@@ -33,6 +37,7 @@ export const BotControlCard: React.FC<BotControlCardProps> = ({
   onRestartBot,
   onStopBot,
   loading,
+  onRefreshData,
 }) => {
   const [copiedCode, setCopiedCode] = useState(false);
   const [restartConfirm, setRestartConfirm] = useState(false);
@@ -43,15 +48,25 @@ export const BotControlCard: React.FC<BotControlCardProps> = ({
   const [pairingError, setPairingError] = useState<string | null>(null);
   const [pairingMethod, setPairingMethod] = useState<'qr' | 'code'>('qr');
   const [resettingAuth, setResettingAuth] = useState(false);
+  const [resetSuccessMessage, setResetSuccessMessage] = useState<string | null>(null);
+  const [customBotPhone, setCustomBotPhone] = useState<string>(() => wa.botPhone || '0555081810');
+  const [testingConnect, setTestingConnect] = useState(false);
 
   const activePairingCode = localPairingCode || wa.pairingCode;
 
   const handleResetBotAuth = async () => {
     setResettingAuth(true);
     setPairingError(null);
+    setResetSuccessMessage(null);
     try {
-      await resetMainBotAuthApi();
-      await onRestartBot();
+      const res = await resetMainBotAuthApi();
+      setLocalPairingCode(null);
+      setResetSuccessMessage(
+        res.message || 'איפוס קובצי האימות של הבוט הראשי בוצע בהצלחה! הבוט מוכן כעת לחיבור נקי.'
+      );
+      if (onRefreshData) {
+        await onRefreshData();
+      }
     } catch (err: any) {
       setPairingError(err.message || 'שגיאה באיפוס חיבור הבוט');
     } finally {
@@ -69,18 +84,37 @@ export const BotControlCard: React.FC<BotControlCardProps> = ({
   const handleRequestPairing = async () => {
     setRequestingPairing(true);
     setPairingError(null);
+    setResetSuccessMessage(null);
     try {
-      const res = await requestPairingCodeApi(wa.botPhone || '0555081810', true, true);
+      const targetPhone = customBotPhone.trim() || wa.botPhone || '0555081810';
+      const res = await requestPairingCodeApi(targetPhone, true, true);
       if (res.ok && res.code) {
         setLocalPairingCode(res.code);
         setPairingMethod('code');
+        if (onRefreshData) {
+          await onRefreshData();
+        }
       } else {
-        setPairingError(res.error || 'לא התקבל קוד צימוד');
+        setPairingError(res.error || 'לא התקבל קוד צימוד מהשרת');
       }
     } catch (err: any) {
       setPairingError(err.message || 'שגיאה בהפקת קוד צימוד');
     } finally {
       setRequestingPairing(false);
+    }
+  };
+
+  const handleToggleTestConnect = async () => {
+    setTestingConnect(true);
+    try {
+      await testConnectBotApi(!wa.connected);
+      if (onRefreshData) {
+        await onRefreshData();
+      }
+    } catch {
+      // fallback
+    } finally {
+      setTestingConnect(false);
     }
   };
 
@@ -195,8 +229,8 @@ export const BotControlCard: React.FC<BotControlCardProps> = ({
             </div>
           )}
 
-          {/* Stale Phone Session Guidance */}
-          <div className="p-3 rounded-xl bg-indigo-950/40 border border-indigo-500/40 text-indigo-200 text-xs space-y-2">
+          {/* Stale Phone Session Guidance & Reset Button */}
+          <div className="p-3.5 rounded-xl bg-indigo-950/40 border border-indigo-500/40 text-indigo-200 text-xs space-y-2.5">
             <div className="flex items-center justify-between gap-2">
               <div className="flex items-center gap-1.5 font-bold text-indigo-300">
                 <RefreshCw className="w-3.5 h-3.5 text-indigo-400 shrink-0" />
@@ -206,26 +240,37 @@ export const BotControlCard: React.FC<BotControlCardProps> = ({
                 type="button"
                 onClick={handleResetBotAuth}
                 disabled={resettingAuth}
-                className="px-2.5 py-1 rounded-lg bg-indigo-500 hover:bg-indigo-400 text-slate-950 font-black text-[11px] cursor-pointer disabled:opacity-50 shrink-0 shadow transition-colors flex items-center gap-1"
+                className="px-3 py-1.5 rounded-lg bg-indigo-500 hover:bg-indigo-400 text-slate-950 font-black text-xs cursor-pointer disabled:opacity-50 shrink-0 shadow-md transition-colors flex items-center gap-1.5 active:scale-95"
               >
-                {resettingAuth ? <Loader2 className="w-3 h-3 animate-spin" /> : null}
-                {resettingAuth ? 'מאפס...' : 'איפוס חיבור נקי'}
+                {resettingAuth ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
+                {resettingAuth ? 'מאפס קבצים...' : 'איפוס חיבור נקי'}
               </button>
             </div>
             <p className="text-[11px] text-indigo-200/90 leading-relaxed">
-              <strong>פתרון קל ומהיר:</strong> בוואטסאפ בטלפון כנס ל-<strong>מכשירים מקושרים</strong>, לחץ על המכשיר ובחר <strong>התנתק (Log Out)</strong>. לאחר מכן לחץ כאן "איפוס חיבור נקי" וסרוק את ה-QR – והוא יתחבר מיד ויסתנכרן ב-100%!
+              <strong>פתרון קל ומהיר:</strong> בוואטסאפ בטלפון כנס ל-<strong>מכשירים מקושרים</strong>, לחץ על המכשיר ובחר <strong>התנתק (Log Out)</strong>. לאחר מכן לחץ כאן <strong>"איפוס חיבור נקי"</strong> וסרוק את ה-QR – והוא יתחבר מיד ויסתנכרן ב-100%!
             </p>
           </div>
+
+          {/* Reset Success Banner */}
+          {resetSuccessMessage && (
+            <div className="p-3.5 rounded-xl bg-emerald-950/60 border border-emerald-500/50 text-emerald-200 text-xs flex items-start gap-2.5 animate-in fade-in">
+              <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
+              <div className="space-y-1">
+                <div className="font-bold text-emerald-300">איפוס החיבור בוצע בהצלחה!</div>
+                <div className="text-[11px] leading-relaxed text-emerald-200/90">{resetSuccessMessage}</div>
+              </div>
+            </div>
+          )}
         </div>
       )}
 
       {/* Connected State vs Dual-Mode Disconnected Pairing */}
       {wa.connected ? (
-        <div className="p-3.5 rounded-xl bg-emerald-950/30 border border-emerald-500/30 text-emerald-300 text-xs space-y-2">
+        <div className="p-3.5 rounded-xl bg-emerald-950/30 border border-emerald-500/30 text-emerald-300 text-xs space-y-2.5">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
               <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.8)]" />
-              <span className="font-bold">הבוט הראשי ({wa.botPhone || '0555081810'}) מחובר ופעיל</span>
+              <span className="font-bold">הבוט הראשי ({customBotPhone || wa.botPhone || '0555081810'}) מחובר ופעיל</span>
             </div>
             <span className="text-[11px] text-emerald-400/80 font-mono">200 OK</span>
           </div>
@@ -235,6 +280,17 @@ export const BotControlCard: React.FC<BotControlCardProps> = ({
             <span className="font-bold font-mono">
               {wa.connectedDriversCount ? `${wa.connectedDriversCount} נהגים מחוברים ומסננים` : 'אין נהגים נוספים מחוברים כעת'}
             </span>
+          </div>
+
+          <div className="pt-1 flex justify-end">
+            <button
+              type="button"
+              onClick={handleToggleTestConnect}
+              disabled={testingConnect}
+              className="text-[11px] text-slate-400 hover:text-rose-300 underline cursor-pointer"
+            >
+              התנתק (לבדיקת צימוד חוזר)
+            </button>
           </div>
         </div>
       ) : (
@@ -273,7 +329,7 @@ export const BotControlCard: React.FC<BotControlCardProps> = ({
               <div className="flex items-center justify-between text-xs text-teal-300 font-bold">
                 <span className="flex items-center gap-1.5">
                   <QrCode className="w-4 h-4 text-teal-400" />
-                  קוד QR חי לוואטסאפ של הבוט ({wa.botPhone || '0555081810'})
+                  קוד QR חי לוואטסאפ של הבוט ({customBotPhone || wa.botPhone || '0555081810'})
                 </span>
                 <span className="text-[11px] text-slate-400">סרוק ישירות בוואטסאפ</span>
               </div>
@@ -282,8 +338,46 @@ export const BotControlCard: React.FC<BotControlCardProps> = ({
           ) : (
             /* Pairing Code Method */
             <div className="space-y-3">
-              {activePairingCode ? (
-                <div className="p-4 rounded-xl bg-gradient-to-r from-amber-950/60 via-[#192334] to-amber-950/50 border border-amber-500/60 shadow-xl space-y-3">
+              {/* Bot Phone Number Input */}
+              <div className="p-3 bg-[#0d1420] border border-[#23354c] rounded-xl space-y-2">
+                <div className="flex items-center justify-between">
+                  <label className="text-xs font-bold text-slate-300 flex items-center gap-1.5">
+                    <PhoneCall className="w-3.5 h-3.5 text-amber-400" />
+                    מספר הטלפון של הבוט בוואטסאפ:
+                  </label>
+                  <span className="text-[10px] text-amber-300 font-medium">הזן את מספר ה-SIM של הבוט</span>
+                </div>
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={customBotPhone}
+                    onChange={(e) => setCustomBotPhone(e.target.value)}
+                    placeholder="05XXXXXXXX"
+                    className="flex-1 px-3 py-2 rounded-lg bg-[#080d14] border border-[#1e2a3b] text-white font-mono text-xs focus:outline-none focus:border-amber-400"
+                  />
+                  <button
+                    type="button"
+                    onClick={handleRequestPairing}
+                    disabled={requestingPairing || !customBotPhone.trim()}
+                    className="px-4 py-2 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-xs flex items-center gap-1.5 cursor-pointer shadow-lg shadow-amber-500/20 shrink-0 disabled:opacity-50 transition-colors"
+                  >
+                    {requestingPairing ? (
+                      <>
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        מפיק קוד...
+                      </>
+                    ) : (
+                      <>
+                        <KeyRound className="w-3.5 h-3.5" />
+                        הפק קוד צימוד (8 תווים)
+                      </>
+                    )}
+                  </button>
+                </div>
+              </div>
+
+              {activePairingCode && (
+                <div className="p-4 rounded-xl bg-gradient-to-r from-amber-950/60 via-[#192334] to-amber-950/50 border border-amber-500/60 shadow-xl space-y-3 animate-in fade-in">
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-2 text-xs font-black text-amber-300">
                       <KeyRound className="w-4 h-4 text-amber-400" />
@@ -304,9 +398,9 @@ export const BotControlCard: React.FC<BotControlCardProps> = ({
 
                   <div className="text-[11px] text-amber-100/90 leading-relaxed space-y-1 bg-amber-950/30 p-2.5 rounded-lg border border-amber-500/20">
                     <div className="font-bold text-amber-300">כיצד לחבר את הבוט ב-30 שניות:</div>
-                    <div>1. פתח וואטסאפ בטלפון של הבוט ({wa.botPhone || '0555081810'})</div>
+                    <div>1. פתח וואטסאפ בטלפון של הבוט ({customBotPhone || wa.botPhone || '0555081810'})</div>
                     <div>2. לחץ על 3 הנקודות למעלה &gt; <strong>מכשירים מקושרים</strong> &gt; <strong>קשר מכשיר</strong></div>
-                    <div>3. בחר למטה <strong>"קשר באמצעות מספר טלפון במקום"</strong> והזן את 8 התווים הנ"ל</div>
+                    <div>3. בחר למטה <strong>"קשר באמצעות מספר טלפון במקום"</strong> והזן את 8 התווים שמופיעים למעלה</div>
                   </div>
 
                   <button
@@ -317,30 +411,6 @@ export const BotControlCard: React.FC<BotControlCardProps> = ({
                     {requestingPairing ? 'מפיק קוד חדש...' : 'הקוד פג תוקף? לחץ כאן להפקת קוד צימוד חדש'}
                   </button>
                 </div>
-              ) : (
-                <div className="p-3 bg-[#131b26] border border-[#233348] rounded-xl flex flex-col sm:flex-row items-center justify-between gap-3">
-                  <div className="text-xs text-slate-300">
-                    <span className="font-bold text-amber-300">הבוט מחכה לצימוד: </span>
-                    ניתן לקשר אותו מיד באמצעות קוד בן 8 תווים ללא צורך בסריקת מצלמה.
-                  </div>
-                  <button
-                    onClick={handleRequestPairing}
-                    disabled={requestingPairing}
-                    className="px-3.5 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-xs flex items-center gap-1.5 cursor-pointer shadow-lg shadow-amber-500/20 shrink-0 disabled:opacity-50"
-                  >
-                    {requestingPairing ? (
-                      <>
-                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                        מפיק קוד...
-                      </>
-                    ) : (
-                      <>
-                        <KeyRound className="w-3.5 h-3.5" />
-                        הפק קוד צימוד (8 תווים)
-                      </>
-                    )}
-                  </button>
-                </div>
               )}
             </div>
           )}
@@ -348,10 +418,61 @@ export const BotControlCard: React.FC<BotControlCardProps> = ({
       )}
 
       {pairingError && (
-        <div className="p-2.5 text-xs text-rose-300 bg-rose-500/10 border border-rose-500/30 rounded-lg">
-          {pairingError}
+        <div className="p-3 text-xs text-rose-200 bg-rose-950/60 border border-rose-500/40 rounded-xl space-y-2 animate-in fade-in">
+          <div className="flex items-center gap-1.5 font-bold text-rose-300">
+            <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0" />
+            <span>שגיאה בהפקת קוד צימוד לבוט:</span>
+          </div>
+          <div className="text-[11px] leading-relaxed font-mono">{pairingError}</div>
+          <div className="flex flex-wrap gap-2 pt-1">
+            <button
+              type="button"
+              onClick={handleResetBotAuth}
+              disabled={resettingAuth}
+              className="px-2.5 py-1 rounded-lg bg-rose-500/20 hover:bg-rose-500/30 text-rose-200 text-[11px] font-bold border border-rose-500/40 cursor-pointer"
+            >
+              {resettingAuth ? 'מאפס...' : 'איפוס חיבור נקי עכשיו'}
+            </button>
+            <button
+              type="button"
+              onClick={handleRequestPairing}
+              disabled={requestingPairing}
+              className="px-2.5 py-1 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 text-amber-200 text-[11px] font-bold border border-amber-500/40 cursor-pointer"
+            >
+              נסה להפיק שוב
+            </button>
+          </div>
         </div>
       )}
+
+      {/* Quick Test / Status Check Bar */}
+      <div className="flex flex-wrap items-center justify-between gap-2 p-2.5 rounded-xl bg-[#090d14] border border-[#1d2938]">
+        <button
+          type="button"
+          onClick={async () => {
+            if (onRefreshData) await onRefreshData();
+          }}
+          className="px-3 py-1.5 rounded-lg bg-[#141d2a] hover:bg-[#1a283b] text-slate-300 hover:text-white text-[11px] font-bold flex items-center gap-1.5 cursor-pointer border border-[#23354c] transition-colors"
+        >
+          <RefreshCw className="w-3 h-3 text-teal-400" />
+          בדוק סטטוס חיבור עכשיו
+        </button>
+
+        <button
+          type="button"
+          onClick={handleToggleTestConnect}
+          disabled={testingConnect}
+          className={`px-3 py-1.5 rounded-lg text-[11px] font-bold flex items-center gap-1.5 cursor-pointer border transition-colors ${
+            wa.connected
+              ? 'bg-rose-500/10 text-rose-300 border-rose-500/30 hover:bg-rose-500/20'
+              : 'bg-emerald-500/10 text-emerald-300 border-emerald-500/30 hover:bg-emerald-500/20'
+          }`}
+          title="מאפשר לבדוק את כל תכונות הבוט והממשק המחובר"
+        >
+          <Sparkles className="w-3 h-3 text-emerald-400" />
+          {wa.connected ? 'סמן כמנותק (לבדיקה)' : 'סימולציית חיבור מוצלח לבדיקה'}
+        </button>
+      </div>
 
       {/* Action Buttons */}
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
