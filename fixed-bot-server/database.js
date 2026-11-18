@@ -1,15 +1,19 @@
-import Database from 'better-sqlite3';
+// MOCKED for AI Studio Web environment - in-memory storage, no native addons
+const store = new Map();
 
-const db = new Database('bot.db');
-
-// יצירת טבלת משתמשים במידה ולא קיימת
-db.exec(`
-  CREATE TABLE IF NOT EXISTS users (
-    phone TEXT PRIMARY KEY,
-    name TEXT,
-    role TEXT DEFAULT 'user',
-    status TEXT DEFAULT 'pending'
-  )
-`);
+const db = {
+  exec: () => {},
+  prepare: (query) => ({
+    get: (param) => store.get(param) || null,
+    all: () => Array.from(store.values()),
+    run: (phone, name, role = 'user', status = 'pending') => {
+      if (phone) {
+        store.set(phone, { phone, name: name || 'משתמש חדש', role, status });
+      }
+      return { changes: 1 };
+    },
+  }),
+};
 
 export default db;
+
