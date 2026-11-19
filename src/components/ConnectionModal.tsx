@@ -96,27 +96,6 @@ export const ConnectionModal: React.FC<ConnectionModalProps> = ({
 
         {/* Content */}
         <div className="p-6 space-y-5 overflow-y-auto">
-          {/* Demo Mode Toggle Banner */}
-          <div className="flex items-center justify-between p-4 rounded-xl bg-gradient-to-r from-purple-950/40 via-indigo-950/30 to-[#121a28] border border-purple-500/30">
-            <div className="flex items-start gap-3">
-              <Sparkles className="w-5 h-5 text-purple-400 shrink-0 mt-0.5" />
-              <div>
-                <h4 className="text-sm font-semibold text-purple-200">מצב הדגמה (סימולטור פעיל)</h4>
-                <p className="text-xs text-purple-300/80 leading-relaxed mt-0.5">
-                  מאפשר לבחון ולשלוט בכל יכולות האתר עם נתוני אמת מדומים גם כשהשרת עדיין לא מחובר
-                </p>
-              </div>
-            </div>
-            <label className="relative inline-flex items-center cursor-pointer shrink-0 mr-3">
-              <input
-                type="checkbox"
-                checked={demoMode}
-                onChange={(e) => setDemoMode(e.target.checked)}
-                className="sr-only peer"
-              />
-              <div className="w-11 h-6 bg-slate-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:right-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-purple-600"></div>
-            </label>
-          </div>
 
           {/* Server URL Input */}
           <div className="space-y-2">

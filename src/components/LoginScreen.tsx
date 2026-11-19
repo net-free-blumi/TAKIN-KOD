@@ -3,7 +3,6 @@ import {
   Eye, 
   EyeOff, 
   ArrowLeft, 
-  Sparkles, 
   SlidersHorizontal, 
   AlertCircle, 
   KeyRound
@@ -16,7 +15,7 @@ import { LegalTab } from './LegalModal.tsx';
 interface LoginScreenProps {
   onLogin: (password: string) => Promise<void>;
   onOpenConnectionModal: () => void;
-  onEnterDemoMode: () => void;
+  onEnterDemoMode?: () => void;
   onOpenLegalTab: (tab: LegalTab) => void;
   config: ConnectionConfig;
   loading: boolean;
@@ -97,7 +96,8 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
                   onChange={(e) => setPassword(e.target.value)}
                   required
                   autoFocus
-                  placeholder="הזן סיסמה (ברירת מחדל: 0515157166)..."
+                  placeholder="הזן סיסמה..."
+                  autoComplete="current-password"
                   className="w-full px-4 py-3 rounded-xl bg-[#090d14] border border-[#233348] text-white text-sm placeholder:text-slate-500 focus:outline-none focus:border-amber-400 focus:ring-2 focus:ring-amber-400/20 transition-all pl-11"
                 />
                 <button
@@ -127,19 +127,9 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
             </button>
           </form>
 
-          <div className="pt-1">
-            <button
-              type="button"
-              onClick={onEnterDemoMode}
-              className="w-full py-2.5 rounded-xl bg-[#141d2b] hover:bg-[#1b283d] border border-[#233348] text-amber-300 text-xs font-semibold flex items-center justify-center gap-2 transition-colors cursor-pointer"
-            >
-              <Sparkles className="w-3.5 h-3.5 text-amber-400" />
-              כניסה מהירה למערכת (מצב הדגמה)
-            </button>
-          </div>
 
           <p className="text-[11px] text-slate-500 leading-relaxed text-center">
-            גישה מורשית בלבד לנהגים וסדרנים מורשים · סיסמת ברירת מחדל: 0515157166
+            גישה מורשית בלבד לנהגים וסדרנים מורשים
           </p>
         </div>
       </main>

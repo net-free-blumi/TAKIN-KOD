@@ -310,7 +310,6 @@ export default function App() {
         <LoginScreen
           onLogin={handleLogin}
           onOpenConnectionModal={() => setConnectionModalOpen(true)}
-          onEnterDemoMode={handleEnterDemoMode}
           onOpenLegalTab={handleOpenLegalTab}
           config={config}
           loading={actionLoading}

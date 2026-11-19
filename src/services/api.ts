@@ -15,7 +15,7 @@ export function loadConfig(): ConnectionConfig {
   try {
     const raw = localStorage.getItem(CONFIG_KEY);
     if (raw) {
-      return { ...defaultConfig, ...JSON.parse(raw) };
+      return { ...defaultConfig, ...JSON.parse(raw), useDemoMode: false };
     }
   } catch {
     // fallback
@@ -26,6 +26,7 @@ export function loadConfig(): ConnectionConfig {
 export function saveConfig(cfg: Partial<ConnectionConfig>) {
   const current = loadConfig();
   const updated = { ...current, ...cfg };
+  updated.useDemoMode = false;
   localStorage.setItem(CONFIG_KEY, JSON.stringify(updated));
   return updated;
 }
