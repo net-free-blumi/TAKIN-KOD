@@ -216,6 +216,7 @@ export function normalizeStatusPayload(raw: any): StatusPayload {
     wa: {
       connected: isWaConnected,
       registered: Boolean(raw.wa?.registered ?? isWaConnected),
+      state: raw.wa?.state ?? null,
       pairingCode: raw.wa?.pairingCode ?? raw.pairingCode ?? null,
       lastDisconnectReason: raw.wa?.lastDisconnectReason ?? '',
     },

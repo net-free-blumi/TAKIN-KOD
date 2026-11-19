@@ -1221,7 +1221,7 @@ export const UsersManagementModal: React.FC<UsersManagementModalProps> = ({
                     </button>
                   ) : (
                     <DriverQrPanel
-                      phone={botPhone}
+                      phone="bot"
                       onConnected={() => setActionSuccess('הבוט המרכזי חובר בהצלחה דרך QR!')}
                       onCancelled={() => setActionSuccess('יצירת ברקוד הבוט בוטלה והתהליך הופסק')}
                     />

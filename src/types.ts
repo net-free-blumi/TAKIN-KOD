@@ -78,6 +78,7 @@ export interface BotSettings {
 export interface WhatsAppState {
   connected: boolean;
   registered?: boolean;
+  state?: string | null;
   pairingCode?: string | null;
   lastDisconnectReason?: string;
   botPhone?: string;

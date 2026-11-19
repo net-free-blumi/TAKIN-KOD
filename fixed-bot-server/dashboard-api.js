@@ -339,8 +339,9 @@ function getUnifiedStatus(requestedPhone, isAuthenticated = false) {
       wa: {
         connected: botInfo.connected,
         registered: botInfo.registered,
+        state: botInfo.state || null,
         pairingCode: null,
-        lastDisconnectReason: "",
+        lastDisconnectReason: botInfo.lastDisconnectReason || "",
         botPhone: maskPhone(botInfo.phone),
         adminPhone: maskPhone(users.adminPhone),
         connectedDriversCount: sessionsSummary?.totalConnectedDrivers || 0,
@@ -397,6 +398,7 @@ function getUnifiedStatus(requestedPhone, isAuthenticated = false) {
     wa: {
       connected: botInfo.connected,
       registered: botInfo.registered,
+      state: botInfo.state || null,
       pairingCode: botInfo.pairingCode,
       lastDisconnectReason: botInfo.lastDisconnectReason,
       botPhone: botInfo.phone,

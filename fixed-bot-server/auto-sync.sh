@@ -76,7 +76,8 @@ if [ "$LOCK_BEFORE" != "$LOCK_AFTER" ] || [ ! -d node_modules ]; then
   npm install --omit=dev --no-audit --no-fund || echo "⚠️ npm install נכשל"
 fi
 
-if [ "$BOT_CHANGED" != "1" ] && [ "${FORCE:-0}" != "1" ]; then
+# הפעלה מחדש רק אם קוד הבוט השתנה (או RESTART=1 במפורש). FORCE לבדו לא מנתק חיבורים.
+if [ "$BOT_CHANGED" != "1" ] && [ "${RESTART:-0}" != "1" ]; then
   echo "✅ עודכן ($BEFORE -> $AFTER). רק קבצי אתר השתנו - הבוט לא הופעל מחדש, החיבורים לא נגעו."
   exit 0
 fi

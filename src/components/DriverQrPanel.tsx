@@ -30,10 +30,10 @@ const STOPPED_STATUSES = new Set(['cancelled', 'qr_expired', 'logged_out', 'conf
 
 export const DriverQrPanel: React.FC<DriverQrPanelProps> = ({ phone, onConnected, onCancelled }) => {
   const isBot = phone === 'bot';
-  // הבוט הראשי לא מייצר ברקוד עד שלוחצים "הצג ברקוד"
-  const [active, setActive] = useState(!isBot);
-  const [userCancelled, setUserCancelled] = useState(isBot);
-  const [stopReason, setStopReason] = useState<string>(isBot ? 'idle' : 'cancelled');
+  // אף ברקוד (בוט או נהג) לא נוצר עד שלוחצים "הצג ברקוד" - גם לא בזמן הקלדת מספר
+  const [active, setActive] = useState(false);
+  const [userCancelled, setUserCancelled] = useState(true);
+  const [stopReason, setStopReason] = useState<string>('idle');
   const [cancelling, setCancelling] = useState(false);
   const [state, setState] = useState<DriverQrState | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -158,9 +158,9 @@ export const DriverQrPanel: React.FC<DriverQrPanelProps> = ({ phone, onConnected
 
   // החלפת מספר טלפון חיצונית
   useEffect(() => {
-    setUserCancelled(isBot);
-    setActive(!isBot);
-    setStopReason(isBot ? 'idle' : 'cancelled');
+    setUserCancelled(true);
+    setActive(false);
+    setStopReason('idle');
     setState(null);
     setImageUrl(null);
     setError(null);
@@ -237,7 +237,9 @@ export const DriverQrPanel: React.FC<DriverQrPanelProps> = ({ phone, onConnected
             <button
               type="button"
               onClick={handleRestart}
-              className="px-4 py-2 rounded-xl bg-teal-400 hover:bg-teal-300 text-slate-950 font-bold text-xs inline-flex items-center gap-1.5 cursor-pointer shadow-lg shadow-teal-500/20 transition-transform active:scale-95"
+              disabled={!isBot && phone.replace(/\D/g, '').length < 9}
+              title={!isBot && phone.replace(/\D/g, '').length < 9 ? 'הזן קודם מספר טלפון מלא של הנהג' : undefined}
+              className="disabled:opacity-40 disabled:cursor-not-allowed px-4 py-2 rounded-xl bg-teal-400 hover:bg-teal-300 text-slate-950 font-bold text-xs inline-flex items-center gap-1.5 cursor-pointer shadow-lg shadow-teal-500/20 transition-transform active:scale-95"
             >
               <Play className="w-3.5 h-3.5 fill-current" />
               {stopReason === 'idle' ? 'הצג ברקוד לחיבור' : 'התחל מחדש (הפק ברקוד חדש עכשיו)'}
