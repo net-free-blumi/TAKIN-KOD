@@ -18,10 +18,12 @@ import {
   RefreshCw,
   CheckCircle2,
   Sparkles,
-  PhoneCall
+  PhoneCall,
+  Square,
+  XCircle
 } from 'lucide-react';
 import { WhatsAppState } from '../types.ts';
-import { syncFromGitHubApi, requestPairingCodeApi, resetMainBotAuthApi, testConnectBotApi } from '../services/api.ts';
+import { syncFromGitHubApi, requestPairingCodeApi, resetMainBotAuthApi, cancelPairingApi, testConnectBotApi } from '../services/api.ts';
 import { DriverQrPanel } from './DriverQrPanel.tsx';
 
 interface BotControlCardProps {
@@ -44,6 +46,7 @@ export const BotControlCard: React.FC<BotControlCardProps> = ({
   const [stopConfirm, setStopConfirm] = useState(false);
   const [restartingCountdown, setRestartingCountdown] = useState<number | null>(null);
   const [requestingPairing, setRequestingPairing] = useState(false);
+  const [cancellingPairing, setCancellingPairing] = useState(false);
   const [localPairingCode, setLocalPairingCode] = useState<string | null>(null);
   const [pairingError, setPairingError] = useState<string | null>(null);
   const [pairingMethod, setPairingMethod] = useState<'qr' | 'code'>('qr');
@@ -53,6 +56,23 @@ export const BotControlCard: React.FC<BotControlCardProps> = ({
   const [testingConnect, setTestingConnect] = useState(false);
 
   const activePairingCode = localPairingCode || wa.pairingCode;
+
+  const handleCancelPairing = async () => {
+    setCancellingPairing(true);
+    try {
+      await cancelPairingApi('bot', true);
+      setLocalPairingCode(null);
+      setPairingError(null);
+      setResetSuccessMessage('תהליך יצירת הקודים בוטל והופסק לחלוטין. לא מופקים קודים או טוקנים ברקע.');
+      if (onRefreshData) {
+        await onRefreshData();
+      }
+    } catch {
+      setLocalPairingCode(null);
+    } finally {
+      setCancellingPairing(false);
+    }
+  };
 
   const handleResetBotAuth = async () => {
     setResettingAuth(true);
@@ -333,7 +353,7 @@ export const BotControlCard: React.FC<BotControlCardProps> = ({
                 </span>
                 <span className="text-[11px] text-slate-400">סרוק ישירות בוואטסאפ</span>
               </div>
-              <DriverQrPanel phone="bot" onConnected={onRestartBot} />
+              <DriverQrPanel phone="bot" onConnected={onRestartBot} onCancelled={() => onRefreshData?.()} />
             </div>
           ) : (
             /* Pairing Code Method */
@@ -378,18 +398,29 @@ export const BotControlCard: React.FC<BotControlCardProps> = ({
 
               {activePairingCode && (
                 <div className="p-4 rounded-xl bg-gradient-to-r from-amber-950/60 via-[#192334] to-amber-950/50 border border-amber-500/60 shadow-xl space-y-3 animate-in fade-in">
-                  <div className="flex items-center justify-between">
+                  <div className="flex items-center justify-between flex-wrap gap-2">
                     <div className="flex items-center gap-2 text-xs font-black text-amber-300">
                       <KeyRound className="w-4 h-4 text-amber-400" />
                       קוד צימוד פעיל לוואטסאפ (Pairing Code)
                     </div>
-                    <button
-                      onClick={handleCopyPairing}
-                      className="px-3 py-1 rounded-lg bg-amber-400 hover:bg-amber-300 text-slate-950 text-xs font-black flex items-center gap-1.5 transition-colors cursor-pointer shadow-md"
-                    >
-                      {copiedCode ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
-                      {copiedCode ? 'הועתק ללוח!' : 'העתק קוד'}
-                    </button>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={handleCancelPairing}
+                        disabled={cancellingPairing}
+                        className="px-3 py-1 rounded-lg bg-rose-500/20 hover:bg-rose-500/30 text-rose-300 border border-rose-500/40 text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer disabled:opacity-50"
+                      >
+                        {cancellingPairing ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Square className="w-3.5 h-3.5 fill-current" />}
+                        <span>{cancellingPairing ? 'מבטל...' : 'בטל קוד והפסק'}</span>
+                      </button>
+                      <button
+                        onClick={handleCopyPairing}
+                        className="px-3 py-1 rounded-lg bg-amber-400 hover:bg-amber-300 text-slate-950 text-xs font-black flex items-center gap-1.5 transition-colors cursor-pointer shadow-md"
+                      >
+                        {copiedCode ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+                        {copiedCode ? 'הועתק ללוח!' : 'העתק קוד'}
+                      </button>
+                    </div>
                   </div>
 
                   <div className="font-mono text-3xl font-black text-amber-300 tracking-widest text-center py-2.5 bg-[#080d16] rounded-xl border border-amber-500/40 shadow-inner select-all">
@@ -403,13 +434,24 @@ export const BotControlCard: React.FC<BotControlCardProps> = ({
                     <div>3. בחר למטה <strong>"קשר באמצעות מספר טלפון במקום"</strong> והזן את 8 התווים שמופיעים למעלה</div>
                   </div>
 
-                  <button
-                    onClick={handleRequestPairing}
-                    disabled={requestingPairing}
-                    className="w-full py-1.5 text-xs text-amber-300 hover:text-amber-200 underline cursor-pointer disabled:opacity-50 text-center"
-                  >
-                    {requestingPairing ? 'מפיק קוד חדש...' : 'הקוד פג תוקף? לחץ כאן להפקת קוד צימוד חדש'}
-                  </button>
+                  <div className="flex items-center justify-center gap-4 pt-1">
+                    <button
+                      onClick={handleRequestPairing}
+                      disabled={requestingPairing || cancellingPairing}
+                      className="text-xs text-amber-300 hover:text-amber-200 underline cursor-pointer disabled:opacity-50 text-center"
+                    >
+                      {requestingPairing ? 'מפיק קוד חדש...' : 'הקוד פג תוקף? הפק קוד חדש'}
+                    </button>
+                    <span className="text-slate-600">|</span>
+                    <button
+                      type="button"
+                      onClick={handleCancelPairing}
+                      disabled={cancellingPairing}
+                      className="text-xs text-rose-300 hover:text-rose-200 underline cursor-pointer disabled:opacity-50 text-center"
+                    >
+                      בטל תהליך זה לחלוטין
+                    </button>
+                  </div>
                 </div>
               )}
             </div>

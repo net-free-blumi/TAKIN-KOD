@@ -564,13 +564,31 @@ async function startServer() {
   });
 
   // ==========================================
-  // Pairing & Sessions API
+  // Pairing & Sessions API with QR Session Stability & Cancellation
   // ==========================================
+  interface QrSessionData {
+    phone: string;
+    qr: string;
+    qrImage: string | null;
+    createdAt: number;
+    expiresAt: number;
+    cancelled: boolean;
+    status: 'none' | 'qr_ready' | 'connecting' | 'connected' | 'cancelled';
+  }
+
+  const activeQrSessions = new Map<string, QrSessionData>();
+
   app.post('/api/pairing/request', requireAuth, (req: Request, res: Response) => {
     const isBot = Boolean(req.body?.isBot);
     const requestedPhone = req.body?.phone ? String(req.body.phone).replace(/\D/g, '') : '';
     if (isBot) {
       if (requestedPhone) mainBotPhone = requestedPhone;
+      // Clear cancellation if restarting
+      const existing = activeQrSessions.get(mainBotPhone);
+      if (existing) {
+        existing.cancelled = false;
+      }
+
       // 8-character code formatted with letters and digits
       const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
       let code = '';
@@ -598,33 +616,135 @@ async function startServer() {
     return res.json({ ok: true, code, phone: req.body?.phone });
   });
 
+  // ביטול והפסקת יצירת ברקודים, טוקנים וקודי צימוד
+  app.post('/api/pairing/cancel', requireAuth, (req: Request, res: Response) => {
+    const isBot = Boolean(req.body?.isBot || req.body?.phone === 'bot');
+    const rawPhone = req.body?.phone ? String(req.body.phone).replace(/\D/g, '') : '';
+    const targetPhone = (isBot || !rawPhone || req.body?.phone === 'bot') ? mainBotPhone : rawPhone;
+
+    // עצירה וסימון ביטול של סשן ה-QR
+    activeQrSessions.set(targetPhone, {
+      phone: targetPhone,
+      qr: '',
+      qrImage: null,
+      createdAt: Date.now(),
+      expiresAt: 0,
+      cancelled: true,
+      status: 'cancelled',
+    });
+
+    if (isBot) {
+      mainBotPairingCode = null;
+      mainBotDisconnectReason = 'תהליך הצימוד וקוד ה-QR בוטלו לבקשת המשתמש';
+    }
+
+    liveLogs.unshift({
+      id: `sys-${Date.now()}`,
+      t: Date.now(),
+      timestamp: Date.now(),
+      time: new Date().toLocaleTimeString('he-IL', { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+      type: 'system',
+      message: `🛑 בוטלה הפקת קודי QR וצימוד עבור ${isBot ? `הבוט הראשי (${mainBotPhone})` : `נהג ${targetPhone}`}: הופסקה יצירת קודים וטוקנים ברקע`,
+    });
+
+    return res.json({
+      ok: true,
+      cancelled: true,
+      success: true,
+      message: 'התהליך בוטל בהצלחה. יצירת הברקודים, הטוקנים והקודים הופסקה לחלוטין.',
+    });
+  });
+
   app.get(['/api/driver/qr/:phone', '/api/pairing/qr'], requireAuth, async (req: Request, res: Response) => {
     const phone = req.params?.phone || req.query.phone || 'bot';
     const isBot = phone === 'bot' || req.query.isBot === 'true';
-    const targetPhone = isBot ? mainBotPhone : phone;
+    const targetPhone = isBot ? mainBotPhone : (String(phone).replace(/\D/g, '') || String(phone));
     const isConnected = isBot ? mainBotConnected : false;
-    const qrString = `2@${Date.now()},${crypto.randomBytes(8).toString('hex')},wa-${targetPhone}`;
-    try {
-      const qrImage = isConnected ? null : await qrcode.toDataURL(qrString, { margin: 1, width: 320 });
+    const force = req.query.force === 'true';
+
+    if (isConnected) {
       return res.json({
         ok: true,
         isBot,
         phone: targetPhone,
-        connected: isConnected,
-        status: isConnected ? 'connected' : 'qr_ready',
-        qr: isConnected ? null : qrString,
-        qrImage,
+        connected: true,
+        status: 'connected',
+        qr: null,
+        qrImage: null,
         qrUpdatedAt: Date.now(),
+      });
+    }
+
+    const session = activeQrSessions.get(targetPhone);
+
+    // אם המשתמש ביטל את הסשן ולא דרש force - לא מייצרים שום ברקוד ומחזירים מצב בוטל
+    if (!force && session && session.cancelled) {
+      return res.json({
+        ok: true,
+        isBot,
+        phone: targetPhone,
+        connected: false,
+        status: 'cancelled',
+        qr: null,
+        qrImage: null,
+        message: 'הפקת הברקוד בוטלה לבקשת המשתמש',
+      });
+    }
+
+    const now = Date.now();
+    // אם יש כבר ברקוד פעיל וטרם פג תוקפו (תוקף ל-30 שניות) ולא נדרש כפייה - מחזירים בדיוק אותו ברקוד יציב!
+    if (!force && session && !session.cancelled && now < session.expiresAt && session.qr && session.qrImage) {
+      const expiresInSeconds = Math.max(1, Math.round((session.expiresAt - now) / 1000));
+      return res.json({
+        ok: true,
+        isBot,
+        phone: targetPhone,
+        connected: false,
+        status: 'qr_ready',
+        qr: session.qr,
+        qrImage: session.qrImage,
+        qrUpdatedAt: session.createdAt,
+        expiresAt: session.expiresAt,
+        expiresInSeconds,
+      });
+    }
+
+    // הפקת ברקוד חדש (רק אם פג תוקף, התחלה מחדש, או force)
+    const qrString = `2@${now},${crypto.randomBytes(8).toString('hex')},wa-${targetPhone}`;
+    try {
+      const qrImage = await qrcode.toDataURL(qrString, { margin: 1, width: 320 });
+      const newSession: QrSessionData = {
+        phone: targetPhone,
+        qr: qrString,
+        qrImage,
+        createdAt: now,
+        expiresAt: now + 30000,
+        cancelled: false,
+        status: 'qr_ready',
+      };
+      activeQrSessions.set(targetPhone, newSession);
+
+      return res.json({
+        ok: true,
+        isBot,
+        phone: targetPhone,
+        connected: false,
+        status: 'qr_ready',
+        qr: qrString,
+        qrImage,
+        qrUpdatedAt: now,
+        expiresAt: newSession.expiresAt,
+        expiresInSeconds: 30,
       });
     } catch {
       return res.json({
         ok: true,
         isBot,
         phone: targetPhone,
-        connected: isConnected,
-        status: isConnected ? 'connected' : 'qr_ready',
-        qr: isConnected ? null : qrString,
-        qrUpdatedAt: Date.now(),
+        connected: false,
+        status: 'qr_ready',
+        qr: qrString,
+        qrUpdatedAt: now,
       });
     }
   });
@@ -656,15 +776,32 @@ async function startServer() {
     });
   });
 
-  app.post('/api/sessions/disconnect', requireAuth, (_req: Request, res: Response) => {
-    return res.json({ ok: true, message: 'הסשן נותק בהצלחה' });
+  app.post('/api/sessions/disconnect', requireAuth, (req: Request, res: Response) => {
+    const rawPhone = req.body?.phone ? String(req.body.phone).replace(/\D/g, '') : '';
+    if (rawPhone) {
+      activeQrSessions.set(rawPhone, {
+        phone: rawPhone,
+        qr: '',
+        qrImage: null,
+        createdAt: Date.now(),
+        expiresAt: 0,
+        cancelled: true,
+        status: 'cancelled',
+      });
+    }
+    return res.json({ ok: true, message: 'הסשן נותק ויצירת הקודים הופסקה בהצלחה' });
   });
 
-  app.post('/api/sessions/reset-auth', requireAuth, (_req: Request, res: Response) => {
+  app.post('/api/sessions/reset-auth', requireAuth, (req: Request, res: Response) => {
+    const rawPhone = req.body?.phone ? String(req.body.phone).replace(/\D/g, '') : '';
+    if (rawPhone) {
+      activeQrSessions.delete(rawPhone);
+    }
     return res.json({ ok: true, success: true, message: 'קובצי האימות נוקו בהצלחה' });
   });
 
   app.post('/api/sessions/clear-all', requireAuth, (_req: Request, res: Response) => {
+    activeQrSessions.clear();
     return res.json({ ok: true, success: true, message: 'כל הסשנים וקובצי האימות אופסו בהצלחה' });
   });
 
@@ -686,6 +823,15 @@ async function startServer() {
   app.post('/api/bot/stop', requireAuth, (_req: Request, res: Response) => {
     mainBotConnected = false;
     mainBotDisconnectReason = 'פעילות הבוט הושהתה ידנית';
+    activeQrSessions.set(mainBotPhone, {
+      phone: mainBotPhone,
+      qr: '',
+      qrImage: null,
+      createdAt: Date.now(),
+      expiresAt: 0,
+      cancelled: true,
+      status: 'cancelled',
+    });
     liveLogs.unshift({
       id: `sys-${Date.now()}`,
       t: Date.now(),
@@ -702,6 +848,15 @@ async function startServer() {
     mainBotPairingCode = null;
     lastResetTime = Date.now();
     mainBotDisconnectReason = 'איפוס סשן נקי לבקשת המנהל';
+    activeQrSessions.set(mainBotPhone, {
+      phone: mainBotPhone,
+      qr: '',
+      qrImage: null,
+      createdAt: Date.now(),
+      expiresAt: 0,
+      cancelled: true,
+      status: 'cancelled',
+    });
 
     const botAuthDir = path.join(__dirname, 'fixed-bot-server', 'auth', 'bot');
     if (fs.existsSync(botAuthDir)) {

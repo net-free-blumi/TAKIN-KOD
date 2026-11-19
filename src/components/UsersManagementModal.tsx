@@ -26,7 +26,9 @@ import {
   ExternalLink,
   Send,
   BellOff,
-  LogOut
+  LogOut,
+  Square,
+  XCircle
 } from 'lucide-react';
 import { ApprovedUser, PendingUser, DriverSessionItem } from '../types.ts';
 import { 
@@ -37,6 +39,7 @@ import {
   deleteUserApi, 
   updateUsersConfigApi,
   requestPairingCodeApi,
+  cancelPairingApi,
   updateUserPhoneApi,
   editUserDetailsApi,
   fetchSessionsSummary,
@@ -120,6 +123,7 @@ export const UsersManagementModal: React.FC<UsersManagementModalProps> = ({
   const [pairingMethod, setPairingMethod] = useState<'code' | 'qr'>('qr');
   const [generatedPairingCode, setGeneratedPairingCode] = useState<string | null>(null);
   const [pairingLoading, setPairingLoading] = useState(false);
+  const [cancellingPairing, setCancellingPairing] = useState(false);
   const [copiedCode, setCopiedCode] = useState(false);
 
   // Active Sessions
@@ -543,6 +547,21 @@ export const UsersManagementModal: React.FC<UsersManagementModalProps> = ({
     navigator.clipboard.writeText(generatedPairingCode);
     setCopiedCode(true);
     setTimeout(() => setCopiedCode(false), 2000);
+  };
+
+  const handleCancelGeneratedCode = async () => {
+    setCancellingPairing(true);
+    try {
+      const isBot = pairingTarget === 'bot';
+      const targetNum = isBot ? 'bot' : (pairingPhone || adminPhone);
+      await cancelPairingApi(targetNum, isBot);
+      setGeneratedPairingCode(null);
+      setActionSuccess('קוד הצימוד בוטל והתהליך הופסק בהצלחה. לא מופקים קודים או טוקנים ברקע.');
+    } catch {
+      setGeneratedPairingCode(null);
+    } finally {
+      setCancellingPairing(false);
+    }
   };
 
   const filteredApproved = approvedUsers.filter((u) => {
@@ -1181,6 +1200,7 @@ export const UsersManagementModal: React.FC<UsersManagementModalProps> = ({
                     <DriverQrPanel
                       phone={pairingPhone || adminPhone}
                       onConnected={() => setActionSuccess('הוואטסאפ של הנהג חובר בהצלחה דרך QR!')}
+                      onCancelled={() => setActionSuccess('יצירת ברקוד הנהג בוטלה והתהליך הופסק')}
                     />
                   )}
                 </>
@@ -1203,18 +1223,28 @@ export const UsersManagementModal: React.FC<UsersManagementModalProps> = ({
                     <DriverQrPanel
                       phone={botPhone}
                       onConnected={() => setActionSuccess('הבוט המרכזי חובר בהצלחה דרך QR!')}
+                      onCancelled={() => setActionSuccess('יצירת ברקוד הבוט בוטלה והתהליך הופסק')}
                     />
                   )}
                 </div>
               )}
 
               {generatedPairingCode && (pairingTarget === 'bot' || pairingMethod === 'code') && (
-                <div className="p-4 rounded-xl bg-teal-950/40 border border-teal-500/40 text-center space-y-2 mt-3 animate-in fade-in">
+                <div className="p-4 rounded-xl bg-teal-950/40 border border-teal-500/40 text-center space-y-3 mt-3 animate-in fade-in">
                   <span className="text-xs text-teal-300 block font-bold">קוד הצימוד (הזן בוואטסאפ במכשירים מקושרים):</span>
-                  <div className="text-2xl font-mono font-black text-amber-300 tracking-widest bg-black/60 py-2.5 px-6 rounded-lg inline-block border border-amber-500/40 shadow-lg">
+                  <div className="text-2xl font-mono font-black text-amber-300 tracking-widest bg-black/60 py-2.5 px-6 rounded-lg inline-block border border-amber-500/40 shadow-lg select-all">
                     {generatedPairingCode}
                   </div>
-                  <div className="flex justify-center pt-1">
+                  <div className="flex justify-center items-center gap-2 pt-1 flex-wrap">
+                    <button
+                      type="button"
+                      onClick={handleCancelGeneratedCode}
+                      disabled={cancellingPairing}
+                      className="px-3.5 py-1.5 rounded-lg bg-rose-500/20 text-rose-300 hover:bg-rose-500/30 text-xs font-bold flex items-center gap-1.5 cursor-pointer border border-rose-500/30 transition-colors disabled:opacity-50"
+                    >
+                      {cancellingPairing ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Square className="w-3.5 h-3.5 fill-current" />}
+                      <span>{cancellingPairing ? 'מבטל...' : 'בטל קוד זה והפסק'}</span>
+                    </button>
                     <button
                       type="button"
                       onClick={copyCode}

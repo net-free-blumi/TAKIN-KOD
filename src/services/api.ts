@@ -562,18 +562,21 @@ export async function editUserDetailsApi(oldPhone: string, data: { name?: string
 // ===== חיבור נהג דרך QR (מתרענן אוטומטית; polling מהאתר) =====
 export interface DriverQrState {
   ok: boolean;
-  status: string;        // none | pairing_required | qr_ready | pairing_ready | connecting | connected | disconnected
+  status: string;        // none | pairing_required | qr_ready | pairing_ready | connecting | connected | disconnected | cancelled
   connected: boolean;
   qr: string | null;     // מחרוזת ה-QR הגולמית
   qrImage?: string | null; // data:image/png;base64 (אם חבילת qrcode מותקנת בשרת)
   qrUpdatedAt?: number | null;
+  expiresAt?: number | null;
+  expiresInSeconds?: number;
   lastDisconnectReason?: string;
+  message?: string;
   error?: string;
 }
 
 let demoQrTick = 0;
 
-export async function fetchDriverQr(phone: string): Promise<DriverQrState> {
+export async function fetchDriverQr(phone: string, force = false): Promise<DriverQrState> {
   const cfg = loadConfig();
   if (cfg.useDemoMode) {
     demoQrTick += 1;
@@ -583,9 +586,32 @@ export async function fetchDriverQr(phone: string): Promise<DriverQrState> {
       connected: demoQrTick > 12,
       qr: demoQrTick > 12 ? null : `DEMO-QR-${phone}-${Math.floor(demoQrTick / 3)}`,
       qrUpdatedAt: Date.now(),
+      expiresInSeconds: Math.max(1, 30 - ((demoQrTick % 10) * 3)),
     };
   }
-  return await request<DriverQrState>(`/api/driver/qr/${encodeURIComponent(phone)}`);
+  const clean = phone.trim();
+  const url = clean === 'bot' 
+    ? `/api/driver/qr/bot${force ? '?force=true' : ''}` 
+    : `/api/driver/qr/${encodeURIComponent(clean)}${force ? '?force=true' : ''}`;
+  return await request<DriverQrState>(url);
+}
+
+// ביטול והפסקת יצירת ברקודים, טוקנים וקודי צימוד
+export async function cancelPairingApi(phone: string, isBot = false): Promise<{
+  ok: boolean;
+  cancelled: boolean;
+  message?: string;
+  error?: string;
+}> {
+  const cfg = loadConfig();
+  if (cfg.useDemoMode) {
+    demoQrTick = 0;
+    return { ok: true, cancelled: true, message: 'תהליך יצירת הברקוד והקודים בוטל בהצלחה (מצב דמו)' };
+  }
+  return await request<any>('/api/pairing/cancel', {
+    method: 'POST',
+    body: JSON.stringify({ phone, isBot }),
+  });
 }
 
 // איפוס מוחלט של כל סשני הנהגים, הקוקיז ומיפויי ה-LID מהשרת
