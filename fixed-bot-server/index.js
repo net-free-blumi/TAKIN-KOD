@@ -83,6 +83,7 @@ import {
   cancelMainBotPairing,
   cancelDriverPairing,
   shutdownAllSockets,
+  startConnectionWatchdog,
 } from "./session-manager.js";
 import {
   detectNeighborhood,
@@ -147,7 +148,7 @@ function persistGroupMetadataSoon() {
       }
       fs.writeFileSync(GROUP_METADATA_FILE, JSON.stringify(obj, null, 2), "utf8");
     } catch (e) {}
-  }, 2000);
+  }, 10000);
 }
 
 const recentUnlinkedPrompts = new Map(); // senderPhone -> timestamp (צינון הודעות קישור)
@@ -179,7 +180,7 @@ function persistAlertsCacheSoon() {
       for (const k of keys) obj[k] = sentAlertsCache.get(k);
       fs.writeFileSync(ALERTS_CACHE_FILE, JSON.stringify(obj), "utf8");
     } catch (e) {}
-  }, 3000);
+  }, 10000);
 }
 
 // מיקומי נהגים לשירות מרחק ורדאר בזמן אמת
@@ -1417,6 +1418,22 @@ export function handleMainBotStatusChange(status) {
 
 // טיפול בשינוי סטטוס סשן נהג - מסונן לחלוטין כנגד התעוררות שרת, שחזור סשנים והתחברויות חוזרות
 export async function handleDriverStatusChange(driverPhone, sessionObj) {
+  // הטלפון של הנהג הסיר את המכשיר המקושר (401): מודיעים לנהג פעם אחת איך להתחבר מחדש
+  if (sessionObj?.status === "logged_out" && !sessionObj.loggedOutNotified) {
+    sessionObj.loggedOutNotified = true;
+    recordEvent("system", `⚠️ הוואטסאפ של נהג ${driverPhone} הוסר מהמכשירים המקושרים בטלפון - נשלחה לו הודעה לחיבור מחדש`);
+    const mainSock = getMainBotSock();
+    if (mainSock && getMainBotStatus().connected) {
+      try {
+        await mainSock.sendMessage(getDestinationJid(driverPhone), {
+          text: "⚠️ *החיבור של הוואטסאפ שלך לבוט הוסר מהטלפון* (מכשירים מקושרים).\nבלי החיבור הבוט לא סורק עבורך נסיעות מהקבוצות.\n\nלחיבור מחדש שלח: *חבר אותי*",
+        });
+      } catch (e) {
+        console.error(`שליחת הודעת ניתוק לנהג ${driverPhone} נכשלה:`, e.message);
+      }
+    }
+    return;
+  }
   if (sessionObj?.status === "connected") {
     cancelPairingReminder(driverPhone);
 
@@ -2533,7 +2550,9 @@ startDashboard({
 
 // הפעלת הבוט הראשי ושחזור סשנים שמורים של נהגים
 async function boot() {
-  console.log("🚀 מאתחל מערכת ריבוי וואטסאפ (Multi-Session Baileys) וטלגרם (MTProto)...");
+  let botVersion = "?";
+  try { botVersion = JSON.parse(fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), "package.json"), "utf8")).version; } catch (e) {}
+  console.log(`🚀 גרסה ${botVersion} - מאתחל מערכת ריבוי וואטסאפ (Multi-Session Baileys) וטלגרם (MTProto)...`);
 
   // (הוסר: סריקה סינכרונית של כל קובצי המפתחות בעלייה - עם מאות אלפי קבצים היא תקעה את הדיסק
   //  ואת העלייה לדקות, והבוט נראה "מנותק" אחרי כל הפעלה מחדש)
@@ -2569,6 +2588,9 @@ async function boot() {
     onStatusChange: handleDriverStatusChange,
     onEvent: recordEvent,
   });
+
+  // שומר חיבורים: מחבר מחדש כל חשבון מקושר שנשאר מנותק בלי טיפול
+  startConnectionWatchdog();
 
   // 3. בוט הטלגרם הראשי (שליחת נסיעות לנהגים בפרטי) - לא תלוי בשום חיבור אחר
   startTelegramBot({ cleanPhone, isUserApproved, getUserSearch, recordEvent, formatIsraeliPhone })

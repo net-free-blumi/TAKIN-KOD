@@ -71,6 +71,25 @@ fs.writeFileSync(path.join(freshDir, "creds.json.bak"), JSON.stringify({ registe
 const fresh = await useSafeMultiFileAuthState(freshDir);
 check("תיקייה בלי creds.json מתחילה חיבור חדש (לא משחזרת חשבון שנותק)", !fresh.restoredFromBackup && !fresh.state.creds.me);
 
+// 9. שומר חיבורים: נהג מקושר שנשאר מנותק בלי טיפול מתחבר מחדש; 401 לא נוגעים
+const wd = sm.__wdTest;
+const mkPaired = (ph) => { const d = path.join(tmp, "auth", "sessions", ph); fs.mkdirSync(d, { recursive: true }); fs.writeFileSync(path.join(d, "creds.json"), JSON.stringify({ me: { id: ph + ":1@s.whatsapp.net" } })); };
+mkPaired("972500000020"); mkPaired("972500000021"); mkPaired("972500000022");
+wd.driverSessions.set("972500000020", { phone: "972500000020", status: "disconnected", sock: null });
+wd.driverSessions.set("972500000021", { phone: "972500000021", status: "logged_out", sock: null });
+wd.driverSessions.set("972500000022", { phone: "972500000022", status: "connecting", sock: null });
+wd.resetWatch();
+const t0 = Date.now();
+await sm.runConnectionWatchdog(t0);
+const r1 = await sm.runConnectionWatchdog(t0 + 30 * 1000);
+check("שומר חיבורים לא ממהר (30 שניות)", !r1.includes("972500000020"));
+const r2 = await sm.runConnectionWatchdog(t0 + 100 * 1000);
+check("נהג מנותק בלי טיפול מחובר מחדש אחרי 90 שניות", r2.includes("972500000020"));
+check("נהג שהטלפון הסיר (401) לא מחובר אוטומטית", !r2.includes("972500000021"));
+check("נהג במצב connecting לא נוגעים לפני 3 דקות", !r2.includes("972500000022"));
+const r3 = await sm.runConnectionWatchdog(t0 + 4 * 60 * 1000);
+check("נהג שנתקע ב-connecting מעל 3 דקות מחובר מחדש", r3.includes("972500000022"));
+
 await sm.shutdownAllSockets();
 fs.rmSync(tmp, { recursive: true, force: true });
 console.log(failed ? `\n❌ ${failed} בדיקות נכשלו` : "\n✅ כל בדיקות בטיחות החיבור עברו");

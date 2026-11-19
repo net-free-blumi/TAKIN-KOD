@@ -156,7 +156,7 @@ function persistSentStoreSoon() {
       }
       fs.writeFileSync(SENT_STORE_FILE, JSON.stringify(arr), "utf8");
     } catch (e) {}
-  }, 2000);
+  }, 15000); // מאגר גדול (אלפי הודעות) - כתיבה מרוכזת כדי לא להעמיס על הדיסק
 }
 
 function rememberSent(id, message) {
@@ -648,9 +648,109 @@ export async function resetMainBotAuth(callbacks = {}) {
   return mainBotStatus;
 }
 
+// ==========================================
+// שומר חיבורים (Watchdog)
+// כל דקה: חשבון מקושר (בוט / נהג) שלא מחובר ושאף מנגנון לא מטפל בו כרגע - מחובר מחדש אוטומטית.
+// מכסה מצבים שבהם סוקט "נתקע" בלי אירוע סגירה, ניסיונות שנעצרו (440), ונהג שלא נטען בעלייה.
+// לא נוגע ב-401 (הטלפון הסיר את המכשיר - נדרשת סריקה) ולא בתהליך צימוד / ביטול של המנהל.
+// ==========================================
+let lastDriverCallbacks = {};
+let watchdogTimer = null;
+const watchState = new Map(); // key -> { status, since }
+const STUCK_CONNECTING_MS = 3 * 60 * 1000;
+const STUCK_DISCONNECTED_MS = 90 * 1000;
+const CONFLICT_RETRY_MS = 10 * 60 * 1000;
+const NO_AUTO_STATES = new Set(["logged_out", "cancelled", "qr_ready", "pairing_ready", "pairing_required", "qr_expired"]);
+
+function statusAge(key, status, now) {
+  const w = watchState.get(key);
+  if (!w || w.status !== status) {
+    watchState.set(key, { status, since: now });
+    return 0;
+  }
+  return now - w.since;
+}
+
+function shouldRevive(status, age) {
+  if (NO_AUTO_STATES.has(status)) return false;
+  if (status === "conflict") return age >= CONFLICT_RETRY_MS;
+  if (status === "connecting") return age >= STUCK_CONNECTING_MS;
+  return age >= STUCK_DISCONNECTED_MS; // disconnected / idle / לא ידוע
+}
+
+export async function runConnectionWatchdog(now = Date.now()) {
+  const revived = [];
+
+  // בוט ראשי
+  const mainState = mainBotStatus.connected ? "connected" : mainBotStatus.state || "idle";
+  const mainAge = statusAge("main", mainState, now);
+  if (
+    !mainBotStatus.connected &&
+    !mainBotStarting &&
+    !mainReconnectTimer &&
+    isPairedOnDisk(BOT_AUTH_DIR) &&
+    shouldRevive(mainState, mainAge)
+  ) {
+    console.log(`🩺 [שומר חיבורים] הבוט הראשי במצב "${mainState}" כבר ${Math.round(mainAge / 1000)} שניות - מתחבר מחדש`);
+    mainConflictCount = 0;
+    watchState.delete("main");
+    revived.push("main");
+    startMainBot({}).catch((e) => console.error("שומר חיבורים - בוט ראשי:", e.message));
+  }
+
+  // נהגים בזיכרון
+  const seen = new Set();
+  for (const [phone, s] of driverSessions.entries()) {
+    seen.add(phone);
+    const age = statusAge(`d:${phone}`, s.status, now);
+    if (s.status === "connected") continue;
+    if (driverReconnectTimers.has(phone) || driverConnecting.has(phone)) continue;
+    if (!isPairedOnDisk(path.join(SESSIONS_DIR, phone))) continue;
+    if (!shouldRevive(s.status, age)) continue;
+    console.log(`🩺 [שומר חיבורים] נהג ${phone} במצב "${s.status}" כבר ${Math.round(age / 1000)} שניות - מתחבר מחדש`);
+    if (s.sock) killSock(s.sock);
+    s.sock = null;
+    s.status = "disconnected";
+    s.conflictCount = 0;
+    watchState.delete(`d:${phone}`);
+    revived.push(phone);
+    connectDriverSession(phone, lastDriverCallbacks).catch((e) => console.error(`שומר חיבורים - נהג ${phone}:`, e.message));
+  }
+
+  // נהגים מקושרים בדיסק שלא נטענו בכלל (למשל כשל בעלייה)
+  try {
+    for (const phone of fs.readdirSync(SESSIONS_DIR)) {
+      if (seen.has(phone) || driverConnecting.has(phone)) continue;
+      if (!isPairedOnDisk(path.join(SESSIONS_DIR, phone))) continue;
+      console.log(`🩺 [שומר חיבורים] נהג ${phone} מקושר אך לא נטען - מתחבר`);
+      revived.push(phone);
+      connectDriverSession(phone, lastDriverCallbacks).catch((e) => console.error(`שומר חיבורים - נהג ${phone}:`, e.message));
+    }
+  } catch (e) {}
+
+  return revived;
+}
+
+export function startConnectionWatchdog(intervalMs = 60000) {
+  if (watchdogTimer) return;
+  watchdogTimer = setInterval(() => {
+    runConnectionWatchdog().catch((e) => console.error("שומר חיבורים:", e.message));
+  }, intervalMs);
+  watchdogTimer.unref?.();
+  console.log("🩺 שומר חיבורים פעיל (בדיקה כל דקה)");
+}
+
+// לשימוש בבדיקות בלבד
+export const __wdTest = {
+  driverSessions,
+  setMainStatus: (patch) => Object.assign(mainBotStatus, patch),
+  resetWatch: () => watchState.clear(),
+};
+
 // כיבוי מסודר (pm2 restart / deploy) - נותן ל-creds להישמר לפני יציאה
 // detachSock משאיר את creds.update כדי שהשמירה האחרונה לא תאבד; אחר כך מחכים שכל הכתיבות יסתיימו
 export async function shutdownAllSockets(timeoutMs = 1200) {
+  if (watchdogTimer) { clearInterval(watchdogTimer); watchdogTimer = null; }
   if (mainReconnectTimer) { clearTimeout(mainReconnectTimer); mainReconnectTimer = null; }
   if (mainBotSock) { detachSock(mainBotSock); mainBotSock = null; }
   for (const [phone, sess] of driverSessions.entries()) {
@@ -688,6 +788,7 @@ export async function connectDriverSession(phone, callbacks = {}) {
 }
 
 async function createDriverSocket(driverPhone, callbacks = {}) {
+  if (callbacks && Object.keys(callbacks).length) lastDriverCallbacks = callbacks;
   const { onRideMessage, onReaction, onStatusChange, onEvent } = callbacks;
 
   // סגירת סוקט ישן של אותו נהג וביטול התחברות מחדש מתוזמנת
