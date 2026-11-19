@@ -302,7 +302,7 @@ function buildSocket(version, state) {
 // קבצי חיבור לעולם לא נמחקים אוטומטית. גם איפוס ידני רק מעביר אותם לארכיון (auth/_archive).
 // ==========================================
 const ARCHIVE_DIR = path.join(AUTH_BASE_DIR, "_archive");
-const ARCHIVE_KEEP = 20;
+const ARCHIVE_KEEP = 5; // ארכיונים של חיבורים שהוחלפו (כל אחד יכול לשקול מאות MB)
 
 function readCreds(dir) {
   // creds.json, ואם הוא פגום - הגיבוי של מצב מחובר (safe-auth-state ישחזר ממנו)

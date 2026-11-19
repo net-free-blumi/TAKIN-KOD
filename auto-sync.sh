@@ -20,11 +20,24 @@ fi
 
 echo "[$(date '+%F %T')] בודק עדכונים ב-$PWD..."
 
-# גיבוי בטיחות לתיקייה חדשה בכל פעם (לא משוחזר מעל קבצים חיים)
+# גיבוי בטיחות קטן לתיקייה חדשה בכל פעם (לא משוחזר מעל קבצים חיים).
+# מתיקיית auth מגבים רק את קובצי creds.json (כמה KB). העתקת כל התיקייה (מאות MB של מפתחות)
+# הציפה את הדיסק בכל עדכון, והבוט לא הצליח לקרוא את קובצי החיבור בזמן.
 SNAP="/tmp/wa-safe-bak/$(date +%Y%m%d-%H%M%S)"
 mkdir -p "$SNAP"
+touch "$SNAP/.creds-only"
 for f in $DATA_ITEMS; do
+  [ "$f" = "auth" ] && continue
   [ -e "$f" ] && cp -a "$f" "$SNAP/" 2>/dev/null
+done
+if [ -d auth ]; then
+  find auth -path auth/_archive -prune -o -name 'creds.json*' -type f -print 2>/dev/null | while read -r c; do
+    mkdir -p "$SNAP/$(dirname "$c")" && cp -a "$c" "$SNAP/$c"
+  done
+fi
+# גיבויים ישנים בפורמט הכבד (העתק מלא של auth) - עותקים בלבד, הקבצים החיים לא נוגעים
+for d in /tmp/wa-safe-bak/*/; do
+  [ -f "$d.creds-only" ] || rm -rf "$d"
 done
 ls -1dt /tmp/wa-safe-bak/*/ 2>/dev/null | tail -n +6 | xargs -r rm -rf
 
