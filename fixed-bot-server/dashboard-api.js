@@ -437,7 +437,7 @@ function getUnifiedStatus(requestedPhone, isAuthenticated = false) {
 function pm2(cmd) {
   return new Promise((resolve) => {
     const name = process.env.PM2_NAME || "wa-bot";
-    exec(`pm2 ${cmd} ${name}`, { timeout: 15000 }, (err, stdout, stderr) => {
+    exec(`pm2 ${cmd} ${name}${cmd === "restart" ? " --kill-timeout 8000" : ""}`, { timeout: 15000 }, (err, stdout, stderr) => {
       if (err) resolve({ ok: false, success: false, error: (stderr || err.message || "pm2 failed").trim() });
       else resolve({ ok: true, success: true, message: (stdout || `pm2 ${cmd} הצליח`).trim() });
     });

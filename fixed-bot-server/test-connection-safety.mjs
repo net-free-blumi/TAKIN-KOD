@@ -53,6 +53,17 @@ check("איפוס נהג העביר לארכיון", fs.readdirSync(archive).som
 const info = await sm.ensureDriverSessionForQr("0527654321", {}, { start: false });
 check("פולינג QR לנהג בלי לחיצה לא פותח סוקט", info.status === "idle" && !sm.getDriverSession("0527654321"));
 
+// 7. creds.json שנפגם (ריק) משוחזר מהגיבוי של מצב מחובר
+const { useSafeMultiFileAuthState } = await import(pathToUrl(path.join(tmp, "safe-auth-state.js")));
+const brokenDir = path.join(tmp, "auth", "sessions", "972500000009");
+fs.mkdirSync(brokenDir, { recursive: true });
+fs.writeFileSync(path.join(brokenDir, "creds.json"), "");
+fs.writeFileSync(path.join(brokenDir, "creds.json.bak"), JSON.stringify({ registered: true, me: { id: "972500000009:2@s.whatsapp.net" } }));
+check("חשבון עם creds פגום וגיבוי עדיין נחשב מקושר", sm.isPairedOnDisk(brokenDir));
+const restored = await useSafeMultiFileAuthState(brokenDir);
+await restored.flush();
+check("creds.json שוחזר מהגיבוי", restored.restoredFromBackup && JSON.parse(fs.readFileSync(path.join(brokenDir, "creds.json"), "utf8")).me.id.startsWith("972500000009"));
+
 await sm.shutdownAllSockets();
 fs.rmSync(tmp, { recursive: true, force: true });
 console.log(failed ? `\n❌ ${failed} בדיקות נכשלו` : "\n✅ כל בדיקות בטיחות החיבור עברו");

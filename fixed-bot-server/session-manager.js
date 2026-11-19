@@ -3,7 +3,6 @@
 // ובמקביל מחבר וואטסאפים נפרדים של נהגים לסריקת קבוצות הנסיעות שלהם ללא ניתוק הדדי!
 
 import makeWASocket, { 
-  useMultiFileAuthState, 
   DisconnectReason, 
   fetchLatestBaileysVersion,
   makeCacheableSignalKeyStore
@@ -14,6 +13,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { cleanPhone, loadUsersData, isLid, removeLidMapping, clearAllLidMappings, approveUser, isUserApproved } from "./users-manager.js";
 import { recordError } from "./dashboard-api.js";
+import { useSafeMultiFileAuthState, flushAllAuthStates } from "./safe-auth-state.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -160,7 +160,7 @@ export function cleanOldSenderKeyFiles() {
       const files = fs.readdirSync(dirPath);
       let cleanedCount = 0;
       for (const f of files) {
-        if (f === "creds.json") continue; // לעולם לא מוחקים creds.json!
+        if (f.startsWith("creds.json")) continue; // לעולם לא מוחקים creds.json / הגיבוי שלו!
         // לעולם לא מוחקים pre-key או session!
         if (f.startsWith("pre-key-") || f.startsWith("session-")) continue;
 
@@ -287,13 +287,16 @@ const ARCHIVE_DIR = path.join(AUTH_BASE_DIR, "_archive");
 const ARCHIVE_KEEP = 20;
 
 function readCreds(dir) {
-  try {
-    const p = path.join(dir, "creds.json");
-    if (!fs.existsSync(p)) return null;
-    return JSON.parse(fs.readFileSync(p, "utf8"));
-  } catch (e) {
-    return null;
+  // creds.json, ואם הוא פגום - הגיבוי של מצב מחובר (safe-auth-state ישחזר ממנו)
+  for (const name of ["creds.json", "creds.json.bak"]) {
+    try {
+      const p = path.join(dir, name);
+      if (!fs.existsSync(p)) continue;
+      const c = JSON.parse(fs.readFileSync(p, "utf8"));
+      if (c) return c;
+    } catch (e) {}
   }
+  return null;
 }
 
 // חשבון שכבר קושר לוואטסאפ (QR מסמן me.id, קוד צימוד מסמן registered)
@@ -401,7 +404,7 @@ export async function startMainBot(callbacks = {}, options = {}) {
   try {
     stopMainSocket();
 
-    const { state, saveCreds } = await useMultiFileAuthState(BOT_AUTH_DIR);
+    const { state, saveCreds, backupCreds } = await useSafeMultiFileAuthState(BOT_AUTH_DIR);
     let version;
     try {
       const v = await fetchLatestBaileysVersion();
@@ -449,6 +452,7 @@ export async function startMainBot(callbacks = {}, options = {}) {
           lastDisconnectReason: "",
         });
         onEvent?.("system", `הבוט הראשי (${botPhone}) מחובר בהצלחה`);
+        setTimeout(() => backupCreds().catch(() => {}), 3000);
       }
 
       if (connection === "close") {
@@ -633,14 +637,19 @@ export async function resetMainBotAuth(callbacks = {}) {
 }
 
 // כיבוי מסודר (pm2 restart / deploy) - נותן ל-creds להישמר לפני יציאה
-export async function shutdownAllSockets() {
-  stopMainSocket();
+// detachSock משאיר את creds.update כדי שהשמירה האחרונה לא תאבד; אחר כך מחכים שכל הכתיבות יסתיימו
+export async function shutdownAllSockets(timeoutMs = 1200) {
+  if (mainReconnectTimer) { clearTimeout(mainReconnectTimer); mainReconnectTimer = null; }
+  if (mainBotSock) { detachSock(mainBotSock); mainBotSock = null; }
   for (const [phone, sess] of driverSessions.entries()) {
     clearDriverReconnect(phone);
-    if (sess?.sock) killSock(sess.sock);
+    if (sess?.sock) { detachSock(sess.sock); sess.sock = null; }
   }
-  await new Promise((r) => setTimeout(r, 1500));
+  await new Promise((r) => setTimeout(r, 150));
+  await flushAllAuthStates(timeoutMs);
 }
+
+export { flushAllAuthStates };
 
 // ==========================================
 // 2. ניהול סשנים של נהגים (Driver WhatsApp Sessions)
@@ -688,7 +697,7 @@ async function createDriverSocket(driverPhone, callbacks = {}) {
     } catch (e) {}
   }
 
-  const { state, saveCreds } = await useMultiFileAuthState(driverAuthDir);
+  const { state, saveCreds, backupCreds } = await useSafeMultiFileAuthState(driverAuthDir);
   let version;
   try {
     const v = await fetchLatestBaileysVersion();
@@ -743,6 +752,7 @@ async function createDriverSocket(driverPhone, callbacks = {}) {
       sessionObj.connectedAt = new Date().toISOString();
       onStatusChange?.(driverPhone, sessionObj);
       onEvent?.("system", `וואטסאפ נהג ${driverPhone} חובר בהצלחה`);
+      setTimeout(() => backupCreds().catch(() => {}), 3000);
     }
 
     if (connection === "close") {

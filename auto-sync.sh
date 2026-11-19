@@ -43,6 +43,15 @@ if [ "$BEFORE" = "$AFTER" ] && [ "${FORCE:-0}" != "1" ]; then
   exit 0
 fi
 
+# האם השתנה קוד שהבוט מריץ? שינויים באתר בלבד לא מצדיקים הפעלה מחדש
+if [ "$BEFORE" = "none" ]; then
+  BOT_CHANGED=1
+elif git diff --name-only "$BEFORE" "$AFTER" | grep -qE '^(fixed-bot-server/|auto-sync\.sh$)'; then
+  BOT_CHANGED=1
+else
+  BOT_CHANGED=0
+fi
+
 LOCK_BEFORE="$(git show "$BEFORE:fixed-bot-server/package-lock.json" 2>/dev/null | md5sum)"
 git reset -q --hard "origin/$BRANCH" || { echo "❌ git reset נכשל"; exit 1; }
 LOCK_AFTER="$(md5sum < fixed-bot-server/package-lock.json 2>/dev/null)"
@@ -67,7 +76,14 @@ if [ "$LOCK_BEFORE" != "$LOCK_AFTER" ] || [ ! -d node_modules ]; then
   npm install --omit=dev --no-audit --no-fund || echo "⚠️ npm install נכשל"
 fi
 
+if [ "$BOT_CHANGED" != "1" ] && [ "${FORCE:-0}" != "1" ]; then
+  echo "✅ עודכן ($BEFORE -> $AFTER). רק קבצי אתר השתנו - הבוט לא הופעל מחדש, החיבורים לא נגעו."
+  exit 0
+fi
+
+# הפעלה מחדש מסודרת: הבוט מקבל SIGINT, סוגר סוקטים ומסיים לשמור את קובצי החיבור.
+# kill-timeout ארוך כדי ש-pm2 לא יהרוג אותו באמצע שמירה.
 echo "מפעיל מחדש את הבוט ($BEFORE -> $AFTER)..."
 PM2_NAME="${PM2_NAME:-wa-bot}"
-pm2 restart "$PM2_NAME" --update-env || pm2 restart wa-rides-bot --update-env || pm2 restart all
+pm2 restart "$PM2_NAME" --update-env --kill-timeout 8000   || pm2 restart "$PM2_NAME" --update-env   || pm2 restart wa-rides-bot --update-env   || pm2 restart all
 echo "✅ עדכון הושלם"
