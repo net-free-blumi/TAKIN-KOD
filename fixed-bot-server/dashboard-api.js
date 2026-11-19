@@ -1,7 +1,7 @@
 import express from "express";
 import os from "os";
 import crypto from "crypto";
-import { exec } from "node:child_process";
+import { exec, spawn } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -82,6 +82,63 @@ function newToken() {
 const failedLogins = new Map(); // ip -> { count: number, lockedUntil: number }
 const apiRateLimits = new Map(); // ip -> { count: number, resetAt: number }
 let lastWebhookDeployAt = 0;
+
+// ==========================================
+// עדכון אוטומטי מ-GitHub
+// מריץ את auto-sync.sh כתהליך נפרד (detached) כדי ש-pm2 restart לא יהרוג אותו באמצע.
+// ==========================================
+const SYNC_LOG = "/tmp/wa-auto-sync.log";
+let autoSyncRunning = false;
+
+function findSyncScript() {
+  const candidates = [path.join(process.cwd(), "auto-sync.sh"), path.join(__dirname, "auto-sync.sh"), path.join(process.cwd(), "fixed-bot-server", "auto-sync.sh")];
+  return candidates.find((c) => existsSync(c)) || null;
+}
+
+export function runAutoSync(source = "manual") {
+  if (process.platform === "win32") return { ok: false, error: "עדכון אוטומטי נתמך רק בשרת לינוקס" };
+  if (autoSyncRunning) return { ok: false, error: "סנכרון כבר רץ" };
+  const script = findSyncScript();
+  if (!script) {
+    recordEvent("system", "⚠️ auto-sync.sh לא נמצא בשרת - לא ניתן לעדכן מ-GitHub");
+    return { ok: false, error: "auto-sync.sh לא נמצא" };
+  }
+  autoSyncRunning = true;
+  setTimeout(() => { autoSyncRunning = false; }, 5 * 60 * 1000);
+  recordEvent("system", `📥 מתחיל עדכון מ-GitHub (${source})`);
+  const child = spawn("bash", ["-c", `chmod +x "${script}"; FORCE=${source === "manual" ? 1 : 0} "${script}" >> ${SYNC_LOG} 2>&1`], {
+    cwd: path.dirname(script),
+    detached: true,
+    stdio: "ignore",
+    env: { ...process.env, PM2_NAME: process.env.PM2_NAME || "wa-bot" },
+  });
+  child.on("exit", () => { autoSyncRunning = false; });
+  child.unref();
+  return { ok: true };
+}
+
+// בדיקה תקופתית: אם ב-GitHub יש קומיט חדש ב-main - מעדכן ומפעיל מחדש.
+// כיבוי: AUTO_UPDATE=0 ב-.env. מרווח: AUTO_UPDATE_INTERVAL_SEC (ברירת מחדל 120).
+function startAutoUpdatePoller() {
+  if (process.platform === "win32" || process.env.AUTO_UPDATE === "0") return;
+  const everyMs = Math.max(60, Number(process.env.AUTO_UPDATE_INTERVAL_SEC) || 120) * 1000;
+  const branch = process.env.BRANCH || "main";
+  const check = () => {
+    if (autoSyncRunning) return;
+    exec("git rev-parse HEAD", { cwd: process.cwd(), timeout: 10000 }, (errHead, head) => {
+      const local = errHead ? "" : String(head).trim();
+      exec(`git ls-remote ${process.env.REPO_URL || "https://github.com/net-free-blumi/TAKIN-KOD.git"} refs/heads/${branch}`, { cwd: process.cwd(), timeout: 20000 }, (errRemote, out) => {
+        const remote = errRemote ? "" : String(out).split(/\s/)[0];
+        if (!remote && local) return; // אין רשת / אין גישה - מנסים בפעם הבאה
+        if (remote && local === remote) return;
+        runAutoSync("auto");
+      });
+    });
+  };
+  setTimeout(check, 60 * 1000);
+  setInterval(check, everyMs);
+  console.log(`🔄 עדכון אוטומטי מ-GitHub פעיל (בדיקה כל ${everyMs / 1000} שניות)`);
+}
 
 function getClientIp(req) {
   const forwarded = req.headers["x-forwarded-for"];
@@ -668,6 +725,7 @@ function getAnalyticsPayload() {
 }
 
 export function startDashboard(runtime) {
+  try { startAutoUpdatePoller(); } catch (e) { console.error("auto-update poller:", e.message); }
   ctx = runtime;
   if (listenStarted) return;
   listenStarted = true;
@@ -775,7 +833,7 @@ export function startDashboard(runtime) {
   app.post("/api/pairing/request", requireAuth, async (req, res) => {
     const phone = req.body?.phone;
     const isBot = Boolean(req.body?.isBot);
-    const forceReset = Boolean(req.body?.forceReset);
+    const forceReset = !isBot && Boolean(req.body?.forceReset);
     try {
       if (!ctx?.requestPairingCodeForPhone) {
         return res.status(400).json({ ok: false, error: "מנוע הבוט אינו מחובר כעת" });
@@ -792,9 +850,12 @@ export function startDashboard(runtime) {
   const handleDriverQrRequest = async (req, res) => {
     const phone = req.params?.phone || req.query.phone;
     const isBot = req.query.isBot === "true" || req.query.target === "bot" || phone === "bot" || req.body?.isBot === true;
+    // סוקט צימוד נפתח רק בלחיצה מפורשת (force=true). פולינג רגיל רק קורא סטטוס.
+    const start = req.query.force === "true" || req.query.start === "true";
 
     try {
       if (isBot) {
+        if (start && ctx?.startMainBotQr) await ctx.startMainBotQr();
         const summary = ctx?.getAllSessions ? ctx.getAllSessions() : {};
         const isConn = Boolean(summary.bot?.connected);
         const qr = summary.bot?.qr || null;
@@ -811,8 +872,9 @@ export function startDashboard(runtime) {
           phone: summary.bot?.phone || "bot",
           qr,
           qrImage,
-          status: isConn ? "connected" : (qr ? "qr_ready" : "connecting"),
+          status: isConn ? "connected" : (summary.bot?.state || (qr ? "qr_ready" : "connecting")),
           connected: isConn,
+          lastDisconnectReason: summary.bot?.lastDisconnectReason || "",
           qrUpdatedAt: summary.bot?.qrTimestamp || Date.now(),
         });
       }
@@ -823,7 +885,7 @@ export function startDashboard(runtime) {
 
       const cleanP = cleanPhone(phone);
       if (ctx?.ensureDriverSessionForQr) {
-        const sessionInfo = await ctx.ensureDriverSessionForQr(cleanP);
+        const sessionInfo = await ctx.ensureDriverSessionForQr(cleanP, { start });
         const isConn = sessionInfo.status === "connected" || Boolean(sessionInfo.registered);
         return res.json({
           ok: true,
@@ -856,6 +918,33 @@ export function startDashboard(runtime) {
   };
 
   app.get("/api/driver/qr/:phone", requireAuth, handleDriverQrRequest);
+
+  // ביטול צימוד: עוצר ברקודים / קודי צימוד. לא מנתק חשבון מחובר ולא מוחק קבצים.
+  app.post("/api/pairing/cancel", requireAuth, (req, res) => {
+    const isBot = Boolean(req.body?.isBot) || req.body?.phone === "bot";
+    const phone = req.body?.phone;
+    try {
+      if (!ctx?.cancelPairing) return res.status(400).json({ ok: false, error: "מנוע הבוט אינו מחובר כעת" });
+      const result = ctx.cancelPairing(phone, isBot);
+      recordEvent("system", `ביטול צימוד עבור ${isBot ? "הבוט הראשי" : phone}: ${result.message}`);
+      res.json({ ok: true, ...result });
+    } catch (err) {
+      res.status(500).json({ ok: false, error: err.message });
+    }
+  });
+
+  // "בדיקת חיבור" - מחזיר את הסטטוס האמיתי מוואטסאפ (לא מזייף מצב)
+  app.post("/api/bot/connect-test", requireAuth, (_req, res) => {
+    const summary = ctx?.getAllSessions ? ctx.getAllSessions() : {};
+    const connected = Boolean(summary.bot?.connected);
+    res.json({
+      ok: true,
+      success: true,
+      connected,
+      state: summary.bot?.state,
+      message: connected ? "הבוט מחובר לוואטסאפ" : `הבוט אינו מחובר (${summary.bot?.state || "לא ידוע"})`,
+    });
+  });
   app.get("/api/pairing/qr", requireAuth, handleDriverQrRequest);
 
   // איפוס מלא של כל סשני הנהגים, מחיקת כל הקוקיז ואיפוס כל מיפויי ה-LID מהשרת (ללא פגיעה בבוט הראשי)
@@ -1307,7 +1396,7 @@ export function startDashboard(runtime) {
     recordEvent("system", "בקשת הפעלה מחדש מהאתר");
     const result = await pm2("restart");
     if (!result.ok) {
-      setTimeout(() => process.exit(0), 400);
+      setTimeout(() => process.kill(process.pid, "SIGTERM"), 400);
       return res.json({ ok: true, success: true, message: "התהליך ייסגר ו-PM2 יעלה אותו מחדש" });
     }
     res.json(result);
@@ -1362,33 +1451,7 @@ export function startDashboard(runtime) {
     recordEvent("system", `📥 התקבלה בקשת סנכרון מאושרת מ-GitHub Webhook (IP: ${ip})`);
     res.json({ ok: true, message: "הסנכרון החל ברקע מ-GitHub בצורה מאובטחת" });
 
-    const syncCmd = `(
-      if [ -f "./auto-sync.sh" ]; then
-        chmod +x ./auto-sync.sh && ./auto-sync.sh;
-      elif [ -f "fixed-bot-server/auto-sync.sh" ]; then
-        chmod +x fixed-bot-server/auto-sync.sh && ./fixed-bot-server/auto-sync.sh;
-      else
-        mkdir -p /tmp/wa-safe-bak &&
-        for f in users.json users.backup.json searches.json lid-map.json onboarding-alerts.json dashboard.secret auth; do
-          [ -e "$f" ] && cp -rf "$f" /tmp/wa-safe-bak/ || true;
-        done &&
-        (git pull origin main 2>/dev/null || curl -sSL https://nsiot.vercel.app/fixed-bot-server-v3.0.tar.gz | tar -xz --strip-components=1 2>/dev/null || true) &&
-        for f in users.json users.backup.json searches.json lid-map.json onboarding-alerts.json dashboard.secret auth; do
-          [ -e "/tmp/wa-safe-bak/$f" ] && cp -rf "/tmp/wa-safe-bak/$f" ./ || true;
-        done &&
-        pm2 restart all || pm2 restart wa-rides-bot || pm2 restart index.js
-      fi
-    )`;
-
-    exec(syncCmd, { cwd: process.cwd() }, (err, stdout) => {
-      if (err) {
-        recordError("github_sync_error", err);
-        console.error("❌ שגיאה בסנכרון מ-GitHub:", err.message);
-      } else {
-        recordEvent("system", "✅ סנכרון אוטומטי מ-GitHub הושלם והשרת הופעל מחדש בהצלחה!");
-        console.log("✅ סנכרון אוטומטי מ-GitHub הושלם:", stdout);
-      }
-    });
+    runAutoSync("webhook");
   });
 
   // יומן שגיאות ובאגים ייעודי (Live Error Tracker API) - מוגן באבטחה מלאה

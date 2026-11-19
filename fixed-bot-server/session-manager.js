@@ -34,7 +34,7 @@ try {
   if (fs.existsSync(oldCreds) && !fs.existsSync(newCreds)) {
     const files = fs.readdirSync(AUTH_BASE_DIR);
     for (const f of files) {
-      if (f !== "bot" && f !== "sessions") {
+      if (f !== "bot" && f !== "sessions" && f !== "_archive" && f !== "sent-messages.json") {
         const src = path.join(AUTH_BASE_DIR, f);
         const dest = path.join(BOT_AUTH_DIR, f);
         try {
@@ -279,10 +279,74 @@ function buildSocket(version, state) {
   return sock;
 }
 
+// ==========================================
+// עזרי אחסון בטוח של קובצי אימות
+// קבצי חיבור לעולם לא נמחקים אוטומטית. גם איפוס ידני רק מעביר אותם לארכיון (auth/_archive).
+// ==========================================
+const ARCHIVE_DIR = path.join(AUTH_BASE_DIR, "_archive");
+const ARCHIVE_KEEP = 20;
+
+function readCreds(dir) {
+  try {
+    const p = path.join(dir, "creds.json");
+    if (!fs.existsSync(p)) return null;
+    return JSON.parse(fs.readFileSync(p, "utf8"));
+  } catch (e) {
+    return null;
+  }
+}
+
+// חשבון שכבר קושר לוואטסאפ (QR מסמן me.id, קוד צימוד מסמן registered)
+function isPairedCreds(creds) {
+  return Boolean(creds && (creds.registered || creds.me?.id));
+}
+
+export function isPairedOnDisk(dir) {
+  return isPairedCreds(readCreds(dir));
+}
+
+function archiveAuthDir(dir, label) {
+  try {
+    if (!fs.existsSync(dir)) return null;
+    if (fs.readdirSync(dir).length === 0) return null;
+    fs.mkdirSync(ARCHIVE_DIR, { recursive: true });
+    const dest = path.join(ARCHIVE_DIR, `${label}-${new Date().toISOString().replace(/[:.]/g, "-")}`);
+    fs.renameSync(dir, dest);
+    fs.mkdirSync(dir, { recursive: true });
+    console.log(`📦 קובצי האימות של ${label} הועברו לארכיון: ${dest}`);
+    try {
+      const all = fs.readdirSync(ARCHIVE_DIR).sort();
+      while (all.length > ARCHIVE_KEEP) {
+        fs.rmSync(path.join(ARCHIVE_DIR, all.shift()), { recursive: true, force: true });
+      }
+    } catch (e) {}
+    return dest;
+  } catch (e) {
+    console.error(`שגיאה בהעברת ${dir} לארכיון:`, e.message);
+    return null;
+  }
+}
+
+function waitFor(predicate, timeoutMs, stepMs = 300) {
+  return new Promise((resolve) => {
+    const started = Date.now();
+    const tick = () => {
+      if (predicate()) return resolve(true);
+      if (Date.now() - started >= timeoutMs) return resolve(false);
+      setTimeout(tick, stepMs);
+    };
+    tick();
+  });
+}
+
 // מצב הבוט הראשי
+// state: idle | connecting | qr_ready | pairing_ready | connected | qr_expired | logged_out | conflict | cancelled
 let mainBotSock = null;
+let mainCallbacks = {};
+let mainConflictCount = 0;
 let mainBotStatus = {
   phone: "972555081810",
+  state: "idle",
   connected: false,
   registered: false,
   pairingCode: null,
@@ -291,29 +355,51 @@ let mainBotStatus = {
   lastDisconnectReason: "",
 };
 
+function setMainState(state, extra = {}) {
+  Object.assign(mainBotStatus, { state }, extra);
+  try { mainCallbacks.onStatusChange?.(mainBotStatus); } catch (e) {}
+}
+
+function stopMainSocket() {
+  if (mainReconnectTimer) {
+    clearTimeout(mainReconnectTimer);
+    mainReconnectTimer = null;
+  }
+  if (mainBotSock) {
+    killSock(mainBotSock);
+    mainBotSock = null;
+  }
+}
+
 // ==========================================
-// 1. הפעלת הבוט הראשי (Main Bot - 0555081810)
+// 1. הפעלת הבוט הראשי (Main Bot)
+// options.forPairing = true רק כשהמנהל ביקש במפורש QR / קוד צימוד.
+// בלי בקשה מפורשת, בוט שלא קושר מעולם לא מתחבר ולא מייצר ברקודים.
 // ==========================================
-export async function startMainBot(callbacks = {}) {
-  const { onMessage, onReaction, onStatusChange, onEvent } = callbacks;
+export async function startMainBot(callbacks = {}, options = {}) {
+  if (callbacks && Object.keys(callbacks).length) mainCallbacks = callbacks;
+  const { onMessage, onReaction, onEvent } = mainCallbacks;
+  const forPairing = Boolean(options.forPairing);
 
   // הגנה מפני הפעלה כפולה (שני סוקטים על אותם מפתחות = Bad MAC)
   if (mainBotStarting) return mainBotSock;
+
+  const usersData = loadUsersData();
+  const botPhone = cleanPhone(process.env.BOT_PHONE || usersData.botPhone || "972555081810");
+  mainBotStatus.phone = botPhone;
+
+  const paired = isPairedOnDisk(BOT_AUTH_DIR);
+  mainBotStatus.registered = paired;
+  if (!paired && !forPairing) {
+    stopMainSocket();
+    setMainState("idle", { connected: false, qr: null, qrTimestamp: null, pairingCode: null });
+    console.log("ℹ️ הבוט הראשי עדיין לא מקושר - ממתין לבקשת QR / קוד צימוד מהאתר (לא מייצר ברקודים לבד).");
+    return null;
+  }
+
   mainBotStarting = true;
-
   try {
-    if (mainReconnectTimer) {
-      clearTimeout(mainReconnectTimer);
-      mainReconnectTimer = null;
-    }
-    if (mainBotSock) {
-      killSock(mainBotSock);
-      mainBotSock = null;
-    }
-
-    const usersData = loadUsersData();
-    const botPhone = cleanPhone(process.env.BOT_PHONE || usersData.botPhone || "972555081810");
-    mainBotStatus.phone = botPhone;
+    stopMainSocket();
 
     const { state, saveCreds } = await useMultiFileAuthState(BOT_AUTH_DIR);
     let version;
@@ -325,15 +411,14 @@ export async function startMainBot(callbacks = {}) {
     }
 
     const sock = buildSocket(version, state);
-
     mainBotSock = sock;
-    mainBotStatus.registered = Boolean(sock.authState.creds.registered);
+    setMainState("connecting", { connected: false });
 
     const scheduleReconnect = (delay) => {
       if (mainReconnectTimer) clearTimeout(mainReconnectTimer);
       mainReconnectTimer = setTimeout(() => {
         mainReconnectTimer = null;
-        startMainBot(callbacks).catch((err) => {
+        startMainBot({}, { forPairing }).catch((err) => {
           console.error("שגיאה בחיבור מחדש של הבוט הראשי:", err.message);
           mainRetryCount++;
           scheduleReconnect(backoffDelay(mainRetryCount));
@@ -344,70 +429,89 @@ export async function startMainBot(callbacks = {}) {
     sock.ev.on("creds.update", saveCreds);
 
     sock.ev.on("connection.update", ({ connection, lastDisconnect, qr }) => {
+      if (mainBotSock !== sock) return;
+
       if (qr) {
-        mainBotStatus.qr = qr;
-        mainBotStatus.qrTimestamp = Date.now();
-        onStatusChange?.(mainBotStatus);
-        onEvent?.("system", `הופק קוד QR חדש לוואטסאפ ווב של הבוט הראשי (${botPhone})`);
+        setMainState(mainBotStatus.pairingCode ? "pairing_ready" : "qr_ready", { qr, qrTimestamp: Date.now() });
+        onEvent?.("system", `הופק קוד QR לוואטסאפ ווב של הבוט הראשי (${botPhone})`);
       }
 
       if (connection === "open") {
         console.log(`✅ הבוט הראשי (${botPhone}) מחובר ופעיל בהצלחה לוואטסאפ!`);
         mainRetryCount = 0;
-        mainBotStatus.connected = true;
-        mainBotStatus.registered = true;
-        mainBotStatus.pairingCode = null;
-        mainBotStatus.qr = null;
-        mainBotStatus.qrTimestamp = null;
-        mainBotStatus.lastDisconnectReason = "";
-        onStatusChange?.(mainBotStatus);
+        mainConflictCount = 0;
+        setMainState("connected", {
+          connected: true,
+          registered: true,
+          pairingCode: null,
+          qr: null,
+          qrTimestamp: null,
+          lastDisconnectReason: "",
+        });
         onEvent?.("system", `הבוט הראשי (${botPhone}) מחובר בהצלחה`);
       }
 
       if (connection === "close") {
-        // סוקט ישן שכבר הוחלף - מתעלמים (מונע חיבורים כפולים)
-        if (mainBotSock !== sock) return;
-
         const code = lastDisconnect?.error?.output?.statusCode;
-        mainBotStatus.connected = false;
-        mainBotStatus.lastDisconnectReason = String(code || lastDisconnect?.error?.message || "closed");
-        onStatusChange?.(mainBotStatus);
-
+        const reason = String(code || lastDisconnect?.error?.message || "closed");
+        const nowPaired = isPairedCreds(sock.authState?.creds);
         detachSock(sock);
+        mainBotStatus.connected = false;
+        mainBotStatus.lastDisconnectReason = reason;
 
-        // קוד 515 (restartRequired) הוא חלק אינטגרלי מהשלמת לחיצת היד בוואטסאפ בעת סריקת QR
+        // 515 = חלק רגיל מהשלמת הצימוד. חובה להתחבר מחדש מיד.
         if (code === DisconnectReason.restartRequired || code === 515) {
-          console.log(`🔄 [הבוט הראשי] קוד 515 restartRequired התקבל (השלמת צימוד WhatsApp Web) - מתחבר מחדש מיידית...`);
+          console.log("🔄 [הבוט הראשי] 515 restartRequired - משלים צימוד ומתחבר מחדש...");
           mainRetryCount = 0;
-          scheduleReconnect(1000);
+          setMainState("connecting");
+          scheduleReconnect(800);
           return;
         }
 
+        // 401 = הטלפון ניתק את המכשיר המקושר. ניסיון חוזר עם אותם מפתחות רק יוצר לולאה.
+        // הקבצים נשמרים; המנהל מחבר מחדש מהאתר.
         if (code === DisconnectReason.loggedOut) {
-          console.log("⚠️ הבוט הראשי נותק (401 Logged Out). שומרים על קובצי האימות ומנסים חיבור מחדש...");
-          mainRetryCount++;
-          scheduleReconnect(backoffDelay(mainRetryCount));
+          console.log("⚠️ [הבוט הראשי] 401 Logged Out - המכשיר נותק מהטלפון. הקבצים נשמרו, נדרש חיבור מחדש מהאתר.");
+          mainBotSock = null;
+          setMainState("logged_out", { registered: false, qr: null, pairingCode: null });
+          onEvent?.("system", "הבוט הראשי נותק מהטלפון (401). יש לחבר מחדש מהאתר.");
           return;
         }
 
-        // 440 = חיבור הוחלף ע"י סוקט/תהליך אחר על אותו חשבון. חיבור מחדש אוטומטי יוצר לולאת "בעיטות" ו-Bad MAC
+        // בזמן צימוד שלא הושלם: הברקודים נגמרו (408) - עוצרים ולא מייצרים חדשים לבד
+        if (!nowPaired) {
+          console.log(`⏹️ [הבוט הראשי] תהליך הצימוד הסתיים ללא סריקה (קוד: ${reason}). לא מייצר ברקודים נוספים.`);
+          mainBotSock = null;
+          setMainState("qr_expired", { qr: null, qrTimestamp: null, pairingCode: null });
+          return;
+        }
+
+        // 440 = תהליך אחר תפס את החשבון. כמה ניסיונות מרווחים ואז עצירה.
         if (code === DisconnectReason.connectionReplaced || code === 440) {
-          console.log("⚠️ [הבוט הראשי] קוד 440 connectionReplaced - חיבור אחר תפס את החשבון. לא מתחבר מחדש אוטומטית. בדוק שאין תהליך כפול (pm2 list) ואז pm2 restart wa-bot.");
+          mainConflictCount++;
+          if (mainConflictCount > 3) {
+            console.log("⚠️ [הבוט הראשי] 440 חוזר - תהליך אחר משתמש באותו חשבון. בדוק 'pm2 list' שאין שני בוטים.");
+            mainBotSock = null;
+            setMainState("conflict");
+            return;
+          }
+          setMainState("connecting");
+          scheduleReconnect(20000 * mainConflictCount);
           return;
         }
 
+        // כל שאר הניתוקים (רשת, timeout, 428, 500...) - חיבור מחדש עם backoff, ללא הגבלה
         mainRetryCount++;
         const delay = backoffDelay(mainRetryCount);
-        console.log(`🔄 [הבוט הראשי] חיבור נסגר (קוד: ${code || "לא ידוע"}). ניסיון ${mainRetryCount} - מתחבר מחדש בעוד ${Math.round(delay / 1000)} שניות...`);
+        console.log(`🔄 [הבוט הראשי] חיבור נסגר (קוד: ${reason}). ניסיון ${mainRetryCount} בעוד ${Math.round(delay / 1000)} שניות...`);
+        setMainState("connecting");
         scheduleReconnect(delay);
       }
     });
 
     sock.ev.on("messages.upsert", async (upsert) => {
       try {
-        if (onMessage) {
-          await onMessage(sock, upsert, { isMainBot: true, botPhone });
-        }
+        if (onMessage) await onMessage(sock, upsert, { isMainBot: true, botPhone });
       } catch (err) {
         console.error("שגיאה בטיפול בהודעה (בוט ראשי):", err?.message || err);
         try { recordError("main_message_handler", err, {}); } catch (e) {}
@@ -416,9 +520,7 @@ export async function startMainBot(callbacks = {}) {
 
     sock.ev.on("messages.reaction", async (reactions) => {
       try {
-        if (onReaction) {
-          await onReaction(sock, reactions, { isMainBot: true, botPhone });
-        }
+        if (onReaction) await onReaction(sock, reactions, { isMainBot: true, botPhone });
       } catch (err) {
         console.error("שגיאה בטיפול בריאקציה (בוט ראשי):", err?.message || err);
       }
@@ -438,72 +540,106 @@ export function getMainBotStatus() {
   return mainBotStatus;
 }
 
-export async function requestMainBotPairingCode(customPhone, callbacks = {}, options = {}) {
+// הכנת סוקט לצימוד לפי בקשה מפורשת של המנהל
+async function prepareMainForPairing(callbacks) {
+  if (mainBotStatus.connected) {
+    throw new Error("הבוט הראשי כבר מחובר לוואטסאפ. אין צורך בצימוד חדש.");
+  }
+  const paired = isPairedOnDisk(BOT_AUTH_DIR);
+  if (paired && mainBotStatus.state !== "logged_out") {
+    // החשבון מקושר ורק מתחבר מחדש - לא דורסים אותו
+    if (!mainBotSock) await startMainBot(callbacks);
+    throw new Error("הבוט כבר מקושר ומתחבר מחדש. אם ניתקת אותו מהטלפון, לחץ 'איפוס חיבור נקי' ואז חבר שוב.");
+  }
+  if (paired) archiveAuthDir(BOT_AUTH_DIR, "bot");
+  stopMainSocket();
+  mainBotStatus.pairingCode = null;
+  mainBotStatus.qr = null;
+  await startMainBot(callbacks, { forPairing: true });
+  if (!mainBotSock) throw new Error("לא ניתן לאתחל את חיבור הבוט הראשי. נסה שוב בעוד רגע.");
+}
+
+// הצגת QR - רק כשהמנהל לחץ על "הצג ברקוד"
+export async function startMainBotQr(callbacks = {}) {
+  if (mainBotStatus.connected) return mainBotStatus;
+  if (mainBotSock && ["qr_ready", "pairing_ready", "connecting"].includes(mainBotStatus.state)) {
+    return mainBotStatus;
+  }
+  try {
+    await prepareMainForPairing(callbacks);
+  } catch (e) {
+    mainBotStatus.lastDisconnectReason = e.message;
+  }
+  return mainBotStatus;
+}
+
+export async function requestMainBotPairingCode(customPhone, callbacks = {}) {
   const usersData = loadUsersData();
   const phone = cleanPhone(customPhone || usersData.botPhone || mainBotStatus.phone || "972555081810");
+  if (!phone || phone.length < 9 || phone.length > 13) {
+    throw new Error("מספר טלפון לא תקין. יש להזין מספר בפורמט 05XXXXXXXX");
+  }
   mainBotStatus.phone = phone;
 
-  if (options.forceReset) {
-    if (fs.existsSync(BOT_AUTH_DIR)) {
-      try {
-        fs.rmSync(BOT_AUTH_DIR, { recursive: true, force: true });
-        fs.mkdirSync(BOT_AUTH_DIR, { recursive: true });
-      } catch (e) {}
-    }
-  }
+  await prepareMainForPairing(callbacks);
 
-  // אם הבוט הראשי אינו מאותחל או שהסוקט נסגר - מאתחלים אותו אוטומטית במקום לזרוק שגיאה
-  if (!mainBotSock) {
-    console.log(`🔄 [הבוט הראשי] מאתחל סוקט Baileys חדש עבור הפקת קוד צימוד למספר: ${phone}...`);
-    await startMainBot(callbacks);
-    // המתנה לייצוב חיבור ה-WebSocket של Baileys
-    await new Promise((r) => setTimeout(r, 2200));
+  // ממתינים שהסוקט יהיה מוכן (אירוע QR ראשון) לפני בקשת קוד
+  const ready = await waitFor(() => Boolean(mainBotStatus.qr) || !mainBotSock, 20000);
+  if (!ready || !mainBotSock) {
+    throw new Error("השרת לא הצליח להתחבר לוואטסאפ כדי להפיק קוד. נסה שוב בעוד רגע.");
   }
-
-  if (!mainBotSock) {
-    throw new Error("לא ניתן לאתחל את תהליך הבוט הראשי. אנא בצע 'איפוס חיבור נקי' ונסה שוב.");
-  }
-
-  // המתנה קצרה לווידוא שהסוקט מוכן לקבלת בקשת קוד צימוד
-  await new Promise((r) => setTimeout(r, 800));
 
   try {
     const code = await mainBotSock.requestPairingCode(phone);
-    mainBotStatus.pairingCode = code;
-    console.log(`🔑 [הבוט הראשי] הופק קוד צימוד בהצלחה עבור ${phone}: ${code}`);
+    setMainState("pairing_ready", { pairingCode: code });
+    console.log(`🔑 [הבוט הראשי] הופק קוד צימוד עבור ${phone}: ${code}`);
     return code;
   } catch (err) {
     console.error(`שגיאה בהפקת קוד צימוד לבוט הראשי (${phone}):`, err.message);
-    throw new Error(`שגיאה בהפקת קוד צימוד: ${err.message || "נא לוודא שהמספר תקין או ללחוץ על 'איפוס חיבור נקי'"}`);
+    throw new Error(`שגיאה בהפקת קוד צימוד: ${err.message || "נסה שוב"}`);
   }
 }
 
-export async function resetMainBotAuth(callbacks = {}) {
-  console.log("🧹 מאפס ידנית את אותנטיקציית הבוט הראשי לבקשת המשתמש...");
-  try {
-    if (mainBotSock) {
-      if (mainReconnectTimer) { clearTimeout(mainReconnectTimer); mainReconnectTimer = null; }
-      killSock(mainBotSock);
-      mainBotSock = null;
-    }
-    if (fs.existsSync(BOT_AUTH_DIR)) {
-      fs.rmSync(BOT_AUTH_DIR, { recursive: true, force: true });
-      fs.mkdirSync(BOT_AUTH_DIR, { recursive: true });
-    }
-    mainBotStatus.connected = false;
-    mainBotStatus.registered = false;
-    mainBotStatus.pairingCode = null;
-    mainBotStatus.qr = null;
-    mainBotStatus.qrTimestamp = null;
-    mainBotStatus.lastDisconnectReason = "איפוס סשן נקי לבקשת המנהל";
-    
-    // משהים קלות כדי לוודא שכל המשאבים שוחררו
-    await new Promise((r) => setTimeout(r, 600));
-    return await startMainBot(callbacks);
-  } catch (err) {
-    console.error("שגיאה באיפוס אותנטיקציית הבוט הראשי:", err.message);
-    throw err;
+// ביטול צימוד: עוצר ברקודים/קודים. לא נוגע בבוט מחובר ולא מוחק קבצים.
+export function cancelMainBotPairing() {
+  if (mainBotStatus.connected) {
+    return { cancelled: false, message: "הבוט מחובר - אין תהליך צימוד לבטל." };
   }
+  const paired = isPairedOnDisk(BOT_AUTH_DIR);
+  if (paired && mainBotStatus.state === "connecting") {
+    return { cancelled: false, message: "הבוט מקושר ומתחבר מחדש - לא בוטל כדי לא לנתק אותו." };
+  }
+  stopMainSocket();
+  setMainState("cancelled", { connected: false, qr: null, qrTimestamp: null, pairingCode: null });
+  return { cancelled: true, message: "תהליך הצימוד בוטל. לא מופקים ברקודים או קודים." };
+}
+
+// איפוס ידני מפורש: מעביר את הקבצים לארכיון (לא מוחק) ומחכה לבקשת חיבור חדשה
+export async function resetMainBotAuth(callbacks = {}) {
+  if (callbacks && Object.keys(callbacks).length) mainCallbacks = callbacks;
+  console.log("🧹 איפוס אותנטיקציית הבוט הראשי לבקשת המנהל...");
+  stopMainSocket();
+  await new Promise((r) => setTimeout(r, 1500)); // שמירת creds אחרונה לפני העברה
+  archiveAuthDir(BOT_AUTH_DIR, "bot");
+  setMainState("idle", {
+    connected: false,
+    registered: false,
+    pairingCode: null,
+    qr: null,
+    qrTimestamp: null,
+    lastDisconnectReason: "איפוס לבקשת המנהל - ממתין לחיבור חדש",
+  });
+  return mainBotStatus;
+}
+
+// כיבוי מסודר (pm2 restart / deploy) - נותן ל-creds להישמר לפני יציאה
+export async function shutdownAllSockets() {
+  stopMainSocket();
+  for (const [phone, sess] of driverSessions.entries()) {
+    clearDriverReconnect(phone);
+    if (sess?.sock) killSock(sess.sock);
+  }
+  await new Promise((r) => setTimeout(r, 1500));
 }
 
 // ==========================================
@@ -546,7 +682,7 @@ async function createDriverSocket(driverPhone, callbacks = {}) {
   if (fs.existsSync(credsPath)) {
     try {
       const parsedCreds = JSON.parse(fs.readFileSync(credsPath, "utf8"));
-      if (parsedCreds && parsedCreds.registered) {
+      if (isPairedCreds(parsedCreds)) {
         wasAlreadyRegisteredOnDisk = true;
       }
     } catch (e) {}
@@ -566,8 +702,8 @@ async function createDriverSocket(driverPhone, callbacks = {}) {
   const sessionObj = {
     phone: driverPhone,
     sock,
-    status: sock.authState.creds.registered ? "connecting" : "pairing_required",
-    registered: Boolean(sock.authState.creds.registered),
+    status: isPairedCreds(sock.authState.creds) ? "connecting" : "pairing_required",
+    registered: isPairedCreds(sock.authState.creds),
     wasAlreadyRegisteredOnDisk,
     isRestoredSession: wasAlreadyRegisteredOnDisk,
     pairingCode: null,
@@ -620,24 +756,50 @@ async function createDriverSocket(driverPhone, callbacks = {}) {
 
       detachSock(sock);
 
+      const isRestartCode = code === DisconnectReason.restartRequired || code === 515;
+      const nowPaired = isPairedCreds(sock.authState?.creds);
+
+      // 401 = הנהג ניתק את המכשיר מהטלפון. לא מנסים שוב עם אותם מפתחות (לולאה), הקבצים נשמרים.
       if (code === DisconnectReason.loggedOut) {
-        console.log(`⚠️ [נהג ${driverPhone}] התקבל קוד 401 Logged Out. שומרים על קובצי האימות ומנסים חיבור מחדש...`);
-        const attempt = (driverRetryCount.get(driverPhone) || 0) + 1;
-        driverRetryCount.set(driverPhone, attempt);
-        const delay = backoffDelay(attempt);
+        console.log(`⚠️ [נהג ${driverPhone}] 401 Logged Out - נותק מהטלפון. הקבצים נשמרו, נדרש חיבור מחדש.`);
+        sessionObj.sock = null;
+        sessionObj.status = "logged_out";
+        sessionObj.registered = false;
+        sessionObj.qr = null;
+        sessionObj.pairingCode = null;
         clearDriverReconnect(driverPhone);
-        driverReconnectTimers.set(driverPhone, setTimeout(() => {
-          driverReconnectTimers.delete(driverPhone);
-          connectDriverSession(driverPhone, { onRideMessage, onReaction, onStatusChange, onEvent }).catch((err) => {
-            console.error(`שגיאה בחיבור מחדש עבור נהג ${driverPhone}:`, err.message);
-          });
-        }, delay));
+        onStatusChange?.(driverPhone, sessionObj);
         return;
       }
 
-      // 440 = חיבור הוחלף ע"י סוקט/תהליך אחר. חיבור מחדש אוטומטי יוצר לולאת "בעיטות" ו-Bad MAC
+      // צימוד שלא הושלם (הברקודים נגמרו) - עוצרים, לא מייצרים ברקודים חדשים לבד
+      if (!isRestartCode && !nowPaired) {
+        console.log(`⏹️ [נהג ${driverPhone}] תהליך הצימוד הסתיים ללא סריקה (קוד: ${code || "?"}). לא מייצר ברקודים נוספים.`);
+        sessionObj.sock = null;
+        sessionObj.status = "qr_expired";
+        sessionObj.qr = null;
+        sessionObj.pairingCode = null;
+        clearDriverReconnect(driverPhone);
+        onStatusChange?.(driverPhone, sessionObj);
+        return;
+      }
+
+      // 440 = חיבור אחר תפס את הסשן. כמה ניסיונות מרווחים ואז עצירה.
       if (code === DisconnectReason.connectionReplaced || code === 440) {
-        console.log(`⚠️ [נהג ${driverPhone}] קוד 440 connectionReplaced - חיבור אחר תפס את הסשן. לא מתחבר מחדש אוטומטית (בדוק שאין תהליך כפול).`);
+        const n = (sessionObj.conflictCount || 0) + 1;
+        sessionObj.conflictCount = n;
+        if (n > 3) {
+          console.log(`⚠️ [נהג ${driverPhone}] 440 חוזר - חיבור אחר משתמש בסשן. עוצר ניסיונות.`);
+          sessionObj.sock = null;
+          sessionObj.status = "conflict";
+          onStatusChange?.(driverPhone, sessionObj);
+          return;
+        }
+        clearDriverReconnect(driverPhone);
+        driverReconnectTimers.set(driverPhone, setTimeout(() => {
+          driverReconnectTimers.delete(driverPhone);
+          connectDriverSession(driverPhone, { onRideMessage, onReaction, onStatusChange, onEvent }).catch(() => {});
+        }, 20000 * n));
         return;
       }
 
@@ -721,9 +883,9 @@ export function purgeDriverSessionAndAuth(phoneOrIdentifier) {
     const dir = path.join(SESSIONS_DIR, p);
     try {
       if (fs.existsSync(dir)) {
-        fs.rmSync(dir, { recursive: true, force: true });
+        archiveAuthDir(dir, `driver-${p}`);
+        try { fs.rmdirSync(dir); } catch (e) {}
         deletedDirs.push(p);
-        console.log(`🧹 נמחקה תיקיית אימות וקוקיז עבור נהג: ${dir}`);
       }
     } catch (err) {
       console.error(`שגיאה במחיקת תיקיית אימות ${dir}:`, err.message);
@@ -763,8 +925,8 @@ export function purgeAllDriverSessions() {
     for (const item of items) {
       const p = path.join(SESSIONS_DIR, item);
       try {
-        fs.rmSync(p, { recursive: true, force: true });
-        deletedCount++;
+        if (archiveAuthDir(p, `driver-${item}`)) deletedCount++;
+        try { fs.rmdirSync(p); } catch (e) {}
         console.log(`🧹 נמחקה תיקיית סשן ישנה: ${p}`);
       } catch (e) {}
     }
@@ -802,43 +964,33 @@ export async function requestDriverPairingCode(phone, callbacks = {}, options = 
   const lastTime = lastPairingRequestTimes.get(driverPhone) || 0;
   const cooldownMs = 45 * 1000; // 45 שניות מרווח בין בקשות קוד
 
-  if (options.forceReset) {
-    purgeDriverSessionAndAuth(driverPhone);
-    await new Promise((r) => setTimeout(r, 600));
-  } else if (now - lastTime < cooldownMs) {
+  const existingSession = driverSessions.get(driverPhone);
+  if (existingSession?.status === "connected") {
+    throw new Error("הוואטסאפ של הנהג כבר מחובר. אין צורך בקוד צימוד חדש.");
+  }
+  if (!options.forceReset && now - lastTime < cooldownMs) {
     const waitSec = Math.ceil((cooldownMs - (now - lastTime)) / 1000);
-    throw new Error(`קוד צימוד כבר הופק עבור מספר זה. אנא המתן ${waitSec} שניות לפני בקשת קוד נוסף, או לחץ על "איפוס קוקיז".`);
+    throw new Error(`קוד צימוד כבר הופק עבור מספר זה. אנא המתן ${waitSec} שניות לפני בקשת קוד נוסף.`);
   }
 
-  // ניקוי סשן ישן ולא רשום למניעת תקיעות וקריסות Baileys
-  const existing = driverSessions.get(driverPhone);
-  if (existing?.sock && existing.status !== "connected") {
-    try { existing.sock.ev?.removeAllListeners?.(); } catch (e) {}
-    try { existing.sock.ws?.close?.(); } catch (e) {}
-    try { existing.sock.end?.(); } catch (e) {}
-    driverSessions.delete(driverPhone);
-  }
+  // סוגרים סוקט צימוד ישן (לא מחובר) כדי לפתוח צימוד נקי
+  if (existingSession?.sock) killSock(existingSession.sock);
+  driverSessions.delete(driverPhone);
+  clearDriverReconnect(driverPhone);
 
+  // חשבון שנותק מהטלפון (401) - הקבצים הישנים לא שמישים, מעבירים לארכיון (לא מוחקים)
   const driverAuthDir = path.join(SESSIONS_DIR, driverPhone);
-  const credsPath = path.join(driverAuthDir, "creds.json");
-  if (fs.existsSync(credsPath)) {
-    try {
-      const creds = JSON.parse(fs.readFileSync(credsPath, "utf8"));
-      if (!creds.registered) {
-        fs.rmSync(driverAuthDir, { recursive: true, force: true });
-      }
-    } catch (e) {
-      fs.rmSync(driverAuthDir, { recursive: true, force: true });
-    }
+  if (isPairedOnDisk(driverAuthDir)) {
+    archiveAuthDir(driverAuthDir, `driver-${driverPhone}`);
   }
 
   lastPairingRequestTimes.set(driverPhone, now);
-  clearDriverReconnect(driverPhone);
 
   const session = await connectDriverSession(driverPhone, callbacks);
 
-  // המתנה של 2.2 שניות לייצוב חיבור ה-WebSocket של Baileys לפני בקשת הקוד (מונע 428 Precondition Required / Closed)
-  await new Promise((r) => setTimeout(r, 2200));
+  // ממתינים שהסוקט יהיה מוכן (אירוע QR ראשון) לפני בקשת קוד
+  await waitFor(() => Boolean(session.qr) || !session.sock, 20000);
+  if (!session.sock) throw new Error("השרת לא הצליח להתחבר לוואטסאפ כדי להפיק קוד. נסה שוב.");
 
   try {
     const code = await session.sock.requestPairingCode(driverPhone);
@@ -848,14 +1000,25 @@ export async function requestDriverPairingCode(phone, callbacks = {}, options = 
   } catch (err) {
     recordError("pairing_code_request", err, { driverPhone });
     console.error(`שגיאה בהפקת קוד צימוד לנהג ${driverPhone}:`, err.message);
-    // איפוס התיקייה במקרה של כשל כדי שהפעם הבאה תהיה נקייה
-    try {
-      if (fs.existsSync(driverAuthDir)) {
-        fs.rmSync(driverAuthDir, { recursive: true, force: true });
-      }
-    } catch (e) {}
     throw err;
   }
+}
+
+// ביטול צימוד לנהג: עוצר ברקודים/קודים בלבד. לא מנתק נהג מחובר ולא נוגע בקבצים.
+export function cancelDriverPairing(phone) {
+  const driverPhone = cleanPhone(phone);
+  const session = driverSessions.get(driverPhone);
+  if (!session) return { cancelled: true, message: "אין תהליך צימוד פעיל." };
+  if (session.status === "connected") {
+    return { cancelled: false, message: "הנהג מחובר - אין תהליך צימוד לבטל." };
+  }
+  clearDriverReconnect(driverPhone);
+  if (session.sock) killSock(session.sock);
+  session.sock = null;
+  session.status = "cancelled";
+  session.qr = null;
+  session.pairingCode = null;
+  return { cancelled: true, message: "תהליך הצימוד בוטל." };
 }
 
 export function isDriverSessionConnected(phone) {
@@ -874,13 +1037,20 @@ export function getDriverSession(phone) {
 }
 
 // הפעלה / קבלת סשן לנהג לצורך הפקת והצגת קוד QR חי בוואטסאפ ווב
-export async function ensureDriverSessionForQr(phone, callbacks = {}) {
+export async function ensureDriverSessionForQr(phone, callbacks = {}, options = {}) {
   const driverPhone = cleanPhone(phone);
   if (!driverPhone) throw new Error("מספר טלפון לא תקין");
 
   let session = driverSessions.get(driverPhone);
-  if (!session || !session.sock) {
+  if (options.start && (!session || !session.sock)) {
+    const authDir = path.join(SESSIONS_DIR, driverPhone);
+    if (session?.status === "logged_out" && isPairedOnDisk(authDir)) {
+      archiveAuthDir(authDir, `driver-${driverPhone}`);
+    }
     session = await connectDriverSession(driverPhone, callbacks);
+  }
+  if (!session) {
+    return { phone: driverPhone, qr: null, qrTimestamp: null, status: "idle", registered: false };
   }
 
   return {
@@ -910,6 +1080,7 @@ export function getAllSessionsSummary() {
   return {
     bot: {
       phone: mainBotStatus.phone,
+      state: mainBotStatus.state,
       connected: mainBotStatus.connected,
       registered: mainBotStatus.registered,
       pairingCode: mainBotStatus.pairingCode,
@@ -927,8 +1098,7 @@ export async function initSavedDriverSessions(callbacks) {
     if (!fs.existsSync(SESSIONS_DIR)) return;
     const items = fs.readdirSync(SESSIONS_DIR);
     for (const phone of items) {
-      const credPath = path.join(SESSIONS_DIR, phone, "creds.json");
-      if (fs.existsSync(credPath)) {
+      if (isPairedOnDisk(path.join(SESSIONS_DIR, phone))) {
         console.log(`🔄 משחזר חיבור וואטסאפ שמור עבור נהג: ${phone}...`);
 
         // הגנה קריטית: אם users.json התאפס או נדרס במהלך שדרוג שרת - משחזרים את אישור הנהג אוטומטית!

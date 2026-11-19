@@ -79,6 +79,10 @@ import {
   ensureDriverSessionForQr,
   getDriverSession,
   cleanOldSenderKeyFiles,
+  startMainBotQr,
+  cancelMainBotPairing,
+  cancelDriverPairing,
+  shutdownAllSockets,
 } from "./session-manager.js";
 import {
   detectNeighborhood,
@@ -2400,13 +2404,24 @@ startDashboard({
   purgeAllDriverSessions: () => {
     return purgeAllDriverSessions();
   },
-  ensureDriverSessionForQr: async (phone) => {
+  startMainBotQr: async () => {
+    return await startMainBotQr({
+      onMessage: handleIncomingMessage,
+      onReaction: handleReaction,
+      onStatusChange: handleMainBotStatusChange,
+      onEvent: recordEvent,
+    });
+  },
+  cancelPairing: (phone, isBot = false) => {
+    return isBot ? cancelMainBotPairing() : cancelDriverPairing(phone);
+  },
+  ensureDriverSessionForQr: async (phone, options = {}) => {
     return await ensureDriverSessionForQr(phone, {
       onRideMessage: handleIncomingMessage,
       onReaction: handleReaction,
       onStatusChange: handleDriverStatusChange,
       onEvent: recordEvent,
-    });
+    }, options);
   },
   broadcastToDrivers: async (message, targetType = "all") => {
     const mainSock = getMainBotSock();
@@ -2528,12 +2543,14 @@ if (isDirectRun) {
   });
 }
 
-// כיבוי מסודר של כל סוקטי הוואטסאפ בעת הפעלה מחדש של pm2 (מונע שגיאות 401/440 וניתוקי פתע)
-function handleGracefulShutdown(signal) {
+// כיבוי מסודר בעת pm2 restart / עדכון מגיטהאב: סוגר סוקטים ונותן לקובצי האימות להישמר לפני יציאה
+let shuttingDown = false;
+async function handleGracefulShutdown(signal) {
+  if (shuttingDown) return;
+  shuttingDown = true;
   console.log(`🛑 התקבל אות ${signal} - סוגר סוקטים של וואטסאפ בצורה מסודרת טרם יציאה...`);
   try {
-    const mainSock = getMainBotSock();
-    if (mainSock?.ws?.close) mainSock.ws.close();
+    await shutdownAllSockets();
   } catch (e) {}
   process.exit(0);
 }

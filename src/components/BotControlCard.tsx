@@ -75,6 +75,7 @@ export const BotControlCard: React.FC<BotControlCardProps> = ({
   };
 
   const handleResetBotAuth = async () => {
+    if (!window.confirm('איפוס ינתק את הבוט הראשי מוואטסאפ ויעביר את קובצי החיבור לארכיון. להמשיך?')) return;
     setResettingAuth(true);
     setPairingError(null);
     setResetSuccessMessage(null);
@@ -107,7 +108,7 @@ export const BotControlCard: React.FC<BotControlCardProps> = ({
     setResetSuccessMessage(null);
     try {
       const targetPhone = customBotPhone.trim() || wa.botPhone || '0555081810';
-      const res = await requestPairingCodeApi(targetPhone, true, true);
+      const res = await requestPairingCodeApi(targetPhone, true, false);
       if (res.ok && res.code) {
         setLocalPairingCode(res.code);
         setPairingMethod('code');
@@ -353,7 +354,7 @@ export const BotControlCard: React.FC<BotControlCardProps> = ({
                 </span>
                 <span className="text-[11px] text-slate-400">סרוק ישירות בוואטסאפ</span>
               </div>
-              <DriverQrPanel phone="bot" onConnected={onRestartBot} onCancelled={() => onRefreshData?.()} />
+              <DriverQrPanel phone="bot" onConnected={() => onRefreshData?.()} onCancelled={() => onRefreshData?.()} />
             </div>
           ) : (
             /* Pairing Code Method */

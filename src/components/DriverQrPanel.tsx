@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { QrCode, RefreshCw, CheckCircle2, XCircle, Loader2, Square, Terminal, Play, AlertCircle } from 'lucide-react';
-import { fetchDriverQr, disconnectDriverApi, cancelPairingApi, fetchLogs, DriverQrState } from '../services/api.ts';
+import { fetchDriverQr, cancelPairingApi, fetchLogs, DriverQrState } from '../services/api.ts';
 
 interface DriverQrPanelProps {
   phone: string;
@@ -19,12 +19,21 @@ const STATUS_TEXT: Record<string, string> = {
   connected: 'הוואטסאפ מחובר בהצלחה!',
   cancelled: 'התהליך בוטל. הופסקה יצירת ברקודים וטוקנים.',
   disconnected: 'החיבור נותק. ניתן להתחיל מחדש.',
+  qr_expired: 'הברקוד פג תוקף ולא נסרק. השרת הפסיק לייצר ברקודים.',
+  logged_out: 'המכשיר נותק מהטלפון. יש לחבר מחדש.',
+  conflict: 'תהליך אחר משתמש באותו חשבון (440). בדוק שאין שני בוטים רצים.',
+  idle: 'לא מוצג ברקוד. לחץ כדי להתחיל חיבור.',
 };
+
+// סטטוסים שבהם השרת לא מייצר ברקודים - מפסיקים פולינג ומחכים ללחיצה
+const STOPPED_STATUSES = new Set(['cancelled', 'qr_expired', 'logged_out', 'conflict', 'idle']);
 
 export const DriverQrPanel: React.FC<DriverQrPanelProps> = ({ phone, onConnected, onCancelled }) => {
   const isBot = phone === 'bot';
-  const [active, setActive] = useState(true);
-  const [userCancelled, setUserCancelled] = useState(false);
+  // הבוט הראשי לא מייצר ברקוד עד שלוחצים "הצג ברקוד"
+  const [active, setActive] = useState(!isBot);
+  const [userCancelled, setUserCancelled] = useState(isBot);
+  const [stopReason, setStopReason] = useState<string>(isBot ? 'idle' : 'cancelled');
   const [cancelling, setCancelling] = useState(false);
   const [state, setState] = useState<DriverQrState | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -52,9 +61,10 @@ export const DriverQrPanel: React.FC<DriverQrPanelProps> = ({ phone, onConnected
         const res = await fetchDriverQr(phone.trim(), forceRefresh);
         if (!isSubscribed) return;
 
-        if (res.status === 'cancelled') {
+        if (STOPPED_STATUSES.has(res.status) && !res.connected) {
           setActive(false);
           setUserCancelled(true);
+          setStopReason(res.status);
           setImageUrl(null);
           setState(res);
           return;
@@ -98,7 +108,8 @@ export const DriverQrPanel: React.FC<DriverQrPanelProps> = ({ phone, onConnected
       }
     };
 
-    tick(false);
+    // הקריאה הראשונה אחרי לחיצה פותחת את תהליך הצימוד בשרת; השאר רק קוראות סטטוס
+    tick(true);
 
     return () => {
       isSubscribed = false;
@@ -147,8 +158,9 @@ export const DriverQrPanel: React.FC<DriverQrPanelProps> = ({ phone, onConnected
 
   // החלפת מספר טלפון חיצונית
   useEffect(() => {
-    setUserCancelled(false);
-    setActive(true);
+    setUserCancelled(isBot);
+    setActive(!isBot);
+    setStopReason(isBot ? 'idle' : 'cancelled');
     setState(null);
     setImageUrl(null);
     setError(null);
@@ -167,12 +179,13 @@ export const DriverQrPanel: React.FC<DriverQrPanelProps> = ({ phone, onConnected
     }
     setActive(false);
     setUserCancelled(true);
+    setStopReason('cancelled');
     setImageUrl(null);
     lastQrRef.current = null;
 
     try {
+      // ביטול בלבד - לא מנתק ולא מוחק קובצי חיבור
       await cancelPairingApi(phone.trim(), isBot);
-      await disconnectDriverApi(phone.trim());
     } catch {
       /* לא קריטי */
     } finally {
@@ -188,6 +201,7 @@ export const DriverQrPanel: React.FC<DriverQrPanelProps> = ({ phone, onConnected
       timerRef.current = null;
     }
     setUserCancelled(false);
+    setStopReason('cancelled');
     setImageUrl(null);
     setError(null);
     setRefreshCount(0);
@@ -211,11 +225,14 @@ export const DriverQrPanel: React.FC<DriverQrPanelProps> = ({ phone, onConnected
         <div className="p-4 rounded-xl bg-gradient-to-r from-rose-950/50 via-[#181d28] to-slate-900 border border-rose-500/40 text-center space-y-3 animate-in fade-in">
           <div className="flex items-center justify-center gap-2 text-rose-300 font-bold text-xs">
             <XCircle className="w-5 h-5 text-rose-400 shrink-0" />
-            <span>תהליך יצירת הברקוד בוטל והופסק לחלוטין</span>
+            <span>{STATUS_TEXT[stopReason] || STATUS_TEXT.cancelled}</span>
           </div>
           <p className="text-[11px] text-slate-300 leading-relaxed max-w-md mx-auto">
-            השרת הפסיק לייצר טוקנים, ברקודים וקודי צימוד עבור {isBot ? 'הבוט הראשי' : phone}. אין תהליך שרץ ברקע.
+            השרת לא מייצר ברקודים או קודי צימוד עבור {isBot ? 'הבוט הראשי' : phone} עד שתלחץ על הכפתור. קובצי החיבור נשמרים.
           </p>
+          {state?.lastDisconnectReason && stopReason !== 'idle' && (
+            <div className="text-[10px] text-slate-400 font-mono" dir="ltr">reason: {state.lastDisconnectReason}</div>
+          )}
           <div className="pt-1">
             <button
               type="button"
@@ -223,7 +240,7 @@ export const DriverQrPanel: React.FC<DriverQrPanelProps> = ({ phone, onConnected
               className="px-4 py-2 rounded-xl bg-teal-400 hover:bg-teal-300 text-slate-950 font-bold text-xs inline-flex items-center gap-1.5 cursor-pointer shadow-lg shadow-teal-500/20 transition-transform active:scale-95"
             >
               <Play className="w-3.5 h-3.5 fill-current" />
-              התחל מחדש (הפק ברקוד חדש עכשיו)
+              {stopReason === 'idle' ? 'הצג ברקוד לחיבור' : 'התחל מחדש (הפק ברקוד חדש עכשיו)'}
             </button>
           </div>
         </div>
