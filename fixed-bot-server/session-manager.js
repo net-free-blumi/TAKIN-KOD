@@ -5,7 +5,8 @@
 import makeWASocket, { 
   DisconnectReason, 
   fetchLatestBaileysVersion,
-  makeCacheableSignalKeyStore
+  makeCacheableSignalKeyStore,
+  DEFAULT_CONNECTION_CONFIG
 } from "@whiskeysockets/baileys";
 import pino from "pino";
 import fs from "node:fs";
@@ -58,6 +59,23 @@ const driverRetryCount = new Map();      // phone -> מספר ניסיונות �
 let mainBotStarting = false;
 let mainReconnectTimer = null;
 let mainRetryCount = 0;
+
+// גרסת WhatsApp Web: נמשכת פעם אחת עם תקרת זמן ונשמרת בזיכרון.
+// בלי תקרה, אם GitHub לא עונה לשרת, החיבור נתקע לנצח והבוט "לא מתחבר" ולא מייצר QR.
+let cachedWaVersion = null;
+async function getWaVersion() {
+  if (cachedWaVersion) return cachedWaVersion;
+  try {
+    const v = await Promise.race([
+      fetchLatestBaileysVersion({ signal: AbortSignal.timeout(6000) }),
+      new Promise((_, rej) => setTimeout(() => rej(new Error("timeout")), 7000)),
+    ]);
+    if (Array.isArray(v?.version)) cachedWaVersion = v.version;
+  } catch (e) {
+    console.log(`ℹ️ משיכת גרסת WhatsApp נכשלה (${e.message}) - משתמש בגרסה המובנית`);
+  }
+  return cachedWaVersion || DEFAULT_CONNECTION_CONFIG.version;
+}
 
 function backoffDelay(attempt) {
   return Math.min(3000 * Math.pow(2, Math.max(0, attempt - 1)), 30000);
@@ -405,13 +423,7 @@ export async function startMainBot(callbacks = {}, options = {}) {
     stopMainSocket();
 
     const { state, saveCreds, backupCreds } = await useSafeMultiFileAuthState(BOT_AUTH_DIR);
-    let version;
-    try {
-      const v = await fetchLatestBaileysVersion();
-      version = v.version;
-    } catch {
-      version = [2, 3000, 1017531287];
-    }
+    const version = await getWaVersion();
 
     const sock = buildSocket(version, state);
     mainBotSock = sock;
@@ -698,13 +710,7 @@ async function createDriverSocket(driverPhone, callbacks = {}) {
   }
 
   const { state, saveCreds, backupCreds } = await useSafeMultiFileAuthState(driverAuthDir);
-  let version;
-  try {
-    const v = await fetchLatestBaileysVersion();
-    version = v.version;
-  } catch {
-    version = [2, 3000, 1017531287];
-  }
+  const version = await getWaVersion();
 
   const sock = buildSocket(version, state);
 

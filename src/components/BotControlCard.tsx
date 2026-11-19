@@ -303,16 +303,6 @@ export const BotControlCard: React.FC<BotControlCardProps> = ({
             </span>
           </div>
 
-          <div className="pt-1 flex justify-end">
-            <button
-              type="button"
-              onClick={handleToggleTestConnect}
-              disabled={testingConnect}
-              className="text-[11px] text-slate-400 hover:text-rose-300 underline cursor-pointer"
-            >
-              התנתק (לבדיקת צימוד חוזר)
-            </button>
-          </div>
         </div>
       ) : (
         <div className="space-y-3">
@@ -499,21 +489,6 @@ export const BotControlCard: React.FC<BotControlCardProps> = ({
         >
           <RefreshCw className="w-3 h-3 text-teal-400" />
           בדוק סטטוס חיבור עכשיו
-        </button>
-
-        <button
-          type="button"
-          onClick={handleToggleTestConnect}
-          disabled={testingConnect}
-          className={`px-3 py-1.5 rounded-lg text-[11px] font-bold flex items-center gap-1.5 cursor-pointer border transition-colors ${
-            wa.connected
-              ? 'bg-rose-500/10 text-rose-300 border-rose-500/30 hover:bg-rose-500/20'
-              : 'bg-emerald-500/10 text-emerald-300 border-emerald-500/30 hover:bg-emerald-500/20'
-          }`}
-          title="מאפשר לבדוק את כל תכונות הבוט והממשק המחובר"
-        >
-          <Sparkles className="w-3 h-3 text-emerald-400" />
-          {wa.connected ? 'סמן כמנותק (לבדיקה)' : 'סימולציית חיבור מוצלח לבדיקה'}
         </button>
       </div>
 

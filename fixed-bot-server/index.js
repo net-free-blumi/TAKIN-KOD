@@ -2570,11 +2570,21 @@ async function boot() {
     onEvent: recordEvent,
   });
 
-  // 3. שחזור סשנים שמורים של נהגים בטלגרם
-  await initSavedTelegramSessions();
+  // 3. בוט הטלגרם הראשי (שליחת נסיעות לנהגים בפרטי) - לא תלוי בשום חיבור אחר
+  startTelegramBot({ cleanPhone, isUserApproved, getUserSearch, recordEvent, formatIsraeliPhone })
+    .catch((e) => console.error("שגיאה בהפעלת בוט הטלגרם:", e.message));
 
-  // 4. בוט הטלגרם הראשי (שליחת נסיעות לנהגים בפרטי)
-  await startTelegramBot({ cleanPhone, isUserApproved, getUserSearch, recordEvent, formatIsraeliPhone });
+  // 4. שחזור חשבונות טלגרם של נהגים ברקע (חשבון אחד איטי לא עוצר את שאר המערכת)
+  initSavedTelegramSessions().catch((e) => console.error("שגיאה בשחזור סשני טלגרם:", e.message));
+
+  // סיכום מצב אחרי העלייה - שורה אחת ברורה בלוג
+  setTimeout(() => {
+    try {
+      const sum = getAllSessionsSummary();
+      const drv = (sum.drivers || []).map((d) => `${d.phone}:${d.status}`).join(", ") || "אין";
+      console.log(`📊 מצב אחרי עלייה: בוט ראשי=${sum.bot?.state || (sum.bot?.connected ? "connected" : "?")} | נהגים: ${drv}`);
+    } catch (e) {}
+  }, 45000);
 }
 
 const isDirectRun = process.argv[1] && (import.meta.url === `file://${process.argv[1]}` || process.argv[1].endsWith("index.js"));

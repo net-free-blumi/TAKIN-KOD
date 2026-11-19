@@ -59,14 +59,22 @@ export const TelegramConnectionModal: React.FC<TelegramConnectionModalProps> = (
   const [botLink, setBotLink] = useState<TelegramBotLinkState | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  // Sync phone on open
+  // בחירת נהג רק בפתיחת החלון. רשימת הנהגים מתרעננת כל כמה שניות,
+  // ולכן אסור שהרענון יחליף את הנהג שהמשתמש בחר.
   useEffect(() => {
+    if (!isOpen) return;
     if (initialPhone) {
       setSelectedPhone(initialPhone);
-    } else if (approvedUsers.length > 0 && !selectedPhone) {
-      setSelectedPhone(approvedUsers[0].phone);
+    } else if (approvedUsers.length > 0) {
+      setSelectedPhone((cur) => cur || approvedUsers[0].phone);
     }
-  }, [initialPhone, approvedUsers]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isOpen, initialPhone]);
+
+  // אם עדיין לא נבחר נהג והרשימה נטענה מאוחר
+  useEffect(() => {
+    if (isOpen && !selectedPhone && approvedUsers.length > 0) setSelectedPhone(approvedUsers[0].phone);
+  }, [isOpen, selectedPhone, approvedUsers]);
 
   // Check Telegram status for selected phone
   const checkStatus = async (phone: string) => {

@@ -398,9 +398,11 @@ export async function initSavedTelegramSessions() {
             systemLangCode: "he-IL",
           });
 
-          await client.connect();
+          // תקרת זמן: חשבון טלגרם אחד שלא עונה לא תוקע את השחזור של כל השאר
+          const withTimeout = (pr, ms) => Promise.race([pr, new Promise((_, rej) => setTimeout(() => rej(new Error("timeout")), ms))]);
+          await withTimeout(client.connect(), 45000);
 
-          if (await client.checkAuthorization()) {
+          if (await withTimeout(client.checkAuthorization(), 20000)) {
             activeTelegramClients.set(phone, client);
             await client.getDialogs({ limit: 200 }).catch(() => {});
             await attachTelegramMessageListener(client, phone);
@@ -408,8 +410,10 @@ export async function initSavedTelegramSessions() {
             const username = me?.username ? `@${me.username}` : (me?.firstName || phone);
             console.log(`✅ [טלגרם] סשן שוחזר בהצלחה עבור נהג ${phone} (${username})`);
           } else {
-            console.log(`⚠️ [טלגרם] סשן לא מורשה עבור ${phone}, מנקה...`);
-            try { fs.unlinkSync(sessionPath); } catch (e) {}
+            // לא מוחקים: מעבירים הצידה (הנהג יחבר מחדש, והקובץ הישן נשמר)
+            console.log(`⚠️ [טלגרם] סשן לא מורשה עבור ${phone} - הועבר הצידה, נדרש חיבור מחדש`);
+            try { fs.renameSync(sessionPath, `${sessionPath}.invalid-${Date.now()}`); } catch (e) {}
+            try { await client.disconnect(); } catch (e) {}
           }
         } catch (err) {
           console.error(`שגיאה בשחזור סשן טלגרם עבור ${phone}:`, err.message);
