@@ -64,6 +64,13 @@ const restored = await useSafeMultiFileAuthState(brokenDir);
 await restored.flush();
 check("creds.json שוחזר מהגיבוי", restored.restoredFromBackup && JSON.parse(fs.readFileSync(path.join(brokenDir, "creds.json"), "utf8")).me.id.startsWith("972500000009"));
 
+// 8. תיקייה ריקה (אחרי איפוס / ארכיון) לא משחזרת חשבון ישן גם אם יש גיבוי - אחרת לולאת 401 בלי QR
+const freshDir = path.join(tmp, "auth", "sessions", "972500000010");
+fs.mkdirSync(freshDir, { recursive: true });
+fs.writeFileSync(path.join(freshDir, "creds.json.bak"), JSON.stringify({ registered: true, me: { id: "972500000010:3@s.whatsapp.net" } }));
+const fresh = await useSafeMultiFileAuthState(freshDir);
+check("תיקייה בלי creds.json מתחילה חיבור חדש (לא משחזרת חשבון שנותק)", !fresh.restoredFromBackup && !fresh.state.creds.me);
+
 await sm.shutdownAllSockets();
 fs.rmSync(tmp, { recursive: true, force: true });
 console.log(failed ? `\n❌ ${failed} בדיקות נכשלו` : "\n✅ כל בדיקות בטיחות החיבור עברו");

@@ -88,10 +88,14 @@ export async function useSafeMultiFileAuthState(folder) {
     return enqueue(name, () => unlink(join(folder, name)).catch(() => {}));
   };
 
-  // טעינת creds: קובץ ראשי, ואם הוא פגום - הגיבוי האחרון של מצב מחובר
+  // טעינת creds: קובץ ראשי, ואם הוא קיים אבל פגום - הגיבוי האחרון של מצב מחובר.
+  // חשוב: תיקייה בלי creds.json בכלל = בקשה מכוונת לחיבור חדש (איפוס / ארכיון / צימוד ראשון).
+  // במצב כזה אסור לשחזר כלום - אחרת משחזרים חשבון שנותק (401) ונכנסים ללולאה בלי QR.
+  const credsExists = existsSync(join(folder, "creds.json"));
   let creds = await readData("creds.json");
   let restoredFromBackup = false;
-  if (!creds) {
+  const credsCorrupt = credsExists && !creds;
+  if (credsCorrupt) {
     try {
       creds = parseJson(await readFile(join(folder, "creds.json.bak"), "utf8"));
       if (creds) {
@@ -102,7 +106,7 @@ export async function useSafeMultiFileAuthState(folder) {
     } catch (e) {}
   }
   // רשת ביטחון אחרונה: הגיבוי ש-auto-sync.sh שומר לפני כל עדכון (/tmp/wa-safe-bak/<זמן>/auth/...)
-  if (!creds) {
+  if (credsCorrupt && !creds) {
     try {
       const rel = relative(process.cwd(), folder);
       if (rel && !rel.startsWith("..") && !isAbsolute(rel) && existsSync("/tmp/wa-safe-bak")) {
