@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 let TelegramClientClass = null;
 let StringSessionClass = null;
 let NewMessageClass = null;
+import { sendRideViaBot } from "./telegram-bot.js";
 
 async function getTelegramModules() {
   if (TelegramClientClass && StringSessionClass && NewMessageClass) {
@@ -475,6 +476,11 @@ async function handleIncomingTelegramMessage(client, driverPhone, message, sourc
     }
 
     // בדיקה האם לנהג זה יש חיפוש פעיל
+    // הודעות שהנהג עצמו שלח / הודעות ישנות שמגיעות בהשלמת עדכונים אחרי ניתוק - לא נסיעות חדשות
+    if (message.out) return;
+    const msgDateSec = Number(message.date) || 0;
+    if (msgDateSec && Date.now() / 1000 - msgDateSec > 10 * 60) return;
+
     const driverSearch = systemCallbacks.getUserSearch(driverPhone);
     if (!driverSearch || !driverSearch.active) {
       return;
@@ -666,10 +672,10 @@ async function attachTelegramMessageListener(client, driverPhone) {
 // 6. פורמט ושליחת התראת נסיעה מטלגרם לוואטסאפ של הנהג
 // ==========================================
 export function buildTelegramAlertText(rideData) {
-  let msg = `🔹 *נסיעה מטלגרם*\n`;
+  let msg = `✈️ *נסיעה מטלגרם* ✈️\n`;
   msg += `${rideData.cleanedText}\n`;
   msg += `━━━━━━━━━━━━━\n`;
-  msg += `📍 *קבוצה:* ${rideData.groupName}\n`;
+  msg += `📢 *קבוצה/ערוץ בטלגרם:* ${rideData.groupName}\n`;
   let sInfo = rideData.senderName || "סדרן";
   if (rideData.senderPhone && rideData.senderPhone !== "זמין בטלגרם") {
     const formattedPhone = systemCallbacks.formatIsraeliPhone
@@ -755,6 +761,13 @@ export async function getTelegramDialogs(phone) {
 // שליחת התראת נסיעה (מוואטסאפ או מטלגרם) ישירות לטלגרם של הנהג עם כפתור מעבר ישיר והתראת צליל/נעיצה
 export async function sendRideAlertToTelegram(driverPhone, rideData, originalMsg = null) {
   const p = cleanPhone(driverPhone);
+
+  // דרך מועדפת: בוט הטלגרם הראשי שולח לנהג בפרטי (עם התראה אמיתית)
+  try {
+    const viaBot = await sendRideViaBot(p, rideData);
+    if (viaBot.ok) return { ok: true, sentCount: 1, via: "telegram_bot" };
+  } catch (e) {}
+
   const client = activeTelegramClients.get(p);
 
   if (!client || !client.connected) {
@@ -1050,3 +1063,5 @@ setInterval(async () => {
     }
   } catch (e) {}
 }, 60 * 1000);
+// לשימוש בבדיקות בלבד
+export const __tgTest = { handleIncomingTelegramMessage };

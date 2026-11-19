@@ -214,6 +214,17 @@ export const LiveLogsCard: React.FC<LiveLogsCardProps> = ({
                       {cfg.label}
                     </span>
 
+                    {/* מקור הנסיעה: טלגרם / וואטסאפ */}
+                    {(log as any).source === 'telegram' ? (
+                      <span className="px-2 py-0.5 rounded-full text-[10px] font-bold border shrink-0 bg-sky-500/15 text-sky-300 border-sky-500/40">
+                        ✈️ טלגרם
+                      </span>
+                    ) : (log.type === 'sent' || (log.type as string) === 'group_msg') ? (
+                      <span className="px-2 py-0.5 rounded-full text-[10px] font-bold border shrink-0 bg-emerald-500/10 text-emerald-300 border-emerald-500/30">
+                        וואטסאפ
+                      </span>
+                    ) : null}
+
                     {/* Message */}
                     <div className="min-w-0 flex-1">
                       <p className="text-xs text-slate-200 font-medium truncate group-hover:text-amber-300 transition-colors">

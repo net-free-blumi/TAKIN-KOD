@@ -105,6 +105,7 @@ import {
   sendRideAlertToTelegram,
   getTelegramDialogs,
 } from "./telegram-manager.js";
+import { startTelegramBot, getBotLinkStatus, getTelegramBotInfo } from "./telegram-bot.js";
 
 const DEBUG_FILTER = true;
 const DEDUPE_MINUTES = 15;
@@ -873,6 +874,26 @@ async function deliverRideAlert(driverSock, driverPhone, rideData, originalMsg) 
   if (tgResultPromise) {
     const tgRes = await tgResultPromise;
     if (tgRes?.ok && tgRes.sentCount > 0) {
+      // נשלח רק בטלגרם - שומרים גם לרדאר באתר כדי שהנסיעה תוצג שם
+      const tgId = `tg-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+      sentAlertsCache.set(tgId, {
+        msgId: tgId,
+        rideData,
+        rawText: rideData.rawText || rideData.cleanedText,
+        driverPhone,
+        groupName: rideData.groupName,
+        senderName: rideData.senderName,
+        senderPhone: rideData.senderPhone,
+        isTelegram: Boolean(rideData.isTelegram),
+        telegramChatId: rideData.telegramChatId || null,
+        telegramMsgId: rideData.telegramMsgId || null,
+        telegramUrl: rideData.telegramUrl || null,
+        hasInlineButtons: Boolean(rideData.hasInlineButtons),
+        buttonsList: rideData.buttonsList || [],
+        searchDesc: rideData.searchDesc,
+        sentAt: Date.now(),
+      });
+      persistAlertsCacheSoon();
       return { ok: true, via: "telegram" };
     }
   }
@@ -1113,11 +1134,12 @@ export async function sendTelegramGuide(sock, jid) {
   tgGuide += `💻 *חיבור מהיר דרך האתר (דשבורד):*\n`;
   tgGuide += `היכנס לאתר ⬅️ לחץ בסרגל העליון על *"חיבור טלגרם"* ⬅️ הזן מספר ולחץ "שלח קוד אימות לטלגרם" ⬅️ הזן את הקוד והתחבר!\n\n`;
   tgGuide += `🔹 *איך תופסים נסיעה מטלגרם?*\n`;
-  tgGuide += `• כל נסיעה מתאימה מקבוצות וערוצי הטלגרם שלך תישלח אליך ישירות לוואטסאפ עם הכותרת: *🔹 נסיעה מטלגרם*.\n`;
+  tgGuide += `• כל נסיעה מתאימה מקבוצות וערוצי הטלגרם שלך תישלח אליך ישירות לוואטסאפ עם הכותרת: *✈️ נסיעה מטלגרם*.\n`;
   tgGuide += `• לתפיסה מהירה: פשוט השב *"ת"* או *"תן"* על הודעת הנסיעה!\n`;
   tgGuide += `• הבוט ילחץ עבורך אוטומטית על כפתור התפיסה הפנימי בטלגרם (Inline Button כמו "לחצו כאן לבקשת הנסיעה") או יגיב בקבוצה!\n`;
   tgGuide += `• בנוסף קיים קישור ישיר להודעה בטלגרם.\n\n`;
   tgGuide += `🔹 *פקודות נוספות:*\n`;
+  tgGuide += `• *בוט טלגרם* - קבלת הנסיעות בטלגרם בפרטי עם התראה\n`;
   tgGuide += `• *סטטוס טלגרם* - בדיקת מצב החיבור ושם המשתמש\n`;
   tgGuide += `• *נתק טלגרם* - ניתוק החשבון`;
 
@@ -1652,6 +1674,20 @@ async function handleIncomingMessage(sock, upsert, sessionContext) {
 
       // 4. נהג מאושר
       // 4.0 מדריכים, פקודות טלגרם וניתוק/איפוס (זמינים לכל נהג מאושר, גם לפני/אחרי חיבור וואטסאפ ווב)
+      if (norm === "בוט טלגרם" || norm === "טלגרם בוט" || norm === "נסיעות בטלגרם" || norm === "קבל נסיעות בטלגרם") {
+        const st = getBotLinkStatus(senderPhone);
+        let t;
+        if (!st.enabled) {
+          t = "ℹ️ בוט הטלגרם עדיין לא הופעל במערכת. הנסיעות ממשיכות להגיע אליך כאן בוואטסאפ.";
+        } else if (st.linked) {
+          t = `✅ אתה כבר מחובר לבוט הטלגרם @${st.username}${st.linkedName ? ` (${st.linkedName})` : ""}.\nכל נסיעה מתאימה מגיעה אליך גם שם, בפרטי עם התראה.\nלהפסקה: שלח /stop לבוט בטלגרם.`;
+        } else {
+          t = `✈️ *קבלת נסיעות בטלגרם*\n\nלחץ על הקישור, ואז על *Start* בטלגרם:\n👉 ${st.link}\n\nמעכשיו כל נסיעה מתאימה תגיע אליך גם לטלגרם בפרטי, עם התראה וכפתור מעבר ישיר להודעה המקורית.\n✈️ = נסיעה מטלגרם · 🟢 = נסיעה מוואטסאפ`;
+        }
+        await sock.sendMessage(jid, { text: t });
+        continue;
+      }
+
       if (norm === "מדריך טלגרם" || norm === "הוראות טלגרם" || norm === "מדריך telegram" || norm === "עזרה טלגרם") {
         await sendTelegramGuide(sock, jid);
         continue;
@@ -2491,6 +2527,8 @@ startDashboard({
   getTelegramStatus: (phone) => getTelegramStatus(phone),
   getAllTelegramStatuses: () => getAllTelegramStatuses(),
   getTelegramDialogs: (phone) => getTelegramDialogs(phone),
+  getTelegramBotLink: (phone) => getBotLinkStatus(phone),
+  getTelegramBotInfo: () => getTelegramBotInfo(),
 });
 
 // הפעלת הבוט הראשי ושחזור סשנים שמורים של נהגים
@@ -2534,6 +2572,9 @@ async function boot() {
 
   // 3. שחזור סשנים שמורים של נהגים בטלגרם
   await initSavedTelegramSessions();
+
+  // 4. בוט הטלגרם הראשי (שליחת נסיעות לנהגים בפרטי)
+  await startTelegramBot({ cleanPhone, isUserApproved, getUserSearch, recordEvent, formatIsraeliPhone });
 }
 
 const isDirectRun = process.argv[1] && (import.meta.url === `file://${process.argv[1]}` || process.argv[1].endsWith("index.js"));

@@ -6,7 +6,7 @@ set -u
 
 REPO_URL="${REPO_URL:-https://github.com/net-free-blumi/TAKIN-KOD.git}"
 BRANCH="${BRANCH:-main}"
-DATA_ITEMS="auth users.json users.backup.json searches.json lid-map.json group-metadata.json onboarding-alerts.json dashboard.secret telegram_sessions .env"
+DATA_ITEMS="auth users.json users.backup.json searches.json lid-map.json group-metadata.json onboarding-alerts.json dashboard.secret telegram_sessions telegram-bot-links.json .env"
 
 # עובדים מתיקיית השרת (התיקייה שבה הסקריפט רץ, או השורש אם הוא בתוך fixed-bot-server)
 cd "$(dirname "$0")"

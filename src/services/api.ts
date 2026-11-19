@@ -931,6 +931,20 @@ export async function disconnectTelegramApi(phone: string): Promise<{
   });
 }
 
+export interface TelegramBotLinkState {
+  ok: boolean;
+  enabled: boolean;
+  username?: string | null;
+  linked?: boolean;
+  link?: string | null;
+  linkedName?: string | null;
+}
+
+// קישור אישי של נהג לבוט הטלגרם הראשי (קבלת נסיעות בפרטי עם התראה)
+export async function getTelegramBotLinkApi(phone: string): Promise<TelegramBotLinkState> {
+  return await request<TelegramBotLinkState>(`/api/telegram/bot-link/${encodeURIComponent(phone)}`);
+}
+
 export async function getTelegramStatusApi(phone: string): Promise<{
   ok: boolean;
   connected: boolean;

@@ -1455,6 +1455,12 @@ export function startDashboard(runtime) {
     runAutoSync("webhook");
   });
 
+  // בוט הטלגרם הראשי: קישור אישי לנהג וסטטוס חיבור
+  app.get("/api/telegram/bot-link/:phone", requireAuth, (req, res) => {
+    if (!ctx?.getTelegramBotLink) return res.json({ ok: true, enabled: false });
+    res.json({ ok: true, ...ctx.getTelegramBotLink(req.params.phone) });
+  });
+
   // יומן שגיאות ובאגים ייעודי (Live Error Tracker API) - מוגן באבטחה מלאה
   app.get("/api/errors", requireAuth, (_req, res) => {
     res.json({ ok: true, errors: errorReports });

@@ -22,7 +22,7 @@ import {
   verifyTelegramCodeApi, 
   disconnectTelegramApi, 
   getTelegramStatusApi 
-} from '../services/api.ts';
+, getTelegramBotLinkApi, TelegramBotLinkState } from '../services/api.ts';
 
 interface TelegramConnectionModalProps {
   isOpen: boolean;
@@ -56,6 +56,7 @@ export const TelegramConnectionModal: React.FC<TelegramConnectionModalProps> = (
   const [show2FA, setShow2FA] = useState(false);
   
   const [message, setMessage] = useState<string | null>(null);
+  const [botLink, setBotLink] = useState<TelegramBotLinkState | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   // Sync phone on open
@@ -91,6 +92,8 @@ export const TelegramConnectionModal: React.FC<TelegramConnectionModalProps> = (
   useEffect(() => {
     if (isOpen && selectedPhone) {
       checkStatus(selectedPhone);
+      setBotLink(null);
+      getTelegramBotLinkApi(selectedPhone).then(setBotLink).catch(() => setBotLink(null));
       setCode('');
       setPassword2FA('');
       setShow2FA(false);
@@ -396,6 +399,44 @@ export const TelegramConnectionModal: React.FC<TelegramConnectionModalProps> = (
                   </button>
                 </div>
               </div>
+            </div>
+          )}
+
+          {/* Telegram delivery bot */}
+          {botLink && (
+            <div className="p-4 rounded-xl bg-sky-950/30 border border-sky-500/40 space-y-2 text-xs">
+              <h4 className="font-bold text-sky-300">✈️ קבלת הנסיעות בטלגרם (בוט ראשי)</h4>
+              {!botLink.enabled ? (
+                <p className="text-slate-300 leading-relaxed">
+                  הבוט עדיין לא הופעל. יש להגדיר <code className="font-mono">TELEGRAM_BOT_TOKEN</code> בקובץ ה-.env בשרת.
+                </p>
+              ) : botLink.linked ? (
+                <p className="text-emerald-300 font-bold">
+                  ✅ הנהג מחובר ל-@{botLink.username}{botLink.linkedName ? ` (${botLink.linkedName})` : ''} ומקבל נסיעות בפרטי עם התראה.
+                </p>
+              ) : (
+                <div className="space-y-2">
+                  <p className="text-slate-300 leading-relaxed">
+                    הנהג עוד לא מחובר לבוט. שלח לו את הקישור האישי, או שהנהג ישלח בוואטסאפ <strong>"בוט טלגרם"</strong>:
+                  </p>
+                  <div className="flex gap-2">
+                    <input
+                      readOnly
+                      value={botLink.link || ''}
+                      dir="ltr"
+                      className="flex-1 min-w-0 px-3 py-2 rounded-lg bg-[#080d14] border border-[#1e2a3b] text-sky-200 font-mono text-[11px]"
+                      onFocus={(e) => e.currentTarget.select()}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => botLink.link && navigator.clipboard.writeText(botLink.link)}
+                      className="px-3 py-2 rounded-lg bg-sky-500 hover:bg-sky-400 text-slate-950 font-bold cursor-pointer shrink-0"
+                    >
+                      העתק
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
