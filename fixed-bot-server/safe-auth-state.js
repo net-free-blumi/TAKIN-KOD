@@ -20,12 +20,14 @@ const pendingAll = new Set(); // כל הכתיבות שעדיין רצות (בו
 
 const fixFileName = (file) => file?.replace(/\//g, "__")?.replace(/:/g, "-");
 
-async function atomicWrite(filePath, text) {
+// rename אטומי מגן מקריסה / הריגת תהליך. fsync (הגנה גם מנפילת חשמל) רק ל-creds.json:
+// מפתחות נכתבים כמעט בכל הודעה (מאות קבוצות), ו-fsync לכל אחד מעמיס את הדיסק ומאט את כל השרת.
+async function atomicWrite(filePath, text, durable = false) {
   const tmp = `${filePath}.${process.pid}.${Math.random().toString(36).slice(2, 8)}.tmp`;
   const fh = await open(tmp, "w");
   try {
     await fh.writeFile(text, "utf8");
-    await fh.sync();
+    if (durable) await fh.sync();
   } finally {
     await fh.close();
   }
@@ -70,7 +72,7 @@ export async function useSafeMultiFileAuthState(folder) {
   const writeData = (data, file) => {
     const name = fixFileName(file);
     const text = JSON.stringify(data, BufferJSON.replacer);
-    return enqueue(name, () => atomicWrite(join(folder, name), text));
+    return enqueue(name, () => atomicWrite(join(folder, name), text, name === "creds.json"));
   };
 
   const readData = async (file) => {
