@@ -1143,6 +1143,7 @@ export function startDashboard(runtime) {
 
   // סימולציית נסיעה לבדיקה חיה מהאתר - מוגן באבטחה מלאה
   app.post("/api/rides/simulate", requireAuth, (req, res) => {
+    return res.status(410).json({ ok: false, error: "סימולציית נסיעות הוסרה מהמערכת" });
     try {
       const simulated = req.body || {};
       if (ctx?.simulateLiveRide) {

@@ -845,17 +845,6 @@ export function DriverRadarModal({
               </button>
             </div>
 
-            {/* Test Simulation Button in Regular Mode */}
-            <button
-              onClick={handleSimulateTestRide}
-              disabled={simulating}
-              className="px-2.5 py-1.5 rounded-xl bg-purple-500/20 hover:bg-purple-500/30 border border-purple-500/40 text-purple-200 font-bold text-xs flex items-center gap-1 cursor-pointer transition-colors shadow-sm"
-              title="שדר נסיעת דוגמה לבדיקת זיהוי מסלול וצלצול"
-            >
-              <Sparkles className={`w-3.5 h-3.5 text-purple-300 ${simulating ? 'animate-spin' : ''}`} />
-              <span className="hidden sm:inline">{simulating ? 'משדר...' : 'נסיעת בדיקה'}</span>
-            </button>
-
             {/* Live Clock */}
             <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-[#080d14] border border-[#1e2b3c] font-mono text-xs text-teal-400 font-bold">
               <Clock className="w-3.5 h-3.5 text-slate-400" />
@@ -995,13 +984,6 @@ export function DriverRadarModal({
                 ברגע שתפורסם נסיעה בקבוצות שלך, היא תופיע כאן מיד עם צלצול חזק, איסוף מדויק ומרחק מהרכב.
               </p>
             </div>
-            <button
-              onClick={handleSimulateTestRide}
-              className="px-4 py-2 rounded-xl bg-emerald-500 text-slate-950 font-black text-xs flex items-center gap-1.5 cursor-pointer shadow-lg hover:bg-emerald-400 transition-colors"
-            >
-              <Sparkles className="w-4 h-4" />
-              <span>הפעל נסיעת בדיקה לדוגמה</span>
-            </button>
           </div>
         ) : (
           <div className={`grid gap-4 ${
