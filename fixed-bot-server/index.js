@@ -841,11 +841,7 @@ async function deliverRideAlert(driverSock, driverPhone, rideData, originalMsg) 
         // כפתורים (ת / טלגרם / סדרן / תפריט) - רק מהבוט הראשי ורק אם נבחר פורמט שעובד; אחרת טקסט רגיל עם ציטוט
         if (a.via === "main" && getInteractiveVariant() !== "off") {
           try {
-            sentMsg = await sendRideAlertInteractive(a.sock, jid, {
-              body: alertMsg,
-              telegramUrl: rideData.isTelegram ? rideData.telegramUrl : null,
-              senderPhone: rideData.senderPhone,
-            });
+            sentMsg = await sendRideAlertInteractive(a.sock, jid, { body: alertMsg, quoted: quotedGroupMsg });
           } catch (e) {
             console.log(`ℹ️ [כפתורים] התראה עם כפתורים נכשלה (${e.message}) - שולח טקסט`);
             sentMsg = null;

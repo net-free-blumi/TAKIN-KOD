@@ -133,11 +133,22 @@ export async function relayNativeFlow(sock, jid, { title = "", body = "", footer
   const { generateWAMessageFromContent, proto, isJidGroup } = await import("@whiskeysockets/baileys");
   const IM = proto.Message.InteractiveMessage;
 
+  // ציטוט (למשל הודעת הקבוצה המקורית): נכתב ישירות על ההודעה האינטראקטיבית - עובד גם עם וגם בלי עטיפת viewOnce
+  const contextInfo = quoted?.key?.id && quoted?.message
+    ? {
+        stanzaId: quoted.key.id,
+        participant: quoted.key.participant || quoted.key.remoteJid,
+        quotedMessage: quoted.message,
+        ...(quoted.key.remoteJid && quoted.key.remoteJid !== jid ? { remoteJid: quoted.key.remoteJid } : {}),
+      }
+    : undefined;
+
   const interactiveMessage = IM.create({
     header: title ? IM.Header.create({ title: String(title).slice(0, 60), hasMediaAttachment: false }) : undefined,
     body: IM.Body.create({ text: body }),
     footer: footer ? IM.Footer.create({ text: String(footer).slice(0, 60) }) : undefined,
     nativeFlowMessage: IM.NativeFlowMessage.create({ buttons: nativeButtons, messageParamsJson: "" }),
+    ...(contextInfo ? { contextInfo } : {}),
   });
 
   const inner = { messageContextInfo: { deviceListMetadata: {}, deviceListMetadataVersion: 2 }, interactiveMessage };
@@ -145,7 +156,6 @@ export async function relayNativeFlow(sock, jid, { title = "", body = "", footer
 
   const waMsg = generateWAMessageFromContent(jid, content, {
     userJid: sock.user?.id || sock.authState?.creds?.me?.id,
-    quoted: quoted || undefined,
     messageId: messageId || undefined,
   });
 
@@ -447,30 +457,31 @@ export async function sendFullInteractiveMenu(sock, jid, { activeSearches = [], 
  */
 export const CLAIM_BUTTON_PREFIX = "claim:";
 
-export async function sendRideAlertInteractive(sock, jid, { body, telegramUrl = null, senderPhone = null, variant }) {
+export async function sendRideAlertInteractive(sock, jid, { body, quoted = null, variant }) {
   const v = variant || getInteractiveVariant();
   if (v === "off" || !sock?.relayMessage) return null;
   const { generateMessageID } = await import("@whiskeysockets/baileys");
   const messageId = generateMessageID();
 
-  const buttons = [{ text: "✋ ת - תפוס נסיעה", id: `${CLAIM_BUTTON_PREFIX}${messageId}` }];
-  if (telegramUrl) {
-    buttons.push({ text: "✈️ פתח בטלגרם", url: telegramUrl });
-  } else {
-    const digits = String(senderPhone || "").replace(/\D/g, "");
-    const intl = digits.startsWith("0") ? `972${digits.slice(1)}` : digits;
-    if (intl.length >= 11 && intl.length <= 13) buttons.push({ text: "💬 וואטסאפ לסדרן", url: `https://wa.me/${intl}` });
-  }
-  buttons.push({ text: "📋 תפריט", id: "תפריט" });
+  // קומפקטי: 2 כפתורים בלבד, כדי לראות כמה שיותר נסיעות במסך אחד
+  const nativeButtons = [
+    toNativeButton({ text: "✋ ת", id: `${CLAIM_BUTTON_PREFIX}${messageId}` }),
+    toSingleSelect("📋 תפריט", ALERT_MENU_SECTIONS),
+  ];
 
-  return await relayNativeFlow(sock, jid, {
-    body,
-    footer: "נסיעות בוט איכותי",
-    nativeButtons: buttons.map(toNativeButton),
-    variant: v,
-    messageId,
-  });
+  return await relayNativeFlow(sock, jid, { body, nativeButtons, quoted, variant: v, messageId });
 }
+
+const ALERT_MENU_SECTIONS = [
+  {
+    title: "פעולות",
+    rows: [
+      { id: "תפוס", title: "🛑 תפוס", description: "עצירת כל החיפושים" },
+      { id: "תפריט", title: "📋 תפריט מלא", description: "חיפושים פעילים וכל הפקודות" },
+      { id: "מדריך", title: "📖 מדריך", description: "הסבר קצר על הבוט" },
+    ],
+  },
+];
 
 /**
  * תשובה קצרה של הבוט + כפתור "📋 תפריט" מתחת (אם הכפתורים פעילים), אחרת טקסט רגיל.

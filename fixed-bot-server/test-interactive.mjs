@@ -53,15 +53,14 @@ try {
   // התראת נסיעה עם כפתורים
   check("כשהכפתורים כבויים התראת נסיעה חוזרת לטקסט", (await ix.sendRideAlertInteractive(sock, jid, { body: "x" })) === null);
   relayed.length = 0;
-  const alert = await ix.sendRideAlertInteractive(sock, jid, { body: "שמש 100", senderPhone: "0521234567", variant: "D" });
-  const btns = relayed[0].message.interactiveMessage.nativeFlowMessage.buttons.map((x) => ({ name: x.name, p: JSON.parse(x.buttonParamsJson) }));
-  check("כפתור ת מכיל את מזהה ההתראה עצמה", btns[0].name === "quick_reply" && btns[0].p.id === `${ix.CLAIM_BUTTON_PREFIX}${alert.key.id}` && relayed[0].opts.messageId === alert.key.id);
-  check("כפתור וואטסאפ לסדרן בפורמט בינלאומי", btns.some((x) => x.name === "cta_url" && x.p.url === "https://wa.me/972521234567"));
-  check("כפתור תפריט בהתראה", btns.some((x) => x.p.id === "תפריט"));
-  relayed.length = 0;
-  await ix.sendRideAlertInteractive(sock, jid, { body: "x", telegramUrl: "https://t.me/c/1/2", variant: "D" });
-  const tgBtns = relayed[0].message.interactiveMessage.nativeFlowMessage.buttons.map((x) => JSON.parse(x.buttonParamsJson));
-  check("נסיעת טלגרם: כפתור פתח בטלגרם", tgBtns.some((x) => x.url === "https://t.me/c/1/2"));
+  const groupQuote = { key: { remoteJid: "120363000000000001@g.us", id: "GRPMSG1", fromMe: false, participant: "972501111111@s.whatsapp.net" }, message: { conversation: "שמש 100" } };
+  const alert = await ix.sendRideAlertInteractive(sock, jid, { body: "שמש 100", quoted: groupQuote, variant: "C" });
+  const am = relayed[0].message.viewOnceMessage.message.interactiveMessage;
+  const btns = am.nativeFlowMessage.buttons.map((x) => ({ name: x.name, p: JSON.parse(x.buttonParamsJson) }));
+  check("התראה קומפקטית: בדיוק 2 כפתורים (ת + תפריט נפתח)", btns.length === 2 && btns[0].name === "quick_reply" && btns[1].name === "single_select");
+  check("כפתור ת מכיל את מזהה ההתראה עצמה", btns[0].p.id === `${ix.CLAIM_BUTTON_PREFIX}${alert.key.id}` && relayed[0].opts.messageId === alert.key.id);
+  check("אין כפתור וואטסאפ לסדרן", !btns.some((x) => x.name === "cta_url"));
+  check("ציטוט הודעת הקבוצה על ההתראה", am.contextInfo?.stanzaId === "GRPMSG1" && am.contextInfo?.remoteJid === "120363000000000001@g.us" && am.contextInfo?.participant === "972501111111@s.whatsapp.net");
 
   // תשובה עם כפתור תפריט: טקסט כשכבוי
   texts.length = 0;
