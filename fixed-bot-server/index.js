@@ -35,7 +35,11 @@ import {
   sendInteractiveList,
   sendRideAlertWithButtons,
   sendPendingSearchConfirmationWithButtons,
-  sendFullInteractiveMenu
+  sendFullInteractiveMenu,
+  sendInteractiveTest,
+  getInteractiveVariant,
+  setInteractiveVariant,
+  INTERACTIVE_VARIANTS,
 } from "./interactive.js";
 import { 
   loadUsersData, 
@@ -1038,7 +1042,8 @@ export async function sendApprovalAndOnboarding(targetPhone, targetName = "נה�
 // שליחת הודעת תפריט / עזרה עם תפריט נפתח (Single Select) וגיבוי מלא בטקסט
 async function sendHelpMenu(sock, jid, driverPhone) {
   const search = getUserSearch(driverPhone);
-  const useInteractive = process.env.USE_INTERACTIVE_MENU !== "false";
+  // תפריט נפתח רק אחרי שנבחר פורמט שעובד בפועל ("בדיקת כפתורים"); אחרת תפריט טקסט מלא
+  const useInteractive = process.env.USE_INTERACTIVE_MENU !== "false" && getInteractiveVariant() !== "off";
 
   if (useInteractive && sock && typeof sendFullInteractiveMenu === "function") {
     try {
@@ -1598,6 +1603,43 @@ async function handleIncomingMessage(sock, upsert, sessionContext) {
       const isAdmin = isUserAdmin(senderPhone);
       const isApproved = isUserApproved(senderPhone);
       const norm = normalizeText(text);
+
+      // בדיקת כפתורים / בחירת פורמט (מנהל ונהגים מאושרים)
+      if (isAdmin || isApproved) {
+        if (norm === "בדיקת כפתורים" || norm === "בדיקה כפתורים") {
+          const sent = await sendInteractiveTest(sock, jid);
+          recordEvent("command", `בדיקת כפתורים נשלחה ל-${senderPhone} (פורמטים: ${sent.join(", ") || "אף אחד"})`);
+          await sock.sendMessage(jid, {
+            text:
+              `📋 פורמט פעיל כרגע: *${getInteractiveVariant()}*\n\n` +
+              (isAdmin
+                ? "לחיצה על *✅ עובד* בגרסה שמוצגת תפעיל אותה לכולם.\nלביטול הכפתורים (טקסט בלבד): שלח *כפתורים כבוי*"
+                : "לחץ על *✅ עובד* בגרסה שמוצגת אצלך - המנהל יקבל את התוצאה."),
+          });
+          continue;
+        }
+        const worksMatch = text.trim().match(/^כפתורים עובדים\s+([A-Da-d])$/);
+        if (worksMatch) {
+          const v = worksMatch[1].toUpperCase();
+          console.log(`🔘 [בדיקת כפתורים] ${senderPhone} לחץ: פורמט ${v} מוצג ועובד`);
+          recordEvent("command", `בדיקת כפתורים: ${senderPhone} אישר שפורמט ${v} עובד`);
+          if (isAdmin) {
+            setInteractiveVariant(v);
+            await sock.sendMessage(jid, { text: `✅ פורמט *${v}* הופעל! מעכשיו *תפריט* נשלח עם תפריט נפתח וכפתורים.\n(${INTERACTIVE_VARIANTS[v].label})\n\nהפקודות בהקלדה ממשיכות לעבוד כרגיל.\nלביטול: *כפתורים כבוי*` });
+          } else {
+            await sock.sendMessage(jid, { text: `✅ תודה! קיבלתי שפורמט *${v}* עובד אצלך.` });
+          }
+          continue;
+        }
+        if (isAdmin) {
+          const setMatch = text.trim().match(/^כפתורים\s+(כבוי|off|[A-Da-d])$/i);
+          if (setMatch) {
+            const v = setInteractiveVariant(setMatch[1]);
+            await sock.sendMessage(jid, { text: v === "off" ? "⏸️ הכפתורים כובו - התפריט יישלח כטקסט בלבד." : `✅ פורמט כפתורים *${v}* הופעל.` });
+            continue;
+          }
+        }
+      }
 
       // 2. מספר המנהל משמש לניהול בלבד
       if (isAdmin) {

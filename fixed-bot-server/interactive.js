@@ -1,6 +1,9 @@
 // interactive.js - מנגנון כפתורים אינטראקטיביים ותפריט נפתח עבור וואטסאפ (Baileys)
 // תומך ב-Native Flow v2 (Quick Reply / CTA / Single Select List)
 // כולל Fallback בטוח לטקסט רגיל כדי להבטיח 100% מסירה לכל מכשיר
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 /**
  * חילוץ תגובות כפתורים מתוך מבני הודעה שונים בוואטסאפ
@@ -62,11 +65,107 @@ export function extractInteractiveResponse(rawMsg) {
   return null;
 }
 
+// ==========================================
+// בחירת פורמט שליחה (וריאנט) - נקבע בבדיקה אמיתית על הטלפון ("בדיקת כפתורים")
+// וואטסאפ לא מחזיר שגיאה כשהודעה אינטראקטיבית לא מוצגת, ולכן אי אפשר לזהות כשל אוטומטית.
+// off = טקסט בלבד (ברירת מחדל בטוחה) | A-D = פורמטים שונים של Native Flow
+// ==========================================
+const UI_SETTINGS_FILE = path.join(path.dirname(fileURLToPath(import.meta.url)), "ui-settings.json");
+export const INTERACTIVE_VARIANTS = {
+  A: { wrap: true, botNode: true, label: "עטיפת viewOnce + צומת bot" },
+  B: { wrap: false, botNode: true, label: "ישיר + צומת bot" },
+  C: { wrap: true, botNode: false, label: "עטיפת viewOnce בלי צומת bot" },
+  D: { wrap: false, botNode: false, label: "ישיר בלי צומת bot" },
+};
+
+export function getInteractiveVariant() {
+  const env = String(process.env.INTERACTIVE_VARIANT || "").trim().toUpperCase();
+  if (env === "OFF") return "off";
+  if (INTERACTIVE_VARIANTS[env]) return env;
+  try {
+    const v = String(JSON.parse(fs.readFileSync(UI_SETTINGS_FILE, "utf8")).interactiveVariant || "").toUpperCase();
+    if (INTERACTIVE_VARIANTS[v]) return v;
+  } catch (e) {}
+  return "off";
+}
+
+export function setInteractiveVariant(variant) {
+  const v = String(variant || "").trim().toUpperCase();
+  const value = INTERACTIVE_VARIANTS[v] ? v : "off";
+  let data = {};
+  try { data = JSON.parse(fs.readFileSync(UI_SETTINGS_FILE, "utf8")) || {}; } catch (e) {}
+  data.interactiveVariant = value;
+  const tmp = `${UI_SETTINGS_FILE}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify(data, null, 2));
+  fs.renameSync(tmp, UI_SETTINGS_FILE);
+  return value;
+}
+
+function toNativeButton(b) {
+  const text = String(b.text || b.displayText || "").slice(0, 24);
+  if (b.type === "url" || b.url) {
+    return { name: "cta_url", buttonParamsJson: JSON.stringify({ display_text: text, url: b.url, merchant_url: b.url }) };
+  }
+  if (b.type === "call" || b.phoneNumber) {
+    return { name: "cta_call", buttonParamsJson: JSON.stringify({ display_text: text, phone_number: b.phoneNumber }) };
+  }
+  return { name: "quick_reply", buttonParamsJson: JSON.stringify({ display_text: text, id: String(b.id || b.buttonId || b.text).slice(0, 50) }) };
+}
+
+function toSingleSelect(buttonText, sections) {
+  const formattedSections = sections.map((sec) => ({
+    title: String(sec.title || "").slice(0, 24),
+    rows: (sec.rows || []).map((r) => ({
+      header: String(r.header || "").slice(0, 24),
+      title: String(r.title || "").slice(0, 24),
+      description: String(r.description || "").slice(0, 72),
+      id: String(r.id || r.rowId || r.title || "").slice(0, 50),
+    })).slice(0, 10),
+  })).slice(0, 10);
+  return { name: "single_select", buttonParamsJson: JSON.stringify({ title: String(buttonText || "תפריט").slice(0, 24), sections: formattedSections }) };
+}
+
 /**
- * שליחת הודעת כפתורים אינטראקטיבית (Native Flow + Fallback)
- * @param {object} sock - חיבור ה-Baileys
- * @param {string} jid - יעד ההודעה
- * @param {object} options - תוכן ההודעה, כפתורים ואפשרויות
+ * שליחת הודעת Native Flow ברמת relay עם צומת biz (ובצ'אט פרטי גם bot - לפי הווריאנט)
+ */
+export async function relayNativeFlow(sock, jid, { title = "", body = "", footer = "", nativeButtons = [], quoted = null, variant }) {
+  const cfg = INTERACTIVE_VARIANTS[variant] || INTERACTIVE_VARIANTS.A;
+  const { generateWAMessageFromContent, proto, isJidGroup } = await import("@whiskeysockets/baileys");
+  const IM = proto.Message.InteractiveMessage;
+
+  const interactiveMessage = IM.create({
+    header: title ? IM.Header.create({ title: String(title).slice(0, 60), hasMediaAttachment: false }) : undefined,
+    body: IM.Body.create({ text: body }),
+    footer: footer ? IM.Footer.create({ text: String(footer).slice(0, 60) }) : undefined,
+    nativeFlowMessage: IM.NativeFlowMessage.create({ buttons: nativeButtons, messageParamsJson: "" }),
+  });
+
+  const inner = { messageContextInfo: { deviceListMetadata: {}, deviceListMetadataVersion: 2 }, interactiveMessage };
+  const content = cfg.wrap ? { viewOnceMessage: { message: inner } } : inner;
+
+  const waMsg = generateWAMessageFromContent(jid, content, {
+    userJid: sock.user?.id || sock.authState?.creds?.me?.id,
+    quoted: quoted || undefined,
+  });
+
+  const isGroup = typeof isJidGroup === "function" ? isJidGroup(jid) : String(jid || "").endsWith("@g.us");
+  const additionalNodes = [
+    {
+      tag: "biz",
+      attrs: {},
+      content: [{ tag: "interactive", attrs: { type: "native_flow", v: "1" }, content: [{ tag: "native_flow", attrs: { v: "9", name: "mixed" } }] }],
+    },
+  ];
+  if (!isGroup && cfg.botNode) additionalNodes.push({ tag: "bot", attrs: { biz_bot: "1" } });
+
+  await sock.relayMessage(jid, waMsg.message, { messageId: waMsg.key.id, additionalNodes });
+  console.log(`🔘 [כפתורים] נשלחה הודעה אינטראקטיבית (וריאנט ${variant}, ${nativeButtons.map((b) => b.name).join("+")}) ל-${jid} id=${waMsg.key.id}`);
+  return waMsg;
+}
+
+/**
+ * שליחת הודעת כפתורים (Quick Reply / קישור / חיוג). אם הכפתורים כבויים או נכשלו - טקסט רגיל.
+ * body חייב לכלול גם את ההנחיה בטקסט (למי שלא רואה כפתורים).
  */
 export async function sendInteractiveButtons(sock, jid, {
   title = "",
@@ -74,280 +173,87 @@ export async function sendInteractiveButtons(sock, jid, {
   footer = "🚕 נסיעות בוט איכותי",
   buttons = [],
   quoted = null,
+  variant,
 }) {
   if (!sock) return null;
-
-  // בניית כפתורי Native Flow
-  const nativeButtons = buttons.map((b) => {
-    if (b.type === "url" || b.url) {
-      return {
-        name: "cta_url",
-        buttonParamsJson: JSON.stringify({
-          display_text: b.text || b.displayText,
-          url: b.url,
-          merchant_url: b.url,
-        }),
-      };
+  const v = variant || getInteractiveVariant();
+  if (v !== "off" && buttons.length) {
+    try {
+      return await relayNativeFlow(sock, jid, { title, body, footer, nativeButtons: buttons.map(toNativeButton), quoted, variant: v });
+    } catch (e) {
+      console.log(`ℹ️ [כפתורים] שליחה אינטראקטיבית נכשלה (${e?.message}) - שולח טקסט`);
     }
-    if (b.type === "call" || b.phoneNumber) {
-      return {
-        name: "cta_call",
-        buttonParamsJson: JSON.stringify({
-          display_text: b.text || b.displayText,
-          phone_number: b.phoneNumber,
-        }),
-      };
-    }
-    // כפתור Quick Reply רגיל - שולח תגובה טקסטואלית בעת לחיצה
-    return {
-      name: "quick_reply",
-      buttonParamsJson: JSON.stringify({
-        display_text: b.text || b.displayText,
-        id: b.id || b.buttonId || b.text,
-      }),
-    };
-  });
-
-  // ניסיון 1: שימוש ב-generateWAMessageFromContent ו-relayMessage (פורמט Native Flow הרשמי ב-Baileys)
-  try {
-    const baileys = await import("@whiskeysockets/baileys").catch(() => null);
-    if (baileys && baileys.generateWAMessageFromContent && baileys.proto) {
-      const { generateWAMessageFromContent, proto } = baileys;
-
-      const interactiveMessage = proto.Message.InteractiveMessage.create({
-        header: title ? proto.Message.InteractiveMessage.Header.create({ title, hasMediaAttachment: false }) : undefined,
-        body: proto.Message.InteractiveMessage.Body.create({ text: body }),
-        footer: footer ? proto.Message.InteractiveMessage.Footer.create({ text: footer }) : undefined,
-        nativeFlowMessage: proto.Message.InteractiveMessage.NativeFlowMessage.create({
-          buttons: nativeButtons,
-        }),
-      });
-
-      const waMsg = generateWAMessageFromContent(
-        jid,
-        {
-          viewOnceMessage: {
-            message: {
-              messageContextInfo: {
-                deviceListMetadata: {},
-                deviceListMetadataVersion: 2,
-              },
-              interactiveMessage,
-            },
-          },
-        },
-        {
-          userJid: sock.user?.id || sock.authState?.creds?.me?.id,
-          quoted: quoted || undefined,
-        }
-      );
-
-      const isGroup = typeof baileys.isJidGroup === "function"
-        ? baileys.isJidGroup(jid)
-        : String(jid || "").endsWith("@g.us");
-      const additionalNodes = [
-        {
-          tag: "biz",
-          attrs: {},
-          content: [
-            {
-              tag: "interactive",
-              attrs: { type: "native_flow", v: "1" },
-              content: [{ tag: "native_flow", attrs: { v: "9", name: "mixed" } }],
-            },
-          ],
-        },
-      ];
-      if (!isGroup) {
-        additionalNodes.push({ tag: "bot", attrs: { biz_bot: "1" } }); // נדרש בצ'אט פרטי בוואטסאפ!
-      }
-
-      if (sock.relayMessage && waMsg?.key?.id) {
-        await sock.relayMessage(jid, waMsg.message, { messageId: waMsg.key.id, additionalNodes });
-        return waMsg;
-      }
-    }
-  } catch (errProto) {}
-
-  // ניסיון 2: מבנה Buttons רגיל של Baileys
-  try {
-    const legacyButtons = buttons.map((b, idx) => ({
-      buttonId: b.id || b.buttonId || String(idx + 1),
-      buttonText: { displayText: b.text || b.displayText },
-      type: 1,
-    }));
-
-    const res = await sock.sendMessage(
-      jid,
-      {
-        text: body,
-        footer,
-        buttons: legacyButtons,
-        headerType: 1,
-      },
-      quoted ? { quoted } : {}
-    );
-    if (res?.key?.id) return res;
-  } catch (errLegacy) {}
-
-  // ניסיון 3: תבנית Hydrated Template של Baileys
-  try {
-    const hydratedButtons = buttons.map((b, idx) => {
-      if (b.type === "url" || b.url) {
-        return { index: idx + 1, urlButton: { displayText: b.text || b.displayText, url: b.url } };
-      }
-      return { index: idx + 1, quickReplyButton: { displayText: b.text || b.displayText, id: b.id || String(idx + 1) } };
-    });
-
-    const res = await sock.sendMessage(
-      jid,
-      {
-        templateButtons: hydratedButtons,
-        text: body,
-        footer,
-      },
-      quoted ? { quoted } : {}
-    );
-    if (res?.key?.id) return res;
-  } catch (errHydrated) {}
-
-  // ניסיון 4 (Fallback בטוח תמיד): שליחת הודעת טקסט מעוצבת.
-  // שים לב: body כבר כולל בתוכו את כל ההנחיות והמספרים (1, 2, ביטול / ת, תן)
+  }
   return await sock.sendMessage(jid, { text: body }, quoted ? { quoted } : {});
 }
 
 /**
- * שליחת תפריט נפתח (Interactive Single Select List)
+ * שליחת תפריט נפתח (Single Select) + כפתורים נוספים אופציונליים. גיבוי: טקסט מלא.
  */
 export async function sendInteractiveList(sock, jid, {
   title = "📋 תפריט פעולות",
   body = "בחר פעולה מהרשימה:",
   buttonText = "📋 פתח תפריט אפשרויות",
   sections = [],
+  extraButtons = [],
   footer = "🚕 נסיעות בוט איכותי",
   quoted = null,
+  variant,
 }) {
   if (!sock) return null;
-
-  // ניסיון 1: שליחה כ-Native Flow Single Select באמצעות generateWAMessageFromContent + relayMessage + additionalNodes
-  try {
-    const baileys = await import("@whiskeysockets/baileys").catch(() => null);
-    if (baileys && baileys.generateWAMessageFromContent && baileys.proto) {
-      const { generateWAMessageFromContent, proto, isJidGroup } = baileys;
-
-      const formattedSections = sections.map((sec) => ({
-        title: String(sec.title || "").slice(0, 24),
-        rows: (sec.rows || []).map((r) => ({
-          header: String(r.header || "").slice(0, 24),
-          title: String(r.title || "").slice(0, 24),
-          description: String(r.description || "").slice(0, 72),
-          id: String(r.id || r.rowId || r.title || "").slice(0, 50),
-        })).slice(0, 10),
-      })).slice(0, 10);
-
-      const content = {
-        viewOnceMessage: {
-          message: {
-            messageContextInfo: {
-              deviceListMetadata: {},
-              deviceListMetadataVersion: 2,
-            },
-            interactiveMessage: proto.Message.InteractiveMessage.create({
-              header: title
-                ? proto.Message.InteractiveMessage.Header.create({ title: String(title).slice(0, 24), hasMediaAttachment: false })
-                : undefined,
-              body: proto.Message.InteractiveMessage.Body.create({ text: body }),
-              footer: footer
-                ? proto.Message.InteractiveMessage.Footer.create({ text: String(footer).slice(0, 30) })
-                : undefined,
-              nativeFlowMessage: proto.Message.InteractiveMessage.NativeFlowMessage.create({
-                buttons: [
-                  {
-                    name: "single_select",
-                    buttonParamsJson: JSON.stringify({
-                      title: String(buttonText || "תפריט").slice(0, 24),
-                      sections: formattedSections,
-                    }),
-                  },
-                ],
-              }),
-            }),
-          },
-        },
-      };
-
-      const waMsg = generateWAMessageFromContent(
-        jid,
-        content,
-        {
-          userJid: sock.user?.id || sock.authState?.creds?.me?.id,
-          quoted: quoted || undefined,
-        }
-      );
-
-      const isGroup = typeof isJidGroup === "function" ? isJidGroup(jid) : String(jid || "").endsWith("@g.us");
-      const additionalNodes = [
-        {
-          tag: "biz",
-          attrs: {},
-          content: [
-            {
-              tag: "interactive",
-              attrs: { type: "native_flow", v: "1" },
-              content: [{ tag: "native_flow", attrs: { v: "9", name: "mixed" } }],
-            },
-          ],
-        },
-      ];
-      if (!isGroup) {
-        additionalNodes.push({ tag: "bot", attrs: { biz_bot: "1" } }); // נדרש בצ'אט פרטי בוואטסאפ!
-      }
-
-      if (sock.relayMessage && waMsg?.key?.id) {
-        console.log(`📋 [תפריט נפתח] שולח תפריט Native Flow single_select ל-${jid} (ID: ${waMsg.key.id})`);
-        await sock.relayMessage(jid, waMsg.message, {
-          messageId: waMsg.key.id,
-          additionalNodes,
-        });
-        return waMsg;
-      }
+  const v = variant || getInteractiveVariant();
+  if (v !== "off") {
+    try {
+      const nativeButtons = [toSingleSelect(buttonText, sections), ...extraButtons.map(toNativeButton)];
+      return await relayNativeFlow(sock, jid, { title, body, footer, nativeButtons, quoted, variant: v });
+    } catch (e) {
+      console.log(`ℹ️ [תפריט נפתח] שליחה אינטראקטיבית נכשלה (${e?.message}) - שולח טקסט`);
     }
-  } catch (errNativeList) {
-    console.log(`ℹ️ [תפריט נפתח] Native Flow נכשל (${errNativeList?.message}), מנסה מבנה קלאסי`);
   }
 
-  // ניסיון 2: מבנה רשימה קלאסי של Baileys
-  try {
-    const classicListPayload = {
-      text: body,
-      footer: footer,
-      title: title,
-      buttonText: buttonText,
-      sections: sections.map((sec) => ({
-        title: sec.title,
-        rows: sec.rows.map((r) => ({
-          title: r.title,
-          description: r.description || "",
-          rowId: r.id || r.rowId || r.title,
-        })),
-      })),
-    };
-
-    const res = await sock.sendMessage(jid, classicListPayload, quoted ? { quoted } : {});
-    if (res?.key?.id) return res;
-  } catch (errClassicList) {}
-
-  // ניסיון 3 (Fallback בטוח): שליחה כטקסט
   let fallbackText = `*${title}*\n${body}\n\n`;
   sections.forEach((sec) => {
     fallbackText += `📂 *${sec.title}*\n`;
     sec.rows.forEach((r) => {
-      fallbackText += `• *${r.title}* ${r.description ? `(${r.description})` : ""}\n`;
+      fallbackText += `• *${r.id || r.title}* ${r.description ? `(${r.description})` : ""}\n`;
     });
     fallbackText += `\n`;
   });
-
   return await sock.sendMessage(jid, { text: fallbackText.trim() }, quoted ? { quoted } : {});
+}
+
+/**
+ * בדיקת כפתורים: שולח את אותה הודעה ב-4 פורמטים. המשתמש לוחץ על הכפתור בגרסה שמוצגת אצלו,
+ * והלחיצה עצמה מוכיחה גם תצוגה וגם קליטת תגובה.
+ */
+export async function sendInteractiveTest(sock, jid) {
+  await sock.sendMessage(jid, {
+    text:
+      "🧪 *בדיקת כפתורים*\n\nתיכף יגיעו 4 הודעות בדיקה (A, B, C, D).\n" +
+      "בכל הודעה שבה אתה *רואה כפתורים* - לחץ על הכפתור *✅ עובד*.\n" +
+      "הודעה שמגיעה ריקה / לא מגיעה / 'לא נתמך' = הפורמט הזה לא עובד במכשיר שלך.\n\n" +
+      "כדאי לבדוק גם באנדרואיד וגם באייפון.",
+  });
+  const sent = [];
+  for (const v of Object.keys(INTERACTIVE_VARIANTS)) {
+    try {
+      await relayNativeFlow(sock, jid, {
+        title: `🧪 בדיקה ${v}`,
+        body: `זו הודעת בדיקה ${v}.\nאם אתה רואה מתחת כפתורים - לחץ *✅ עובד ${v}*.\n(נסה גם לפתוח את התפריט הנפתח)`,
+        footer: "נסיעות בוט איכותי",
+        nativeButtons: [
+          toNativeButton({ text: `✅ עובד ${v}`, id: `כפתורים עובדים ${v}` }),
+          toSingleSelect("📋 תפריט", [{ title: "בדיקה", rows: [{ id: `כפתורים עובדים ${v}`, title: `✅ התפריט עובד ${v}`, description: "בחירה כאן = התפריט הנפתח עובד" }] }]),
+        ],
+        variant: v,
+      });
+      sent.push(v);
+    } catch (e) {
+      console.log(`ℹ️ [בדיקת כפתורים] וריאנט ${v} נכשל בשליחה: ${e?.message}`);
+    }
+    await new Promise((r) => setTimeout(r, 1200));
+  }
+  return sent;
 }
 
 /**
@@ -526,8 +432,9 @@ export async function sendFullInteractiveMenu(sock, jid, { activeSearches = [], 
   return await sendInteractiveList(sock, jid, {
     title: "🚕 תפריט נסיעות בוט איכותי",
     body,
-    buttonText: "📋 לחץ כאן לבחירת פקודה",
+    buttonText: "📋 בחר פקודה",
     sections,
+    extraButtons: [{ text: "🛑 תפוס", id: "תפוס" }],
     footer: "נסיעות בוט איכותי · שליטה קלה בלחיצה אחת",
   });
 }
