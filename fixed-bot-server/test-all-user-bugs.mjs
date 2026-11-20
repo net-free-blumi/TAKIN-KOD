@@ -544,6 +544,8 @@ const mockNativeFlow = {
 };
 assert(extractInteractiveResponse(mockNativeFlow) === "2", "חילוץ תגובה מ-Native Flow Interactive Response פועל");
 
+// בדיקות מבנה הכפתורים רצות עם פורמט A פעיל (בפועל ברירת המחדל היא טקסט עד שנבחר פורמט)
+process.env.INTERACTIVE_VARIANT = "A";
 // 5. בדיקת בניית התראת נסיעה עם כפתור תפיסה מהיר "ת" וכפתור וואטסאפ לסדרן
 const mockRideData = {
   cleanedText: "שמש 50 שח\nרמה א לרמה ד",
@@ -557,6 +559,10 @@ const mockInteractiveSock = {
   sendMessage: async (jid, payload) => {
     capturedPayload = payload;
     return { key: { id: "MSG_INTERACTIVE_123" } };
+  },
+  relayMessage: async (jid, message) => {
+    capturedPayload = message;
+    return "MSG_INTERACTIVE_123";
   }
 };
 
@@ -575,6 +581,10 @@ const mockSockConfirm = {
   sendMessage: async (jid, payload) => {
     capturedConfirm = payload;
     return { key: { id: "MSG_CONFIRM_123" } };
+  },
+  relayMessage: async (jid, message) => {
+    capturedConfirm = message;
+    return "MSG_CONFIRM_123";
   }
 };
 
@@ -611,6 +621,7 @@ const menuSections =
   capturedMenu?.interactiveMessage?.nativeFlowMessage?.buttons ||
   capturedMenu?.sections;
 assert(Boolean(menuSections), "תפריט נפתח מלא נוצר בהצלחה עם אפשרויות בחירה נוחות");
+delete process.env.INTERACTIVE_VARIANT;
 
 // ==========================================
 // בדיקה 8: תרחישי הדיווח האחרון (בידוד צפת מבית שמש + נחל משמר ורחוב ברוש)
