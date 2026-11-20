@@ -2616,8 +2616,11 @@ async function boot() {
   }, 45000);
 }
 
-const isDirectRun = process.argv[1] && (import.meta.url === `file://${process.argv[1]}` || process.argv[1].endsWith("index.js"));
-if (isDirectRun) {
+// העלייה תמיד רצה. (בעבר נבדק process.argv[1] - תחת pm2 הוא לפעמים הקובץ הפנימי של pm2,
+// ואז השרת עלה בלי לחבר את הבוט והנהגים כלל.) כיבוי מכוון רק עם WA_NO_BOOT=1.
+if (process.env.WA_NO_BOOT === "1") {
+  console.log("⏸️ WA_NO_BOOT=1 - השרת עלה בלי חיבורי וואטסאפ/טלגרם");
+} else {
   boot().catch((err) => {
     console.error("שגיאה בהפעלת הבוט:", err);
   });
