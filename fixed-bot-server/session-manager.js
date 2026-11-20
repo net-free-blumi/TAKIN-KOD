@@ -77,6 +77,14 @@ async function getWaVersion() {
   return cachedWaVersion || DEFAULT_CONNECTION_CONFIG.version;
 }
 
+function getBotPhone() {
+  try {
+    return cleanPhone(process.env.BOT_PHONE || loadUsersData().botPhone || mainBotStatus.phone || "972555081810");
+  } catch (e) {
+    return cleanPhone(process.env.BOT_PHONE || "972555081810");
+  }
+}
+
 function backoffDelay(attempt) {
   return Math.min(3000 * Math.pow(2, Math.max(0, attempt - 1)), 30000);
 }
@@ -726,6 +734,7 @@ export async function runConnectionWatchdog(now = Date.now()) {
   try {
     for (const phone of fs.readdirSync(SESSIONS_DIR)) {
       if (seen.has(phone) || driverConnecting.has(phone)) continue;
+      if (cleanPhone(phone) === getBotPhone()) continue;
       if (!isPairedOnDisk(path.join(SESSIONS_DIR, phone))) continue;
       console.log(`🩺 [שומר חיבורים] נהג ${phone} מקושר אך לא נטען - מתחבר`);
       revived.push(phone);
@@ -774,6 +783,7 @@ export { flushAllAuthStates };
 export async function connectDriverSession(phone, callbacks = {}) {
   const driverPhone = cleanPhone(phone);
   if (!driverPhone) throw new Error("מספר טלפון נהג לא תקין");
+  if (driverPhone === getBotPhone()) throw new Error("זה המספר של הבוט הראשי - לא ניתן לחבר אותו כנהג");
 
   // סשן חי קיים (מחובר / מתחבר / ממתין לצימוד) - מחזירים אותו ולא פותחים סוקט שני על אותם מפתחות
   const existing = driverSessions.get(driverPhone);
@@ -1070,6 +1080,7 @@ export function resetDriverAuth(phone) {
 export async function requestDriverPairingCode(phone, callbacks = {}, options = {}) {
   const driverPhone = cleanPhone(phone);
   if (!driverPhone) throw new Error("מספר טלפון נהג לא תקין");
+  if (driverPhone === getBotPhone()) throw new Error("זה המספר של הבוט הראשי - לא ניתן לחבר אותו כנהג");
 
   if (isLid(driverPhone) || isLid(phone)) {
     const err = new Error("לא ניתן להפיק קוד צימוד למזהה חסוי (LID). וואטסאפ מחייבת מספר טלפון סלולרי רגיל (למשל: 0521234567)");
@@ -1248,7 +1259,20 @@ export async function initSavedDriverSessions(callbacks) {
   try {
     if (!fs.existsSync(SESSIONS_DIR)) return;
     const items = fs.readdirSync(SESSIONS_DIR);
+    const botPhone = getBotPhone();
     for (const phone of items) {
+      // תיקיית "נהג" עם המספר של הבוט הראשי (נוצרה בטעות בעבר) - לארכיון, לא מתחברים איתה
+      if (botPhone && cleanPhone(phone) === botPhone) {
+        try {
+          fs.mkdirSync(ARCHIVE_DIR, { recursive: true });
+          const dest = path.join(ARCHIVE_DIR, `bot-as-driver-${phone}-${new Date().toISOString().replace(/[:.]/g, "-")}`);
+          fs.renameSync(path.join(SESSIONS_DIR, phone), dest);
+          console.log(`📦 תיקיית נהג עם מספר הבוט הראשי (${phone}) הועברה לארכיון: ${dest}`);
+        } catch (e) {
+          console.error(`העברת תיקיית ${phone} לארכיון נכשלה:`, e.message);
+        }
+        continue;
+      }
       if (isPairedOnDisk(path.join(SESSIONS_DIR, phone))) {
         console.log(`🔄 משחזר חיבור וואטסאפ שמור עבור נהג: ${phone}...`);
 
