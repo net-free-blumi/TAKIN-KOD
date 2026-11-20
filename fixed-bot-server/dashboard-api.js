@@ -825,6 +825,11 @@ export function startDashboard(runtime) {
     res.json(getAnalyticsPayload());
   });
 
+  // בריאות חיבורים: כמה ניתוקים היו, למה ומתי (מספרים מוסתרים) - לבדיקה מהשרת: curl localhost:3000/api/connection-health
+  app.get("/api/connection-health", (_req, res) => {
+    res.json(ctx?.getConnectionHealth ? ctx.getConnectionHealth() : { error: "unavailable" });
+  });
+
   // סשנים פעילים (ריבוי וואטסאפ: בוט + נהגים) - מוגן באבטחה מלאה
   app.get("/api/sessions", requireAuth, (_req, res) => {
     const summary = ctx?.getAllSessions ? ctx.getAllSessions() : { bot: {}, drivers: [] };

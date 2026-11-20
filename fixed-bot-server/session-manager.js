@@ -455,6 +455,7 @@ export async function startMainBot(callbacks = {}, options = {}) {
         console.log(`✅ הבוט הראשי (${botPhone}) מחובר ופעיל בהצלחה לוואטסאפ!`);
         mainRetryCount = 0;
         mainConflictCount = 0;
+        recordConnEvent("main", "open");
         setMainState("connected", {
           connected: true,
           registered: true,
@@ -471,6 +472,7 @@ export async function startMainBot(callbacks = {}, options = {}) {
         const code = lastDisconnect?.error?.output?.statusCode;
         const reason = String(code || lastDisconnect?.error?.message || "closed");
         const nowPaired = isPairedCreds(sock.authState?.creds);
+        recordConnEvent("main", "close", reason);
         detachSock(sock);
         mainBotStatus.connected = false;
         mainBotStatus.lastDisconnectReason = reason;
@@ -848,6 +850,7 @@ async function createDriverSocket(driverPhone, callbacks = {}) {
       sessionObj.isInitialPairing = isFirstEverPairing;
       sessionObj.wasAlreadyRegisteredOnDisk = true;
       driverRetryCount.set(driverPhone, 0);
+      recordConnEvent(driverPhone, "open");
 
       console.log(`🚕 [נהג ${driverPhone}] וואטסאפ מחובר ומסונכרן בהצלחה! (התחברות ראשונית: ${isFirstEverPairing ? "כן" : "לא - שחזור/התחברות מחדש"})`);
       sessionObj.status = "connected";
@@ -869,6 +872,7 @@ async function createDriverSocket(driverPhone, callbacks = {}) {
       const code = lastDisconnect?.error?.output?.statusCode;
       sessionObj.status = "disconnected";
       sessionObj.lastDisconnectReason = String(code || lastDisconnect?.error?.message || "closed");
+      recordConnEvent(driverPhone, "close", sessionObj.lastDisconnectReason);
       onStatusChange?.(driverPhone, sessionObj);
 
       detachSock(sock);
@@ -1176,6 +1180,32 @@ export async function ensureDriverSessionForQr(phone, callbacks = {}, options = 
     qrTimestamp: session.qrTimestamp || null,
     status: session.status,
     registered: session.registered,
+  };
+}
+
+// יומן חיבורים/ניתוקים (בזיכרון, 200 אחרונים) - לאבחון מהיר: מי, מתי, ולמה
+const connHistory = [];
+const bootAt = Date.now();
+function recordConnEvent(who, type, code = "") {
+  connHistory.push({ who, type, code: String(code || ""), at: new Date().toISOString() });
+  if (connHistory.length > 200) connHistory.splice(0, connHistory.length - 200);
+}
+
+export function getConnectionHealth() {
+  const mask = (w) => (w === "main" ? "bot" : "…" + String(w).slice(-4));
+  const per = {};
+  for (const e of connHistory) {
+    const k = mask(e.who);
+    per[k] = per[k] || { opens: 0, closes: 0, lastClose: null };
+    if (e.type === "open") per[k].opens++;
+    else { per[k].closes++; per[k].lastClose = { code: e.code, at: e.at }; }
+  }
+  return {
+    uptimeMinutes: Math.round((Date.now() - bootAt) / 60000),
+    bot: { connected: mainBotStatus.connected, state: mainBotStatus.state },
+    drivers: [...driverSessions.entries()].map(([p, s]) => ({ phone: mask(p), status: s.status })),
+    counts: per,
+    recent: connHistory.slice(-30).map((e) => ({ ...e, who: mask(e.who) })),
   };
 }
 
