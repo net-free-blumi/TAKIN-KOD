@@ -42,12 +42,13 @@ function parseJson(text) {
 export async function useSafeMultiFileAuthState(folder) {
   await mkdir(folder, { recursive: true });
 
-  // ניקוי קבצים זמניים שנשארו מכתיבה שנקטעה (הקובץ האמיתי שלם בזכות rename)
-  try {
-    for (const f of await readdir(folder)) {
-      if (f.endsWith(".tmp")) await unlink(join(folder, f)).catch(() => {});
-    }
-  } catch (e) {}
+  // ניקוי קבצים זמניים שנשארו מכתיבה שנקטעה (הקובץ האמיתי שלם בזכות rename).
+  // ברקע ולא בדרך לחיבור: בתיקייה עם מאות אלפי קבצים סריקה כזו יכולה לקחת דקות.
+  readdir(folder)
+    .then(async (files) => {
+      for (const f of files) if (f.endsWith(".tmp")) await unlink(join(folder, f)).catch(() => {});
+    })
+    .catch(() => {});
 
   const pending = new Set();
 

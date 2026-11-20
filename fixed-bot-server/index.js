@@ -2575,24 +2575,29 @@ async function boot() {
     formatIsraeliPhone,
   });
 
-  // 1. הפעלת הבוט הראשי
-  await startMainBot({
-    onMessage: handleIncomingMessage,
-    onReaction: handleReaction,
-    onStatusChange: handleMainBotStatusChange,
-    onEvent: recordEvent,
-  });
-
-  // 2. שחזור סשנים שמורים של נהגים
-  await initSavedDriverSessions({
-    onRideMessage: handleIncomingMessage,
-    onReaction: handleReaction,
-    onStatusChange: handleDriverStatusChange,
-    onEvent: recordEvent,
-  });
-
-  // שומר חיבורים: מחבר מחדש כל חשבון מקושר שנשאר מנותק בלי טיפול
+  // שומר חיבורים מופעל ראשון: גם אם שלב כלשהו בעלייה נתקע, תוך דקה-שתיים הוא מחבר כל חשבון מקושר
   startConnectionWatchdog();
+
+  // 1+2. הבוט הראשי והנהגים עולים במקביל - נהג לא ממתין לבוט ולהפך
+  const bootT0 = Date.now();
+  await Promise.all([
+    startMainBot({
+      onMessage: handleIncomingMessage,
+      onReaction: handleReaction,
+      onStatusChange: handleMainBotStatusChange,
+      onEvent: recordEvent,
+    })
+      .then(() => console.log(`⏱️ [עלייה] הבוט הראשי הופעל אחרי ${Date.now() - bootT0}ms`))
+      .catch((e) => console.error("שגיאה בהפעלת הבוט הראשי (שומר החיבורים ינסה שוב):", e.message)),
+    initSavedDriverSessions({
+      onRideMessage: handleIncomingMessage,
+      onReaction: handleReaction,
+      onStatusChange: handleDriverStatusChange,
+      onEvent: recordEvent,
+    })
+      .then(() => console.log(`⏱️ [עלייה] חיבורי הנהגים נטענו אחרי ${Date.now() - bootT0}ms`))
+      .catch((e) => console.error("שגיאה בשחזור נהגים (שומר החיבורים ינסה שוב):", e.message)),
+  ]);
 
   // 3. בוט הטלגרם הראשי (שליחת נסיעות לנהגים בפרטי) - לא תלוי בשום חיבור אחר
   startTelegramBot({ cleanPhone, isUserApproved, getUserSearch, recordEvent, formatIsraeliPhone })

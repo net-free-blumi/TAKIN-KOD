@@ -422,8 +422,11 @@ export async function startMainBot(callbacks = {}, options = {}) {
   try {
     stopMainSocket();
 
+    const tStart = Date.now();
     const { state, saveCreds, backupCreds } = await useSafeMultiFileAuthState(BOT_AUTH_DIR);
+    const tAuth = Date.now();
     const version = await getWaVersion();
+    console.log(`⏱️ [הבוט הראשי] טעינת מפתחות ${tAuth - tStart}ms, גרסת WhatsApp ${Date.now() - tAuth}ms - פותח חיבור`);
 
     const sock = buildSocket(version, state);
     mainBotSock = sock;
@@ -1241,6 +1244,7 @@ export function getAllSessionsSummary() {
 }
 
 export async function initSavedDriverSessions(callbacks) {
+  if (callbacks && Object.keys(callbacks).length) lastDriverCallbacks = callbacks;
   try {
     if (!fs.existsSync(SESSIONS_DIR)) return;
     const items = fs.readdirSync(SESSIONS_DIR);
