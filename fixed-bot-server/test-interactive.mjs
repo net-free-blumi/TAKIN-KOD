@@ -50,6 +50,24 @@ try {
   check("בחירת פורמט נשמרת", ix.setInteractiveVariant("b") === "B" && ix.getInteractiveVariant() === "B");
   check("כיבוי חוזר לטקסט", ix.setInteractiveVariant("כבוי") === "off" && ix.getInteractiveVariant() === "off");
 
+  // התראת נסיעה עם כפתורים
+  check("כשהכפתורים כבויים התראת נסיעה חוזרת לטקסט", (await ix.sendRideAlertInteractive(sock, jid, { body: "x" })) === null);
+  relayed.length = 0;
+  const alert = await ix.sendRideAlertInteractive(sock, jid, { body: "שמש 100", senderPhone: "0521234567", variant: "D" });
+  const btns = relayed[0].message.interactiveMessage.nativeFlowMessage.buttons.map((x) => ({ name: x.name, p: JSON.parse(x.buttonParamsJson) }));
+  check("כפתור ת מכיל את מזהה ההתראה עצמה", btns[0].name === "quick_reply" && btns[0].p.id === `${ix.CLAIM_BUTTON_PREFIX}${alert.key.id}` && relayed[0].opts.messageId === alert.key.id);
+  check("כפתור וואטסאפ לסדרן בפורמט בינלאומי", btns.some((x) => x.name === "cta_url" && x.p.url === "https://wa.me/972521234567"));
+  check("כפתור תפריט בהתראה", btns.some((x) => x.p.id === "תפריט"));
+  relayed.length = 0;
+  await ix.sendRideAlertInteractive(sock, jid, { body: "x", telegramUrl: "https://t.me/c/1/2", variant: "D" });
+  const tgBtns = relayed[0].message.interactiveMessage.nativeFlowMessage.buttons.map((x) => JSON.parse(x.buttonParamsJson));
+  check("נסיעת טלגרם: כפתור פתח בטלגרם", tgBtns.some((x) => x.url === "https://t.me/c/1/2"));
+
+  // תשובה עם כפתור תפריט: טקסט כשכבוי
+  texts.length = 0;
+  await ix.sendTextWithMenuButton(sock, jid, "החיפוש הופעל");
+  check("תשובה עם כפתור תפריט חוזרת לטקסט כשכבוי", texts.at(-1)?.content.text === "החיפוש הופעל");
+
   // פענוח לחיצה
   const qr = { interactiveResponseMessage: { nativeFlowResponseMessage: { name: "quick_reply", paramsJson: JSON.stringify({ id: "כפתורים עובדים C" }) } } };
   check("לחיצה על כפתור מפוענחת לפקודה", ix.extractInteractiveResponse(qr) === "כפתורים עובדים C");

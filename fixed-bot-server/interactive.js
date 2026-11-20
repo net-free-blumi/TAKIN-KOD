@@ -128,7 +128,7 @@ function toSingleSelect(buttonText, sections) {
 /**
  * שליחת הודעת Native Flow ברמת relay עם צומת biz (ובצ'אט פרטי גם bot - לפי הווריאנט)
  */
-export async function relayNativeFlow(sock, jid, { title = "", body = "", footer = "", nativeButtons = [], quoted = null, variant }) {
+export async function relayNativeFlow(sock, jid, { title = "", body = "", footer = "", nativeButtons = [], quoted = null, variant, messageId }) {
   const cfg = INTERACTIVE_VARIANTS[variant] || INTERACTIVE_VARIANTS.A;
   const { generateWAMessageFromContent, proto, isJidGroup } = await import("@whiskeysockets/baileys");
   const IM = proto.Message.InteractiveMessage;
@@ -146,6 +146,7 @@ export async function relayNativeFlow(sock, jid, { title = "", body = "", footer
   const waMsg = generateWAMessageFromContent(jid, content, {
     userJid: sock.user?.id || sock.authState?.creds?.me?.id,
     quoted: quoted || undefined,
+    messageId: messageId || undefined,
   });
 
   const isGroup = typeof isJidGroup === "function" ? isJidGroup(jid) : String(jid || "").endsWith("@g.us");
@@ -437,4 +438,56 @@ export async function sendFullInteractiveMenu(sock, jid, { activeSearches = [], 
     extraButtons: [{ text: "🛑 תפוס", id: "תפוס" }],
     footer: "נסיעות בוט איכותי · שליטה קלה בלחיצה אחת",
   });
+}
+
+/**
+ * כפתורים להתראת נסיעה (כמו בבוטים מקצועיים):
+ * ✋ ת = תפיסת הנסיעה הזו בדיוק (המזהה של ההודעה מוטמע בכפתור) | פתח בטלגרם / וואטסאפ לסדרן | 📋 תפריט
+ * מחזיר את ההודעה שנשלחה, או null אם הכפתורים כבויים (ואז השולח שולח טקסט רגיל).
+ */
+export const CLAIM_BUTTON_PREFIX = "claim:";
+
+export async function sendRideAlertInteractive(sock, jid, { body, telegramUrl = null, senderPhone = null, variant }) {
+  const v = variant || getInteractiveVariant();
+  if (v === "off" || !sock?.relayMessage) return null;
+  const { generateMessageID } = await import("@whiskeysockets/baileys");
+  const messageId = generateMessageID();
+
+  const buttons = [{ text: "✋ ת - תפוס נסיעה", id: `${CLAIM_BUTTON_PREFIX}${messageId}` }];
+  if (telegramUrl) {
+    buttons.push({ text: "✈️ פתח בטלגרם", url: telegramUrl });
+  } else {
+    const digits = String(senderPhone || "").replace(/\D/g, "");
+    const intl = digits.startsWith("0") ? `972${digits.slice(1)}` : digits;
+    if (intl.length >= 11 && intl.length <= 13) buttons.push({ text: "💬 וואטסאפ לסדרן", url: `https://wa.me/${intl}` });
+  }
+  buttons.push({ text: "📋 תפריט", id: "תפריט" });
+
+  return await relayNativeFlow(sock, jid, {
+    body,
+    footer: "נסיעות בוט איכותי",
+    nativeButtons: buttons.map(toNativeButton),
+    variant: v,
+    messageId,
+  });
+}
+
+/**
+ * תשובה קצרה של הבוט + כפתור "📋 תפריט" מתחת (אם הכפתורים פעילים), אחרת טקסט רגיל.
+ */
+export async function sendTextWithMenuButton(sock, jid, text, extraButtons = []) {
+  const v = getInteractiveVariant();
+  if (v !== "off" && sock?.relayMessage) {
+    try {
+      return await relayNativeFlow(sock, jid, {
+        body: text,
+        footer: "נסיעות בוט איכותי",
+        nativeButtons: [...extraButtons, { text: "📋 תפריט", id: "תפריט" }].map(toNativeButton),
+        variant: v,
+      });
+    } catch (e) {
+      console.log(`ℹ️ [כפתורים] שליחה עם כפתור תפריט נכשלה (${e?.message}) - שולח טקסט`);
+    }
+  }
+  return await sock.sendMessage(jid, { text });
 }

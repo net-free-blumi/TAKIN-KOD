@@ -37,6 +37,9 @@ import {
   sendPendingSearchConfirmationWithButtons,
   sendFullInteractiveMenu,
   sendInteractiveTest,
+  sendRideAlertInteractive,
+  sendTextWithMenuButton,
+  CLAIM_BUTTON_PREFIX,
   getInteractiveVariant,
   setInteractiveVariant,
   INTERACTIVE_VARIANTS,
@@ -834,7 +837,21 @@ async function deliverRideAlert(driverSock, driverPhone, rideData, originalMsg) 
   for (const a of attempts) {
     for (const jid of targetJids) {
       try {
-        const sentMsg = await trySend(a.sock, jid, { text: alertMsg }, quotedGroupMsg);
+        let sentMsg = null;
+        // כפתורים (ת / טלגרם / סדרן / תפריט) - רק מהבוט הראשי ורק אם נבחר פורמט שעובד; אחרת טקסט רגיל עם ציטוט
+        if (a.via === "main" && getInteractiveVariant() !== "off") {
+          try {
+            sentMsg = await sendRideAlertInteractive(a.sock, jid, {
+              body: alertMsg,
+              telegramUrl: rideData.isTelegram ? rideData.telegramUrl : null,
+              senderPhone: rideData.senderPhone,
+            });
+          } catch (e) {
+            console.log(`ℹ️ [כפתורים] התראה עם כפתורים נכשלה (${e.message}) - שולח טקסט`);
+            sentMsg = null;
+          }
+        }
+        if (!sentMsg) sentMsg = await trySend(a.sock, jid, { text: alertMsg }, quotedGroupMsg);
         if (!sentMsg) continue;
 
         if (sentMsg.key?.id) {
@@ -1990,8 +2007,18 @@ async function handleIncomingMessage(sock, upsert, sessionContext) {
         continue;
       }
 
-      let targetAlertInfo = quotedStanzaId ? sentAlertsCache.get(quotedStanzaId) : null;
-      const isClaimWord = norm === "תן" || norm === "קח" || norm === "תן לי" || norm === "שלי" ||
+      // לחיצה על כפתור "✋ ת" בהתראה: המזהה של ההתראה מוטמע בכפתור
+      const claimButtonId = String(text || "").trim().startsWith(CLAIM_BUTTON_PREFIX)
+        ? String(text).trim().slice(CLAIM_BUTTON_PREFIX.length)
+        : null;
+      let targetAlertInfo = claimButtonId
+        ? sentAlertsCache.get(claimButtonId) || null
+        : quotedStanzaId ? sentAlertsCache.get(quotedStanzaId) : null;
+      if (claimButtonId && !targetAlertInfo) {
+        await sock.sendMessage(jid, { text: "⌛ הנסיעה הזו כבר לא זמינה לתפיסה דרך הבוט (ישנה מדי). פנה ישירות לסדרן." });
+        continue;
+      }
+      const isClaimWord = Boolean(claimButtonId) || norm === "תן" || norm === "קח" || norm === "תן לי" || norm === "שלי" ||
         norm === "קח_נסיעה" || norm === "claim_ride" ||
         norm === "ת פה" || norm === "תן פה" || norm === "פה";
 
@@ -2191,7 +2218,7 @@ async function handleIncomingMessage(sock, upsert, sessionContext) {
         stopUserSearch(senderPhone);
         recordEvent("command", `חיפוש הופסק ע"י ${pushName} (${senderPhone})`);
         await sendSticker(sock, jid, STICKER_STOPPED_PATH);
-        await sock.sendMessage(jid, { text: `🛑 *החיפוש הופסק בהצלחה!* (מצב תפוס)\nלחזרה כתוב "פנוי..." או "תפריט".` });
+        await sendTextWithMenuButton(sock, jid, `🛑 *החיפוש הופסק בהצלחה!* (מצב תפוס)\nלחזרה כתוב "פנוי..." או "תפריט".`);
         continue;
       }
 
@@ -2291,7 +2318,7 @@ async function handleIncomingMessage(sock, upsert, sessionContext) {
           recordEvent("command", `הופעל חיפוש עבור ${senderPhone}: ${parsed.displayText}`);
 
           await sendSticker(sock, jid, STICKER_LIKE_PATH);
-          await sock.sendMessage(jid, { text: responseMsg });
+          await sendTextWithMenuButton(sock, jid, responseMsg, [{ text: "🛑 תפוס", id: "תפוס" }]);
           continue;
         }
 
@@ -2305,7 +2332,15 @@ async function handleIncomingMessage(sock, upsert, sessionContext) {
           promptMsg += `👉 *2* או *החלף* ⬅️ להחליף את כל החיפושים בחדש בלבד\n`;
           promptMsg += `👉 *ביטול* (או *לא*) ⬅️ להישאר עם הקיים ללא שינוי`;
 
-          await sock.sendMessage(jid, { text: promptMsg });
+          await sendInteractiveButtons(sock, jid, {
+            body: promptMsg,
+            footer: "נסיעות בוט איכותי",
+            buttons: [
+              { text: "➕ הוסף במקביל", id: "1" },
+              { text: "🔁 החלף", id: "2" },
+              { text: "✖️ ביטול", id: "ביטול" },
+            ],
+          });
           continue;
         }
       }
