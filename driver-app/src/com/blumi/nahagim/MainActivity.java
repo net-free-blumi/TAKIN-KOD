@@ -12,7 +12,6 @@ import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.PowerManager;
-import android.provider.Settings;
 import android.view.WindowInsets;
 import android.webkit.WebResourceRequest;
 import android.webkit.WebSettings;
@@ -31,15 +30,18 @@ public final class MainActivity extends Activity {
 
     private WebView web;
     private Bridge bridge;
+    private volatile String rideToOpen = "";
 
     @SuppressLint("SetJavaScriptEnabled")
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         Notifications.createChannels(this);
+        // Not again when Android recreates the screen
+        if (savedInstanceState == null) readRide(getIntent());
 
         web = new WebView(this);
-        web.setBackgroundColor(Color.rgb(16, 21, 29));
+        web.setBackgroundColor(Color.WHITE);
         WebSettings settings = web.getSettings();
         settings.setJavaScriptEnabled(true);
         settings.setAllowContentAccess(false);
@@ -55,7 +57,7 @@ public final class MainActivity extends Activity {
 
         // Android 15 draws edge to edge, so keep clear of system bars and the keyboard
         FrameLayout root = new FrameLayout(this);
-        root.setBackgroundColor(Color.rgb(16, 21, 29));
+        root.setBackgroundColor(Color.WHITE);
         root.addView(web);
         if (Build.VERSION.SDK_INT >= 30) {
             root.setOnApplyWindowInsetsListener((view, insets) -> {
@@ -78,7 +80,33 @@ public final class MainActivity extends Activity {
         super.onResume();
         visible = new WeakReference<>(this);
         PushService.sync(this);
+        Speech.get(this).check();
         run("window.onNativeResume && window.onNativeResume()");
+    }
+
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        readRide(intent);
+    }
+
+    private void readRide(Intent intent) {
+        if (intent == null || (intent.getFlags() & Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY) != 0) return;
+        String id = intent.getStringExtra(Notifications.EXTRA_RIDE);
+        if (id == null || id.isEmpty()) return;
+        rideToOpen = id;
+        Speech.get(this).stop();
+    }
+
+    String takeRide() {
+        String id = rideToOpen;
+        rideToOpen = "";
+        return id;
+    }
+
+    static void voiceChanged() {
+        MainActivity activity = visible.get();
+        if (activity != null) activity.run("window.onNativeVoice && window.onNativeVoice()");
     }
 
     @Override
@@ -141,14 +169,22 @@ public final class MainActivity extends Activity {
     }
 
     void openNotificationSettings() {
-        start(new Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS)
-                .putExtra(Settings.EXTRA_APP_PACKAGE, getPackageName()));
+        start(new Intent(android.provider.Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+                .putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, getPackageName()));
     }
 
     @SuppressLint("BatteryLife")
     void requestBatteryExemption() {
-        start(new Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+        start(new Intent(android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
                 Uri.parse("package:" + getPackageName())));
+    }
+
+    void openVoiceSettings() {
+        try {
+            startActivity(new Intent("com.android.settings.TTS_SETTINGS"));
+        } catch (ActivityNotFoundException e) {
+            start(new Intent(android.provider.Settings.ACTION_SETTINGS));
+        }
     }
 
     void openExternal(String url) {

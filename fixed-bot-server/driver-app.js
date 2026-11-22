@@ -8,6 +8,7 @@ import { AppError, createDriverAuth, normalizeMobile } from "./driver-app-auth.j
 export const CLAIM_WINDOW_MS = 25 * 60 * 1000;
 const NOTIFY_MAX_AGE_MS = 10 * 60 * 1000;
 const MAX_WAIT_SEC = 55;
+const MAX_SEARCHES = 6;
 const OUTCOMES = new Set(["got", "done", "missed"]);
 
 const israelDate = (ms) => new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Jerusalem" }).format(new Date(ms));
@@ -144,6 +145,7 @@ export function createDriverApp({
       phone: device.phone,
       ...getProfile(device.phone),
       search: getSearch().get(device.phone),
+      features: { multiSearch: true },
       stats: summarize(store.driver(device.phone).rides, now()),
     }),
     "GET /rides": ({ device, query }) => {
@@ -179,6 +181,22 @@ export function createDriverApp({
       if (!command || command.length > 120) throw new AppError(400, "כתוב מה לחפש");
       const result = await getSearch().apply(device.phone, command);
       if (!result.ok) throw new AppError(400, result.error);
+      return { search: result.search };
+    },
+    "POST /search/add": async ({ device, body }) => {
+      const command = String(body.command ?? "").trim();
+      if (!command || command.length > 120) throw new AppError(400, "כתוב מה לחפש");
+      const current = getSearch().get(device.phone);
+      if (current.active && current.searches?.length >= MAX_SEARCHES) {
+        throw new AppError(400, `אפשר עד ${MAX_SEARCHES} חיפושים במקביל`);
+      }
+      const result = await getSearch().apply(device.phone, command, { add: true });
+      if (!result.ok) throw new AppError(400, result.error);
+      return { search: result.search };
+    },
+    "POST /search/remove": async ({ device, body }) => {
+      const result = await getSearch().remove(device.phone, String(body.id ?? ""));
+      if (!result.ok) throw new AppError(404, result.error);
       return { search: result.search };
     },
     "POST /search/stop": async ({ device }) => ({ search: (await getSearch().stop(device.phone)).search }),

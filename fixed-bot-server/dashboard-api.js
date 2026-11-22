@@ -1209,7 +1209,7 @@ export function startDashboard(runtime) {
   });
 
   // לוגיקה אחת לאתר הניהול ולאפליקציית הנהגים
-  async function applySearch(cleanP, cmd) {
+  async function applySearch(cleanP, cmd, { add = false } = {}) {
     if (cmd === "ת") {
       const state = ctx?.getUserSearch ? ctx.getUserSearch(cleanP) : {};
       return { ok: true, success: true, message: "האות 'ת' לבדה אינה פקודת תפוס", search: state };
@@ -1229,17 +1229,43 @@ export function startDashboard(runtime) {
     }
 
     let parsedCommand = cmd;
-    if (!cmd.startsWith("פנוי") && !cmd.includes("מחפש")) {
+    if (/^פ(\s|$)/.test(cmd)) {
+      // "פ" הוא "פנוי". תוספת "פנוי" לפניו הפכה "פ שמש ים" לפנימי בלבד
+      parsedCommand = cmd.replace(/^פ/, "פנוי");
+    } else if (!cmd.startsWith("פנוי") && !cmd.includes("מחפש")) {
       parsedCommand = `פנוי ${cmd}`;
+    }
+    if (/^פנוי(\s+(הכל|הכול))?$/.test(parsedCommand.trim())) {
+      return { ok: false, error: "כתוב גם עיר, לדוגמה: פנוי ירושלים" };
     }
 
     const parsed = ctx?.processDriverCommand ? ctx.processDriverCommand(parsedCommand) : {};
-    const nextState = { active: true, ...parsed };
+    let nextState = { active: true, ...parsed };
+    if (add && before?.active && before.searches?.length) {
+      const same = (s) => s.mode === parsed.mode && s.origin === parsed.origin && (s.destination || null) === (parsed.destination || null);
+      if (before.searches.some(same)) return { ok: false, error: "החיפוש הזה כבר פעיל" };
+      const item = { id: `s_${crypto.randomBytes(5).toString("hex")}`, ...parsed, addedAt: new Date().toISOString() };
+      nextState = { active: true, searches: [...before.searches, item] };
+    }
     const saved = ctx?.setUserSearch?.(cleanP, nextState);
+    if (add && saved) nextState = saved;
     recordEvent("command", `הופעל חיפוש עבור ${cleanP}: ${nextState.displayText}`);
     const driverNotice = await notifyDriverOfSiteChange(cleanP, before, saved);
 
     return { ok: true, success: true, message: `חיפוש הופעל: ${nextState.displayText} · ${NOTICE_TEXT[driverNotice]}`, driverNotice, search: nextState };
+  }
+
+  async function removeSearch(cleanP, id) {
+    const before = ctx?.getUserSearch?.(cleanP);
+    const searches = (before?.searches || []).filter((s) => s.id !== id);
+    if (!before?.active || searches.length === before.searches.length) {
+      return { ok: false, error: "החיפוש כבר לא פעיל" };
+    }
+    if (!searches.length) return stopSearch(cleanP);
+    const saved = ctx.setUserSearch(cleanP, { active: true, searches });
+    recordEvent("command", `חיפוש אחד הוסר מהאפליקציה עבור ${cleanP}`);
+    const driverNotice = await notifyDriverOfSiteChange(cleanP, before, saved);
+    return { ok: true, driverNotice, search: saved };
   }
 
   async function stopSearch(cleanP) {
@@ -1263,6 +1289,7 @@ export function startDashboard(runtime) {
   runtime.driverSearch = {
     get: (phone) => ctx?.getUserSearch?.(phone) || {},
     apply: applySearch,
+    remove: removeSearch,
     stop: stopSearch,
   };
 

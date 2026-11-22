@@ -113,6 +113,7 @@ import {
   getTelegramDialogs,
 } from "./telegram-manager.js";
 import { startTelegramBot, getBotLinkStatus, getTelegramBotInfo } from "./telegram-bot.js";
+import { describeRoute } from "./driver-app-route.js";
 import { createDriverApp } from "./driver-app.js";
 import { normalizeMobile } from "./driver-app-auth.js";
 
@@ -2327,13 +2328,10 @@ const driverApp = createDriverApp({
     const contact = [extractRequestPhone(data.rawText || text), route.dispatcherPhone, data.senderPhone].map(normalizeMobile).find(Boolean);
     return {
       text,
-      from: route.originText || "",
-      to: route.destinationText || "",
-      price: route.price || null,
+      ...describeRoute(text),
       group: data.groupName || "",
       dispatcher: data.senderName || "",
       contact: contact || null,
-      waze: route.originText ? generateWazeUrl(route.originText, "בית שמש", route.originCoords) : null,
     };
   },
   claimRide: (phone, alertId, options) => {

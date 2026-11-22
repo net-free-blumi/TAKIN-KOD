@@ -6,12 +6,14 @@ import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.content.Context;
 import android.content.Intent;
+import android.graphics.drawable.Icon;
 
 final class Notifications {
     static final int SERVICE_ID = 1;
     private static final int LOGIN_ID = 2;
     private static final String RIDES = "rides";
     private static final String STATUS = "status";
+    static final String EXTRA_RIDE = "ride";
 
     private Notifications() {}
 
@@ -29,16 +31,24 @@ final class Notifications {
         manager.createNotificationChannel(status);
     }
 
-    private static Notification.Builder base(Context context, String channel, String title, String text) {
+    private static PendingIntent openApp(Context context, String rideId) {
         Intent open = new Intent(context, MainActivity.class)
                 .addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP | Intent.FLAG_ACTIVITY_CLEAR_TOP);
-        PendingIntent tap = PendingIntent.getActivity(context, 0, open,
+        if (!rideId.isEmpty()) {
+            // The action keeps each ride's PendingIntent apart
+            open.setAction("com.blumi.nahagim.RIDE." + rideId).putExtra(EXTRA_RIDE, rideId);
+        }
+        return PendingIntent.getActivity(context, 0, open,
                 PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
+    }
+
+    private static Notification.Builder base(Context context, String channel, String title, String text) {
         return new Notification.Builder(context, channel)
                 .setSmallIcon(R.drawable.ic_notify)
                 .setContentTitle(title)
                 .setContentText(text)
-                .setContentIntent(tap);
+                .setColor(0xFF18222F)
+                .setContentIntent(openApp(context, ""));
     }
 
     static Notification status(Context context, boolean online) {
@@ -55,13 +65,24 @@ final class Notifications {
     }
 
     static void ride(Context context, String id, String title, String text) {
-        Notification notification = base(context, RIDES, title, text)
+        Notification.Builder builder = base(context, RIDES, title, text);
+        if (!id.isEmpty()) {
+            PendingIntent open = openApp(context, id);
+            // Opens the ride for a deliberate tap on "ת". Never sends by itself
+            builder.setContentIntent(open).addAction(new Notification.Action.Builder(
+                    Icon.createWithResource(context, R.drawable.ic_notify), "✋ לבקשת הנסיעה", open).build());
+        }
+        Notification notification = builder
                 .setStyle(new Notification.BigTextStyle().bigText(text))
                 .setCategory(Notification.CATEGORY_MESSAGE)
                 .setAutoCancel(true)
                 .setTimeoutAfter(25 * 60 * 1000L)
                 .build();
         context.getSystemService(NotificationManager.class).notify(id, 10, notification);
+    }
+
+    static void dismiss(Context context, String id) {
+        context.getSystemService(NotificationManager.class).cancel(id, 10);
     }
 
     static void loginExpired(Context context) {

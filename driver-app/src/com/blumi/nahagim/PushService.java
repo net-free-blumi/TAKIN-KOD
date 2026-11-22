@@ -159,9 +159,11 @@ public final class PushService extends Service {
             JSONObject ride = rides.optJSONObject(i);
             if (ride == null) continue;
             String title = "נסיעה חדשה";
-            double price = ride.optDouble("price", 0);
+            // An older server can mistake a departure time for the price
+            double price = ride.optBoolean("checked") ? ride.optDouble("price", 0) : 0;
             if (price > 0) title += " · ₪" + Math.round(price);
             Notifications.ride(this, ride.optString("id"), title, ride.optString("text"));
+            Speech.get(this).announce(ride);
         }
         if (rides.length() > 0) MainActivity.refreshIfOpen();
     }
