@@ -267,6 +267,7 @@ export async function sendInteractiveTest(sock, jid) {
  * מחזיר null אם הכפתורים כבויים (ואז השולח שולח טקסט רגיל עם ציטוט).
  */
 export const CLAIM_BUTTON_PREFIX = "claim:";
+export const CLAIM_PRIVATE_PREFIX = "claimp:"; // אותה נסיעה, בלי הודעה בקבוצה
 
 export async function sendRideAlertInteractive(sock, jid, { body, quoted = null, variant }) {
   const v = variant || getInteractiveVariant();
@@ -276,7 +277,13 @@ export async function sendRideAlertInteractive(sock, jid, { body, quoted = null,
 
   const nativeButtons = [
     toNativeButton({ text: "✋ ת", id: `${CLAIM_BUTTON_PREFIX}${messageId}` }),
-    toSingleSelect(MAIN_MENU.label, MAIN_MENU.sections),
+    toSingleSelect(MAIN_MENU.label, [
+      {
+        title: "הנסיעה הזו",
+        rows: [{ id: `${CLAIM_PRIVATE_PREFIX}${messageId}`, title: "🔒 ת לפרטי בלבד", description: "שולח רק בפרטי, לא בקבוצה" }],
+      },
+      ...MAIN_MENU.sections,
+    ]),
   ];
 
   return await relayNativeFlow(sock, jid, { body, nativeButtons, quoted, variant: v, messageId });

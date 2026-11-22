@@ -73,10 +73,10 @@ globalThis.__fakeBuild = (state) => {
     user: state.creds.me,
     ws: { close() {} },
     end() {},
-    async sendMessage(jid, content) {
+    async sendMessage(jid, content, opts) {
       await sleep(40); // שליחה אמיתית לוקחת זמן - כאן נוצר המרוץ של לחיצה כפולה
       if (globalThis.__driverSendFails) throw new Error("send failed");
-      driverOut.push({ jid, content });
+      driverOut.push({ jid, content, quoted: opts?.quoted });
       return { key: { id: "D" }, message: {} };
     },
     async relayMessage() {},
@@ -370,6 +370,135 @@ try {
   }
   check(`פקודות חיפוש ממשיכות לעבוד (${commands.length})`, !ignored.length, ignored.join(" | "));
 
+  // ---------- עצירה בטעות ----------
+  const stopChat = [
+    "הכביש סגור", "אני לא תפוס", "יש כביש סגור בירושלים", "הכל סגור בשבת", "המחסום סגור", "הקו תפוס",
+    "לא תפוס", "תפוס?", "אתה תפוס?", "השער סגור", "עצור בצד", "סגור על זה", "המעבר סגור עכשיו", "הכל סגור",
+    "למה אתה תפוס", "שוטר אמר לי עצור", "אל תעשה תפוס", "החניון סגור", "הטלפון שלו תפוס", "פנוי שמש הכביש סגור",
+  ];
+  const stopped = [];
+  for (const t of stopChat) {
+    um.stopUserSearch(DRIVER);
+    await type(DRIVER, "פנוי שמש");
+    r = await type(DRIVER, t);
+    const st = um.getUserSearch(DRIVER);
+    if (!st.active || st.pendingSearch || !ids(r).includes("תפוס")) stopped.push(t);
+  }
+  check(`הודעות רגילות לא עוצרות חיפוש, והבוט מציע לעצור (${stopChat.length})`, !stopped.length, stopped.join(" | "));
+
+  const stopCommands = [
+    "תפוס", "עצור", "סגור", "תפוס!", "🛑 תפוס", "תפוס תודה", "תודה תפוס", "אני תפוס", "אני כרגע תפוס", "אני סגור", "תפוס עכשיו",
+    "עצור הכל", "עצור חיפוש", "עצור את החיפוש", "עצור את כל החיפושים", "סגור חיפוש", "סגור הכל", "מצב תפוס", "תפוס בבקשה",
+    "תפוס תפוס", "עצור בבקשה את החיפוש", "תפוס בינתיים", "תפוס עד הערב", "תפוס עד 17", "אני תפוס בנסיעה", "טוב תפוס", "עצור רגע",
+  ];
+  const notStopped = [];
+  for (const t of stopCommands) {
+    um.stopUserSearch(DRIVER);
+    await type(DRIVER, "פנוי שמש");
+    await type(DRIVER, t);
+    if (um.getUserSearch(DRIVER).active) notStopped.push(t);
+  }
+  check(`פקודות עצירה ממשיכות לעבוד (${stopCommands.length})`, !notStopped.length, notStopped.join(" | "));
+
+  // ---------- ת לפרטי / לבקש פה ----------
+  const GROUP = "120363000000000001@g.us";
+  const DISPATCHER = "972500000004@s.whatsapp.net";
+  const ASKED = "972544469835@s.whatsapp.net";
+  const privateId = (id) => `${ix.CLAIM_PRIVATE_PREFIX}${id}`;
+  const ASK_TEXT = "תא סבא 120\nהירקון זמנים\n➖➖➖🦅\nלבקש פה👇\n+972 54-446-9835";
+
+  mark = out.length;
+  const alertMsg = await ix.sendRideAlertInteractive(globalThis.__main, `${DRIVER}@s.whatsapp.net`, { body: "שמש 100" });
+  const alertButtons = out[mark].buttons;
+  const alertRows = alertButtons[1].p.sections.flatMap((sec) => sec.rows);
+  check("התראה: עדיין 2 כפתורים, ות לפרטי ראשון בתפריט", alertButtons.length === 2 && /לפרטי/.test(alertRows[0].title) && alertRows[0].id === privateId(alertMsg.key.id), JSON.stringify(alertRows[0]));
+  check("התראה: תפוס נשאר בתפריט", alertRows.some((x) => x.id === "תפוס"));
+  check("התפריט הכללי לא השתנה", !ui.MAIN_MENU.sections.flatMap((sec) => sec.rows).some((x) => /לפרטי/.test(x.title)));
+
+  addAlert(alertMsg.key.id);
+  sentFrom = driverOut.length;
+  await tap(DRIVER, alertRows[0].id);
+  let sent = driverOut.slice(sentFrom);
+  check("ת לפרטי: רק לסדרן, בלי קבוצה", sent.length === 1 && sent[0].jid === DISPATCHER, JSON.stringify(sent.map((m) => m.jid)));
+  check("ת לפרטי: עם ציטוט הודעת הקבוצה", sent[0]?.quoted?.key?.remoteJid === GROUP && /שמש 100/.test(sent[0]?.quoted?.message?.conversation || ""));
+
+  addAlert("PM2", { sentAt: Date.now() + 1000 });
+  sentFrom = driverOut.length;
+  await receive(DRIVER, { extendedTextMessage: { text: "ת לפרטי", contextInfo: { stanzaId: "PM2" } } });
+  check("ת לפרטי בהקלדה", driverOut.length === sentFrom + 1 && driverOut.at(-1).jid === DISPATCHER);
+
+  addAlert("PM3", { senderPhone: "זמין בקבוצה", senderJid: "87467076137026@lid" });
+  sentFrom = driverOut.length;
+  await tap(DRIVER, privateId("PM3"));
+  check("ת לפרטי: סדרן עם מספר מוסתר", driverOut.length === sentFrom + 1 && driverOut.at(-1).jid === "87467076137026@lid");
+
+  addAlert("PM4", { senderPhone: "זמין בקבוצה", senderJid: GROUP });
+  sentFrom = driverOut.length;
+  r = await tap(DRIVER, privateId("PM4"));
+  check("ת לפרטי בלי יעד פרטי: לא שולח כלום, ובטח לא לקבוצה", driverOut.length === sentFrom && /לא נשלחה/.test(textOf(r)), textOf(r));
+  await tap(DRIVER, claimId("PM4"));
+  check("אחרי כשל בפרטי אפשר ללחוץ ת רגיל", groupSends(sentFrom) === 1);
+
+  addAlert("PM5");
+  sentFrom = driverOut.length;
+  await Promise.all([tap(DRIVER, privateId("PM5")), tap(DRIVER, claimId("PM5"))]);
+  check("ת לפרטי ואז ת מיד: בקשה אחת בלבד", driverOut.length === sentFrom + 1 && groupSends(sentFrom) === 0);
+
+  for (const [id, how] of [["ASK1", claimId], ["ASK2", privateId]]) {
+    addAlert(id, { rawText: ASK_TEXT });
+    sentFrom = driverOut.length;
+    await tap(DRIVER, how(id));
+    sent = driverOut.slice(sentFrom);
+    check(`לבקש פה + מספר (${id}): רק למספר, עם ציטוט`, sent.length === 1 && sent[0].jid === ASKED && sent[0].quoted?.key?.remoteJid === GROUP && sent[0].quoted.message.conversation === ASK_TEXT, JSON.stringify(sent.map((m) => m.jid)));
+  }
+  addAlert("ASK3", { rawText: ASK_TEXT });
+  sentFrom = driverOut.length;
+  await bot.claimRideFromWeb("ASK3", DRIVER);
+  check("לבקש פה מהאתר: רק למספר", driverOut.length === sentFrom + 1 && driverOut.at(-1).jid === ASKED);
+
+  addAlert("ASK4", { rawText: "שמש 100\nלבקש פה 0544469835\nנסיעות דרייבוט" });
+  sentFrom = driverOut.length;
+  await tap(DRIVER, claimId("ASK4"));
+  check("המספר שאחרי לבקש פה גובר על המילה דרייבוט", driverOut.length === sentFrom + 1 && driverOut.at(-1).jid === ASKED);
+
+  addAlert("ASK5", { rawText: "שמש 100\n*ווצאפ* ☚ wa.me/972552732722?text=ת+401288" });
+  sentFrom = driverOut.length;
+  await tap(DRIVER, privateId("ASK5"));
+  check("דרייבוט: עדיין הקוד לבוט בלבד", driverOut.length === sentFrom + 1 && driverOut.at(-1).jid.startsWith("972552732722") && driverOut.at(-1).content.text === "ת 401288");
+
+  addAlert("ASK6", { rawText: "שמש 100\nטלפון הלקוח 0544469835" });
+  sentFrom = driverOut.length;
+  await tap(DRIVER, claimId("ASK6"));
+  check("מספר בלי לבקש פה: ת רגיל עדיין שולח לקבוצה", groupSends(sentFrom) === 1);
+
+  tgCalls = 0;
+  addAlert("ASK7", { isTelegram: true, rawText: ASK_TEXT, groupJid: null, originalMsgKey: null });
+  sentFrom = driverOut.length;
+  await tap(DRIVER, claimId("ASK7"));
+  sent = driverOut.slice(sentFrom);
+  check("טלגרם + לבקש פה: רק למספר, עם הנסיעה בגוף ההודעה", tgCalls === 0 && sent.length === 1 && sent[0].jid === ASKED && /> /.test(sent[0].content.text));
+  addAlert("ASK8", { isTelegram: true, senderPhone: "זמין בטלגרם", groupJid: null, originalMsgKey: null });
+  sentFrom = driverOut.length;
+  await tap(DRIVER, privateId("ASK8"));
+  check("טלגרם + ת לפרטי בלי מספר: לא נוגע בקבוצה", tgCalls === 0 && driverOut.length === sentFrom);
+
+  const mx = await import(pathToFileURL(path.join(tmp, "matcher.js")).href);
+  const N = "972544469835";
+  const asked = [
+    "לבקש פה 0544469835", "לבקש פה: 054-4469835", "לבקש פה👇\n+972 54-446-9835", "לבקש בה 0544469835", "לבקש 0544469835",
+    "לבקש ב. 054 446 9835", "*לבקש פה*\n*0544469835*", "לבקש כאן 👈 0544469835", "לבקש רק פה 0544469835", "לבקש בפרטי 0544469835",
+    "לבקש במספר 972544469835", "לבקשות 0544469835", "לבקש פה wa.me/972544469835", "לבקש פה https://wa.me/+972544469835",
+    "תבקשו פה 0544469835", "לפנות למספר 0544469835", "מבקשים רק פה 👇 0544469835", "ת לפה 0544469835", "לבקש בווצאפ 0544469835",
+  ];
+  const missed = asked.filter((t) => mx.extractRequestPhone?.(`שמש 100\n${t}`) !== N);
+  check(`נוסחי לבקש פה (${asked.length})`, !missed.length, missed.join(" | "));
+  const notAsked = [
+    "טלפון 0544469835", "0544469835", "לקוח 0544469835 מחכה", "לא לבקש פה 0544469835", "אין לבקש 0544469835", "לבקש בקבוצה\nסדרן 0544469835",
+    "לבקש פה", "לבקש ב 100 שמש יער", "רמת אשכול 0544469835", "לבקש פה ולא להתקשר ללקוח 0544469835", "לבקש פה 054446983512", "לבקש פה 026412345",
+  ];
+  const wrong = notAsked.filter((t) => !mx.extractRequestPhone || mx.extractRequestPhone(`שמש 100\n${t}`));
+  check(`בלי נוסח כזה אין כלל מיוחד (${notAsked.length})`, !wrong.length, wrong.join(" | "));
+
   // ---------- האתר ----------
   const base = `http://127.0.0.1:${port}/api`;
   let token = "";
@@ -406,6 +535,12 @@ try {
   res = await api("/rides/claim", { rideId: "API2", driverPhone: DRIVER });
   globalThis.__driverSendFails = false;
   check("אתר: כשל בשליחה לא מוצג כהצלחה", res.ok === false, JSON.stringify(res));
+
+  await api("/search", { phone: DRIVER, command: "פנוי שמש" });
+  res = await api("/search", { phone: DRIVER, command: "הכביש סגור" });
+  check("אתר: משפט עם סגור לא עוצר ולא מחליף חיפוש", res.ok === false && um.getUserSearch(DRIVER).active && /שמש/.test(um.getUserSearch(DRIVER).displayText), JSON.stringify(res));
+  res = await api("/search", { phone: DRIVER, command: "תפוס!" });
+  check("אתר: תפוס! עוצר", res.ok === true && !um.getUserSearch(DRIVER).active);
 
   globalThis.__mainUp = false;
   res = await api("/search", { phone: DRIVER, command: "פנוי ים" });

@@ -537,10 +537,8 @@ export function DriverRadarModal({
         playLoudChime();
         if (ride.isTelegram) {
           showToast(`✈️ הנסיעה נתפסה בטלגרם! ${res.message || 'הפקודה בוצעה ישירות'}`);
-        } else if (ride.isDriveBot) {
-          showToast(`⚡ נסיעת דרייבוט נתפסה! הפקודה נשלחה לבוט דרייבוט הרשמי ללא שליחה לקבוצה.`);
         } else {
-          showToast(`🚕 הנסיעה נתפסה בהצלחה! נשלחה תגובת "תן" בקבוצה ולסדרן.`);
+          showToast(`🚕 ${res.message || 'הבקשה נשלחה'}`);
         }
         setTimeout(() => {
           setClaimedSuccessId(null);

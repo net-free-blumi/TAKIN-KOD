@@ -809,6 +809,58 @@ export function isSearchCommand(rawText) {
   return (hasKeyword || isPlace.includes(true)) && tokens.every((t, i) => isPlace[i] || SEARCH_COMMAND_WORDS.has(t));
 }
 
+// ---------- עצירת חיפוש ----------
+const STOP_WORDS = new Set(["תפוס", "עצור", "סגור"]);
+// מה מותר לפני מילת העצירה ("אני תפוס", "תודה תפוס"), ולא "הכביש סגור" / "לא תפוס"
+const STOP_BEFORE = new Set([
+  "אני", "אנחנו", "כרגע", "עכשיו", "עכשו", "כבר", "אוקי", "אוקיי", "טוב", "תודה", "רבה",
+  "בבקשה", "היי", "אחי", "בוט", "יאללה", "מצב", "די", "נא",
+]);
+// מה מותר אחריה ("עצור את כל החיפושים", "סגור הכל")
+const STOP_AFTER = new Set([
+  ...STOP_BEFORE, ...STOP_WORDS,
+  "את", "חיפוש", "החיפוש", "חיפושים", "החיפושים", "הכל", "כל", "נסיעות", "הנסיעות", "סריקה", "הסריקה",
+  "לי", "רגע", "שנייה", "שניה", "בינתיים", "היום", "להיום", "בנסיעה", "חצי", "שעה", "שעתיים",
+]);
+const STOP_UNTIL = new Set(["הערב", "בערב", "הבוקר", "בבוקר", "הצהריים", "הלילה", "מחר", "סוף", "היום", "שעה"]);
+
+export function hasStopWord(rawText) {
+  return normalizeText(rawText).split(" ").some((t) => STOP_WORDS.has(t));
+}
+
+// עצירה רק כשכל ההודעה היא פקודה, לא כשהמילה מופיעה בתוך משפט
+export function isStopCommand(rawText) {
+  if (/[?؟]/.test(String(rawText))) return false;
+  const tokens = normalizeText(rawText).split(" ");
+  const at = tokens.findIndex((t) => STOP_WORDS.has(t));
+  if (at < 0 || !tokens.slice(0, at).every((t) => STOP_BEFORE.has(t))) return false;
+  const after = tokens.slice(at + 1);
+  const until = after.indexOf("עד");
+  const main = until < 0 ? after : after.slice(0, until);
+  const time = until < 0 ? [] : after.slice(until + 1);
+  if (until >= 0 && !time.length) return false;
+  return main.every((t) => STOP_AFTER.has(t)) && time.every((t) => STOP_UNTIL.has(t) || /^\d{1,4}$/.test(t));
+}
+
+// ---------- "לבקש פה" + מספר ----------
+// בין הנוסח למספר מותרים רק סימנים, אימוג'י, ירידת שורה ומילות הפניה. לא משפט אחר (שיכול להוביל למספר של לקוח).
+const REQUEST_PHONE_RE = new RegExp(
+  "(?<!\\p{L})(?<!(?:לא|אין|אל)\\s+)" +
+  "(?:לבקש|לבקשה|לבקשות|לבקשת\\s+הנסיעה|בקשות|תבקשו|תבקש|בקשו|מבקשים|לפנות|לפניות|פנו|תפנו|לתפיסה|ת(?=\\s+(?:לפה|לכאן|למספר)))(?!\\p{L})" +
+  "(?:[^\\p{L}\\d+]{1,20}(?:פה|לפה|כאן|לכאן|בה|רק|בלבד|במספר|למספר|מספר|בפרטי|לפרטי|באישי|בנייד|לנייד|בטלפון|לטלפון|בווצאפ|לווצאפ|בוואטסאפ|לוואטסאפ|אל|ב|ל)(?!\\p{L})){0,4}" +
+  "[^\\p{L}\\d+]{0,30}" +
+  "(?:(?:https?:\\/\\/)?(?:wa\\.me\\/|api\\.whatsapp\\.com\\/send\\?phone=))?" +
+  "((?:\\+?\\s?972[\\s.()-]{0,3}0?|\\+?0)5\\d(?:[\\s.-]{0,2}\\d){7})(?!\\d)",
+  "u"
+);
+
+// המספר שהסדרן ביקש שיפנו רק אליו ("לבקש פה 05..."), בפורמט 9725XXXXXXXX. בלי נוסח כזה - null.
+export function extractRequestPhone(rawText) {
+  const m = String(rawText || "").match(REQUEST_PHONE_RE);
+  if (!m) return null;
+  return `972${m[1].replace(/\D/g, "").replace(/^972/, "").replace(/^0/, "")}`;
+}
+
 // חילוץ איש קשר/טלפון של הסדרן מתוך טקסט הנסיעה או פרטי השולח
 export function extractDispatcherContact(alertInfo) {
   if (!alertInfo) return null;

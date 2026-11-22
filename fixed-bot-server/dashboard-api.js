@@ -1,4 +1,5 @@
 import express from "express";
+import { isStopCommand, hasStopWord } from "./matcher.js";
 import os from "os";
 import crypto from "crypto";
 import { exec, spawn } from "node:child_process";
@@ -1201,7 +1202,11 @@ export function startDashboard(runtime) {
 
     const before = ctx?.getUserSearch?.(cleanP);
 
-    if (/(^| )(תפוס|עצור|סגור)( |$)/.test(cmd)) {
+    const isStop = isStopCommand(cmd);
+    if (!isStop && hasStopWord(cmd)) {
+      return res.status(400).json({ ok: false, error: 'הפקודה לא ברורה, החיפוש לא שונה. לעצירה כתוב "תפוס" בלבד.' });
+    }
+    if (isStop) {
       const empty = ctx?.stopUserSearch ? ctx.stopUserSearch(cleanP) : {};
       recordEvent("command", `חיפוש הופסק (תפוס) עבור ${cleanP}`);
       const driverNotice = await notifyDriverOfSiteChange(cleanP, before, empty);

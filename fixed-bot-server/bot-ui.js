@@ -297,6 +297,8 @@ export function howClaimCard() {
       `✋ *תפיסת נסיעה*\n\n` +
       `לחץ *✋ ת* מתחת לנסיעה, או השב עליה בציטוט *ת*.\n` +
       `הבוט יענה בשמך בקבוצה ולסדרן.\n\n` +
+      `*בלי הודעה בקבוצה:* בתפריט שמתחת לנסיעה בחר *🔒 ת לפרטי בלבד*, או השב עליה *ת לפרטי*.\n` +
+      `כשכתוב בנסיעה *לבקש פה* ואחריו מספר, הבוט שולח רק למספר הזה.\n\n` +
       `לחיצה על הציטוט קופצת להודעה בקבוצה.\n` +
       `קיבלת נסיעה לא קשורה? סמן עליה 👎 וזה יעבור לתיקון.\n\n` +
       `לבדיקת מרחק: השב על הנסיעה *מרחק*.`,
@@ -421,6 +423,13 @@ export function searchStartedCard({ search }) {
 
 export function searchStoppedCard() {
   return { text: "🛑 *עצרתי את החיפוש.*\nלחיפוש חדש, פשוט כתוב אותו.", menu: MAIN_MENU };
+}
+
+export function confirmStopCard({ search }) {
+  return {
+    text: `🤔 *לא עצרתי. התכוונת לעצור את החיפוש?*\n🟢 עדיין מחפש: ${search.displayText}`,
+    buttons: [{ id: CMD.stop, text: "🛑 כן, תפוס" }, { id: CMD.menu, text: "↩️ לא, תמשיך" }],
+  };
 }
 
 export function searchExistsCard({ search }) {
