@@ -2,6 +2,8 @@
 // הטלפון נלקח תמיד מהטוקן ולעולם לא מהבקשה, כך שנהג רואה ופועל רק בשם עצמו.
 // התראות: long-poll. השרת מחזיק את הבקשה ועונה ברגע שמגיעה נסיעה, בלי צורך ב-Firebase.
 import crypto from "node:crypto";
+import { createDriverChats } from "./driver-app-chats.js";
+import { FilterError, cleanClaimText, parseFilters, readFilters, rejectReason } from "./driver-app-filters.js";
 import { createDriverAppStore } from "./driver-app-store.js";
 import { AppError, createDriverAuth, normalizeMobile } from "./driver-app-auth.js";
 
@@ -40,15 +42,63 @@ export function createDriverApp({
   describeRide,
   claimRide,
   getSearch,
+  chatsDir = `${dir}-chats`,
+  getSession = () => null,
+  getBotPhone = () => "",
+  listGroups = async () => null,
+  quoteForRide = () => null,
   onError = console.error,
   now = Date.now,
 }) {
   const store = createDriverAppStore(dir, { onError });
   const auth = createDriverAuth({ store, canUseApp: isApproved, isBotOnline, sendCode, onError, now });
   const waiters = new Map(); // device id -> { phone, finish }
+  const groupCache = new Map(); // phone -> { at, list }
+  const chats = createDriverChats({
+    dir: chatsDir,
+    isActiveDevice: (id, phone) => store.devices.get(id)?.phone === phone && isApproved(phone),
+    getSession,
+    getBotPhone,
+    getRide: (phone, id) => store.driver(phone).rides.find((r) => r.id === id),
+    quoteForRide,
+    onError,
+    now,
+  });
+
+  // נקרא מהסריקה לפני בדיקת הכפילות. תקלה לא מסתירה נסיעה
+  function filterRide(phone, ride) {
+    try {
+      const saved = store.driver(phone).filters;
+      return saved ? rejectReason(saved, ride, now()) : null;
+    } catch (err) {
+      onError(err);
+      return null;
+    }
+  }
+
+  function checked(fn) {
+    try {
+      return fn();
+    } catch (err) {
+      if (err instanceof FilterError) throw new AppError(400, err.message);
+      throw err;
+    }
+  }
+
+  async function groups({ device }) {
+    let cached = groupCache.get(device.phone);
+    if (!cached || now() - cached.at > 60000) {
+      const list = await listGroups(device.phone);
+      if (!list) throw new AppError(409, "אי אפשר לקרוא את הקבוצות כרגע. ודא שהוואטסאפ מחובר ונסה שוב.");
+      cached = { at: now(), list };
+      groupCache.set(device.phone, cached);
+    }
+    return { groups: cached.list };
+  }
 
   function publicRide(ride) {
-    const { alertId, ...rest } = ride;
+    const { alertId, chatJid, contactIsSender, ...rest } = ride;
+    rest.canChat = Boolean(ride.contact || chatJid);
     return { ...rest, canClaim: ride.status === "new" && now() - ride.at < CLAIM_WINDOW_MS };
   }
 
@@ -112,7 +162,7 @@ export function createDriverApp({
       const fresh = data.rides.filter((r) => r.seq > after);
       return {
         cursor: fresh.reduce((max, r) => Math.max(max, r.seq), after),
-        rides: fresh.filter((r) => now() - r.at < NOTIFY_MAX_AGE_MS).slice(-10).map(publicRide),
+        rides: fresh.filter((r) => now() - r.at < NOTIFY_MAX_AGE_MS).slice(-40).map(publicRide),
       };
     };
     const ready = collect();
@@ -145,7 +195,9 @@ export function createDriverApp({
       phone: device.phone,
       ...getProfile(device.phone),
       search: getSearch().get(device.phone),
-      features: { multiSearch: true },
+      features: { multiSearch: true, filters: true, chats: true },
+      filters: readFilters(store.driver(device.phone).filters),
+      chatsReady: chats.isReady(device.id),
       stats: summarize(store.driver(device.phone).rides, now()),
     }),
     "GET /rides": ({ device, query }) => {
@@ -154,12 +206,30 @@ export function createDriverApp({
       return { rides: rides.slice(-100).reverse().map(publicRide) };
     },
     "GET /events": events,
+    "GET /groups": groups,
+    "POST /filters": ({ device, body }) => {
+      const data = store.driver(device.phone);
+      data.filters = checked(() => parseFilters(body, data.filters));
+      store.changed(device.phone);
+      store.flush();
+      return { filters: data.filters };
+    },
+    "POST /chat/start": ({ device, body }) => chats.start(device, body),
+    "POST /chat": ({ device, body, res }) => chats.handle(device, body, res),
     "POST /rides/claim": async ({ device, body }) => {
       const ride = findRide(device.phone, body.id);
       if (ride.status !== "new") throw new AppError(409, "כבר נשלחה בקשה על הנסיעה הזו");
       if (now() - ride.at >= CLAIM_WINDOW_MS) throw new AppError(410, "הנסיעה ישנה מדי, אי אפשר לבקש אותה");
       if (!ride.alertId) throw new AppError(409, "הנסיעה עדיין נקלטת. נסה שוב בעוד רגע.");
-      const result = await claimRide(device.phone, ride.alertId, { privateOnly: body.privateOnly === true });
+      let claimText = readFilters(store.driver(device.phone).filters).claimText;
+      if (body.minutes !== undefined) {
+        const minutes = Number(body.minutes);
+        if (!Number.isInteger(minutes) || minutes < 1 || minutes > 120) throw new AppError(400, "מספר הדקות לא תקין");
+        claimText = `${claimText} ${minutes}`;
+      } else if (body.text !== undefined) {
+        claimText = checked(() => cleanClaimText(body.text));
+      }
+      const result = await claimRide(device.phone, ride.alertId, { privateOnly: body.privateOnly === true, claimText });
       if (!result.success) throw new AppError(409, result.message || "הבקשה לא נשלחה");
       markRequested(device.phone, ride.alertId);
       return { ride: publicRide(ride) };
@@ -202,6 +272,7 @@ export function createDriverApp({
     "POST /search/stop": async ({ device }) => ({ search: (await getSearch().stop(device.phone)).search }),
     "POST /logout": ({ device }) => {
       auth.logout(device.id);
+      chats.forget(device.id);
       waiters.get(device.id)?.finish();
       return {};
     },
@@ -246,8 +317,9 @@ export function createDriverApp({
 
   function shutdown() {
     for (const waiter of [...waiters.values()]) waiter.finish();
+    chats.shutdown();
     store.flush();
   }
 
-  return { handle, addRide, linkAlert, markRequested, shutdown };
+  return { handle, addRide, linkAlert, markRequested, filterRide, ingestChats: chats.ingest, shutdown };
 }

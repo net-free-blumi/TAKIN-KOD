@@ -4,7 +4,8 @@ import java.util.regex.Pattern;
 
 /** Turns group shorthand into words a Hebrew voice can read. Plain Java, so it can be tested on a PC. */
 final class SpeechText {
-    private static final int MAX_LENGTH = 300;
+    /** About ten seconds of speech. */
+    static final int MAX_SPOKEN = 120;
     private static final String START = "(?<![א-ת0-9])";
     private static final String END = "(?![א-ת0-9])";
 
@@ -40,15 +41,28 @@ final class SpeechText {
                 .replaceAll("[ \\t\\r]+", " ")
                 .replaceAll(" +([.,])", "$1")
                 .replaceAll("^[\\s,.]+|[\\s,]+$", "");
-        return text.length() > MAX_LENGTH ? text.substring(0, MAX_LENGTH) : text;
+        return text;
+    }
+
+    /** Cuts at a word, so a long message never becomes a lecture. */
+    static String shorten(String text) {
+        if (text.length() <= MAX_SPOKEN) return text;
+        int cut = text.lastIndexOf(' ', MAX_SPOKEN);
+        return text.substring(0, cut > 0 ? cut : MAX_SPOKEN).replaceAll("[\\s,.:-]+$", "");
     }
 
     /** The short form is used only when both ends are known, so a ride is never read with half a route. */
     static String announcement(String text, String from, String to, double price, boolean brief) {
         if (brief && !from.isEmpty() && !to.isEmpty() && !from.equals(to)) {
-            String line = "נסיעה חדשה. " + clean(from) + ", אל " + clean(to);
+            String line = shorten(clean(from) + ", אל " + clean(to));
             return price > 0 ? line + ". " + Math.round(price) + " שקלים" : line;
         }
-        return "נסיעה חדשה. " + clean(text);
+        String full = clean(text);
+        String line = shorten(full);
+        if (line.equals(full) || price <= 0) return line;
+        // The price is often at the end, exactly what the cut removed
+        String amount = String.valueOf(Math.round(price));
+        boolean said = Pattern.compile("(?<![0-9])" + amount + "(?![0-9])").matcher(line).find();
+        return said ? line : line + ". " + amount + " שקלים";
     }
 }

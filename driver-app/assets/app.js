@@ -8,7 +8,7 @@
   const TABS = [
     ['rides', 'נסיעות', 'car'],
     ['search', 'חיפוש', 'search'],
-    ['mine', 'היומן שלי', 'journal'],
+    ['chats', 'וואטסאפ', 'chat'],
     ['settings', 'הגדרות', 'sliders'],
   ];
   const STATUS = { requested: 'הבקשה נשלחה, ממתין לסדרן', got: 'קיבלתי', done: 'בוצעה', missed: 'לא קיבלתי' };
@@ -34,7 +34,14 @@
   const ICONS = {
     car: 'M5 11l2-5h10l2 5M4 11h16v6H4zM7 17v2M17 17v2M7.5 14h1M15.5 14h1',
     search: 'M11 4a7 7 0 1 0 0 14a7 7 0 1 0 0-14M16.2 16.2L21 21',
-    journal: 'M6 3h12v18H6zM9 8h6M9 12h6M9 16h4',
+    person: 'M12 4a4 4 0 1 0 0 8a4 4 0 1 0 0-8M4 21a8 8 0 0 1 16 0',
+    back: 'M4 12h16M14 6l6 6-6 6',
+    forward: 'M15 6l-6 6 6 6',
+    down: 'M6 9l6 6 6-6',
+    up: 'M6 15l6-6 6 6',
+    timer: 'M12 5a8 8 0 1 0 0 16a8 8 0 1 0 0-16M12 9v4l3 2M9 2h6',
+    send: 'M3 12L21 4l-4 16-5-6zM12 14l9-10',
+    external: 'M14 4h6v6M20 4l-9 9M18 14v6H4V6h6',
     sliders: 'M4 7h9M17 7h3M4 17h3M11 17h9M15 5v4M9 15v4',
     refresh: 'M20 11a8 8 0 1 0-2.3 6.7M20 4v7h-7',
     speak: 'M4 9h4l5-4v14l-5-4H4zM16.5 8.5a5 5 0 0 1 0 7M19 6a8.5 8.5 0 0 1 0 12',
@@ -48,7 +55,7 @@
   };
 
   const state = {
-    tab: 'rides', me: null, rides: [], mine: [], loaded: false, offline: false,
+    tab: 'rides', view: 'new', me: null, rides: [], mine: [], loaded: false, offline: false,
     phone: '', challenge: null, resendAt: 0,
     searchDraft: '', builder: { mode: 'city_all', origin: '', destination: '' },
   };
@@ -173,10 +180,28 @@
     loadSeq++;
     closeSheet();
     busyRides.clear();
+    chats.reset();
+    settings.reset();
     Object.assign(state, {
-      tab: 'rides', me: null, rides: [], mine: [], loaded: false, challenge: null,
+      tab: 'rides', view: 'new', me: null, rides: [], mine: [], loaded: false, challenge: null,
       searchDraft: '', builder: { mode: 'city_all', origin: '', destination: '' },
     });
+  }
+
+  async function secure(operation, args) {
+    const result = await new Promise((resolve) => {
+      const id = ++nextId;
+      pending.set(id, resolve);
+      native.secure(id, operation, JSON.stringify(args || {}));
+    });
+    if (result.status === 200) return result.body;
+    if (result.status === 401) {
+      resetSession();
+      renderLogin();
+    }
+    const error = new Error(result.status === 0 ? 'אין חיבור לשרת' : result.body?.error || 'הפעולה נכשלה');
+    error.status = result.status;
+    throw error;
   }
 
   // התחברות
@@ -346,7 +371,7 @@
     const on = !device().speech;
     native.setSpeech(on);
     if (on) {
-      toast('נסיעות חדשות יוקראו בקול');
+      toast('צפצוף והקראה, כשהמסך דלוק');
       if (device().voice === 'missing') voiceHelp();
     } else {
       toast('ההקראה כבויה');
@@ -383,12 +408,26 @@
   }
   const local = (phone) => phone.replace(/^972/, '0');
 
+  function distanceLabel(ride) {
+    if (!ride.pickup) return '';
+    const km = native.distance(ride.pickup.lat, ride.pickup.lng);
+    if (km < 0) return '';
+    return km < 1 ? 'פחות מק"מ ממך' : `כ-${km < 10 ? km.toFixed(1) : Math.round(km)} ק"מ ממך`;
+  }
+
+  function tooFar(ride) {
+    const max = device().maxKm;
+    return max > 0 && ride.pickup ? native.distance(ride.pickup.lat, ride.pickup.lng) > max : false;
+  }
+
   function rideCard(ride) {
     const actions = [];
     if (ride.status === 'new' && ride.canClaim) {
+      const text = state.me?.filters?.claimText;
       actions.push(
-        button('ת', () => claim(ride, false), 'primary main'),
-        button('ת לפרטי', () => claim(ride, true)));
+        button(text && text !== 'תן' ? text : 'ת', () => claim(ride), 'primary main'),
+        button('לפרטי', () => claim(ride, { privateOnly: true })),
+        button(icon('timer'), () => claimSheet(ride), 'timer', 'זמן הגעה או טקסט חופשי'));
     }
     if (ride.status === 'requested') {
       actions.push(
@@ -408,6 +447,8 @@
     const checked = ride.checked === true;
     const route = checked && ride.from && ride.to && ride.from !== ride.to ? `${ride.from} ← ${ride.to}` : '';
     const price = checked || ride.status === 'done' ? ride.price : null;
+    const distance = ride.status === 'done' ? '' : distanceLabel(ride);
+    const customer = chats.customerFor(ride);
 
     return h('article', { className: 'ride' },
       h('div', { className: 'top' },
@@ -418,35 +459,58 @@
           h('div', { className: 'route' }, route),
           price ? h('div', { className: 'price' }, `₪${price}`) : null)
         : null,
+      distance ? h('div', { className: 'distance' }, icon('pin'), distance) : null,
       h('p', { className: 'ride-text' }, ride.text),
       ride.dispatcher ? h('p', { className: 'dispatcher' }, `סדרן: ${ride.dispatcher}`) : null,
       STATUS[ride.status] ? h('div', { className: `state ${ride.status}` }, STATUS[ride.status]) : null,
+      customer ? button([icon('phone'), h('span', null, `חייג ללקוח ${customer}`)], () => native.dial(customer), 'call') : null,
       ride.status === 'new' && !ride.canClaim ? h('p', { className: 'muted' }, 'עבר הזמן לבקש את הנסיעה') : null,
       actions.length ? h('div', { className: 'actions' }, actions) : null,
       h('div', { className: 'tools' },
-        tool('speak', 'הקרא', () => speak(ride.text)),
-        ride.contact ? tool('phone', 'חייג', () => native.dial(local(ride.contact))) : null,
-        ride.contact ? tool('chat', 'וואטסאפ', () => native.whatsapp(ride.contact)) : null,
+        ride.canChat ? tool('chat', 'צ\'אט', () => {
+          closeSheet();
+          native.stopSpeaking();
+          return chats.openRide(ride);
+        }) : null,
         checked && ride.waze ? tool('nav', 'Waze', () => native.navigate(ride.waze)) : null,
+        tool('speak', 'הקרא', () => speak(ride.text)),
         tool('copy', 'העתק', () => {
           native.copy(ride.text);
           toast('הנסיעה הועתקה');
         })));
   }
 
-  async function claim(ride, privateOnly) {
+  async function claim(ride, options = {}) {
     if (busyRides.has(ride.id)) return;
     busyRides.add(ride.id);
     try {
       native.stopSpeaking();
-      await api('POST', '/rides/claim', { id: ride.id, privateOnly });
+      await api('POST', '/rides/claim', { id: ride.id, privateOnly: Boolean(options.privateOnly), ...options });
       closeSheet();
       native.dismiss(ride.id);
-      toast('הבקשה נשלחה. היא מחכה לך ביומן שלי.');
+      toast('הבקשה נשלחה. היא ב"הנסיעות שלי".');
       await load();
     } finally {
       busyRides.delete(ride.id);
     }
+  }
+
+  function claimSheet(ride) {
+    const base = state.me?.filters?.claimText || 'תן';
+    const input = h('input', { id: 'claim-text', placeholder: 'או טקסט חופשי', maxLength: 40, autocomplete: 'off' });
+    input.setAttribute('aria-label', 'טקסט חופשי');
+    sheet(
+      h('h2', null, 'תוך כמה דקות תגיע?'),
+      h('p', { className: 'muted' }, `לחיצה שולחת מיד: "${base}" והמספר`),
+      h('div', { className: 'minutes' },
+        [1, 2, 3, 4, 5, 7, 10, 12, 15, 20, 25, 30].map((minutes) => button(minutes, () => claim(ride, { minutes })))),
+      input,
+      button('שלח את הטקסט', () => {
+        const text = input.value.trim();
+        if (!text) throw new Error('הקלד מה לשלוח');
+        return claim(ride, { text });
+      }, 'primary wide'),
+      button('ביטול', closeSheet, 'link wide'));
   }
 
   async function outcome(ride, status, price) {
@@ -486,6 +550,7 @@
     if (state.offline) add('אין חיבור לשרת. ייתכן שהמידע לא מעודכן.', 'נסה שוב', load);
     if (!info.alerts) add('ההתראות כבויות, ולכן אין גם הקראה.', 'הפעל התראות', () => { native.setAlerts(true); render(); });
     else if (!info.notifications) add('ההתראות חסומות בטלפון.', 'אפשר התראות', () => native.fixNotifications());
+    if (info.speech && info.muted) add('עוצמת המדיה על אפס, ולכן לא תשמע הקראה.');
     if (info.alerts && !info.battery) add('כדי שההתראות יגיעו כשהמסך כבוי, צריך לבטל את הגבלת הסוללה.', 'תקן עכשיו', () => native.fixBattery());
     if (state.me && !state.me.whatsappLinked) add('הוואטסאפ שלך לא מקושר לבוט, ולכן אי אפשר לשלוח "ת". שלח לבוט הודעה כדי לקשר.');
     return list;
@@ -497,44 +562,86 @@
       state.loaded ? [h('strong', null, title), text] : 'טוען...');
   }
 
-  const freshRides = () => state.rides.filter((r) => r.status === 'new' && r.canClaim);
+  const claimable = () => state.rides.filter((r) => r.status === 'new' && r.canClaim);
+  const freshRides = () => claimable().filter((r) => !tooFar(r));
+
+  function statusPanel() {
+    const info = device();
+    const list = currentSearches();
+    const free = list.length > 0;
+    const compact = pref('compact', true);
+    const openSearch = () => {
+      state.tab = 'search';
+      render();
+    };
+    const fold = () => {
+      setPref('compact', !compact);
+      render();
+    };
+    const mainSwitch = toggle(free, async () => {
+      if (free) return confirmStop();
+      const last = pref('last', '');
+      if (last) return applySearch(last);
+      openSearch();
+    }, 'פנוי');
+    const summary = free ? list.map(searchLabel).join(', ') : 'בחר חיפוש';
+    const label = h('button', { type: 'button', className: 'status-label', onclick: fold },
+      h('strong', null, free ? 'פנוי' : 'תפוס'), h('span', null, summary));
+
+    return h('section', { className: `status${free ? ' on' : ''}${compact ? ' compact' : ''}` },
+      h('div', { className: 'status-head' },
+        mainSwitch,
+        label,
+        button(icon(info.speech ? 'speak' : 'quiet'), toggleSpeech, info.speech ? 'round on' : 'round', 'הקראה'),
+        button(icon(compact ? 'down' : 'up'), fold, 'round', compact ? 'הרחב' : 'הקטן')),
+      compact ? null : h('div', { className: 'chips' },
+        list.map((s) => button([icon('close'), searchLabel(s)], () => removeSearch(s), 'chip', `הסר ${searchLabel(s)}`)),
+        (free ? [] : savedSearches().slice(0, 4)).map((s) => button(searchLabel(s), () => applySearch(searchCommand(s)), 'chip')),
+        button('+ חיפוש', openSearch, 'chip add'),
+        button([icon('pin'), info.location && info.locationAllowed ? 'מרחק פועל' : 'הפעל מרחק'], () => {
+          if (info.location && info.locationAllowed) {
+            state.tab = 'settings';
+            settings.go('location');
+          } else {
+            native.setLocation(true);
+          }
+        }, info.location && info.locationAllowed ? 'chip selected' : 'chip')));
+  }
+
+  function newView() {
+    const free = currentSearches().length > 0;
+    const rides = freshRides();
+    const hidden = claimable().length - rides.length;
+    return [
+      warnings(),
+      state.me ? statusPanel() : null,
+      hidden ? h('p', { className: 'notice' }, `${hidden} נסיעות הוסתרו לפי מרחק`) : null,
+      rides.length
+        ? rides.map(rideCard)
+        : empty(free ? 'ממתין לנסיעה מתאימה' : 'אין חיפוש פעיל',
+          free ? 'היא תופיע כאן, ותקבל התראה.' : 'בחר עיר או מסלול ונתחיל.'),
+    ];
+  }
+
+  function mineView() {
+    const stats = state.me?.stats;
+    const box = (title, value) => h('div', null,
+      title, h('strong', null, `₪${value.income}`),
+      h('span', { className: 'muted' }, value.count === 1 ? 'נסיעה אחת' : `${value.count} נסיעות`));
+    return [
+      stats ? h('div', { className: 'stats' }, box('היום', stats.today), box('החודש', stats.month)) : null,
+      state.mine.length ? state.mine.map(rideCard) : empty('עוד אין נסיעות', 'נסיעות שתבקש יופיעו כאן.'),
+    ];
+  }
 
   const screens = {
     rides() {
-      const info = device();
-      const list = currentSearches();
-      const free = list.length > 0;
-      const shortcuts = free ? [] : savedSearches().slice(0, 4);
-      const rides = freshRides();
-      const openSearch = () => {
-        state.tab = 'search';
+      const tabs = segments([['new', 'נסיעות חדשות'], ['mine', 'הנסיעות שלי']], state.view, (view) => {
+        state.view = view;
         render();
-      };
-      return [
-        warnings(),
-        state.me ? h('section', { className: free ? 'status on' : 'status' },
-          h('div', { className: 'status-head' },
-            h('div', null,
-              h('strong', null, free ? 'אני פנוי' : 'אני תפוס'),
-              h('span', { className: 'muted' }, free ? 'מחפש לך נסיעות' : 'לחץ על קיצור כדי להתחיל')),
-            toggle(free, async () => {
-              if (free) return confirmStop();
-              const last = pref('last', '');
-              if (last) return applySearch(last);
-              openSearch();
-            }, 'פנוי')),
-          h('div', { className: 'chips' },
-            list.map((s) => button([icon('close'), searchLabel(s)], () => removeSearch(s), 'chip', `הסר ${searchLabel(s)}`)),
-            shortcuts.map((s) => button(searchLabel(s), () => applySearch(searchCommand(s)), 'chip')),
-            button('+ חיפוש', openSearch, 'chip add')),
-          h('div', { className: 'chips' },
-            button([icon(info.speech ? 'speak' : 'quiet'), info.speech ? 'הקראה פועלת' : 'הקראה כבויה'],
-              toggleSpeech, info.speech ? 'chip selected' : 'chip'))) : null,
-        rides.length
-          ? rides.map(rideCard)
-          : empty(free ? 'ממתין לנסיעה מתאימה' : 'אין חיפוש פעיל',
-            free ? 'היא תופיע כאן, ותקבל התראה.' : 'בחר עיר או מסלול ונתחיל.'),
-      ];
+      });
+      tabs.classList.add('views');
+      return [tabs, state.view === 'mine' ? mineView() : newView()];
     },
 
     search() {
@@ -593,81 +700,8 @@
       ];
     },
 
-    mine() {
-      const stats = state.me?.stats;
-      const box = (title, value) => h('div', null,
-        title, h('strong', null, `₪${value.income}`),
-        h('span', { className: 'muted' }, value.count === 1 ? 'נסיעה אחת' : `${value.count} נסיעות`));
-      return [
-        stats ? h('div', { className: 'stats' }, box('היום', stats.today), box('החודש', stats.month)) : null,
-        state.mine.length ? state.mine.map(rideCard) : empty('היומן ריק', 'נסיעות שתבקש יופיעו כאן.'),
-      ];
-    },
-
-    settings() {
-      const info = device();
-      const item = (title, note, control) => h('div', { className: 'item' },
-        h('div', null, title, note ? h('p', { className: 'muted' }, note) : null), control);
-      const help = (title, ...lines) => h('details', null, h('summary', null, title), lines.map((line) => h('p', null, line)));
-      return [
-        h('section', { className: 'section' },
-          h('h2', null, state.me?.name || 'נהג'),
-          h('p', { className: 'muted' }, state.me ? local(state.me.phone) : ''),
-          state.me ? h('p', { className: state.me.whatsappLinked ? 'ok' : 'bad' },
-            state.me.whatsappLinked ? 'הוואטסאפ מקושר' : 'הוואטסאפ לא מקושר') : null),
-
-        h('section', { className: 'section' },
-          h('h2', null, 'הקראה קולית'),
-          item('הקרא נסיעות חדשות', 'גם במסך כבוי. לא בשיחה, במצב שקט או בנא לא להפריע.',
-            toggle(info.speech, toggleSpeech, 'הקרא נסיעות חדשות')),
-          info.voice === 'missing'
-            ? h('div', { className: 'banner' }, h('p', null, 'לא נמצא קול בעברית בטלפון.'), button('איך מתקנים', voiceHelp, 'primary wide'))
-            : null,
-          h('p', { className: 'sub' }, 'מה להקריא'),
-          segments([['full', 'כל ההודעה'], ['short', 'מסלול ומחיר']], info.speechMode,
-            (value) => { native.setSpeechMode(value); render(); }),
-          h('p', { className: 'sub' }, 'מהירות'),
-          segments([['slow', 'איטי'], ['normal', 'רגיל'], ['fast', 'מהיר']], info.speechRate,
-            (value) => { native.setSpeechRate(value); render(); }),
-          button('השמע דוגמה', () => speak('בב ים 180 ש"ח'), 'wide')),
-
-        h('section', { className: 'section' },
-          h('h2', null, 'התראות'),
-          item('התראות על נסיעות', '', toggle(info.alerts, () => { native.setAlerts(!info.alerts); render(); }, 'התראות על נסיעות')),
-          button('שלח התראת בדיקה', () => native.testNotification(), 'wide'),
-          button('צליל והרשאות', () => native.fixNotifications(), 'wide'),
-          info.battery ? null : button('ביטול הגבלת סוללה', () => native.fixBattery(), 'wide')),
-
-        h('section', { className: 'section' },
-          h('h2', null, 'גודל טקסט'),
-          segments([['normal', 'רגיל'], ['large', 'גדול'], ['huge', 'ענק']], pref('size', 'normal'), (value) => {
-            setPref('size', value);
-            applySize();
-            render();
-          })),
-
-        h('section', { className: 'section' },
-          h('h2', null, 'עזרה'),
-          help('איך מחפשים',
-            'מהעיר ובתוכה: נסיעות פנימיות וגם נסיעות שיוצאות ממנה.',
-            'רק פנימי: נסיעות בתוך העיר בלבד.',
-            'מעיר לעיר: רק ממקום אחד לשני.'),
-          help('איך מבקשים נסיעה',
-            '"ת" שולח בשמך בקבוצה ולסדרן. "ת לפרטי" שולח בלי הודעה בקבוצה.',
-            'כשהסדרן עונה, סמן ביומן אם קיבלת. רק נסיעה שסיימת נספרת בהכנסות.'),
-          help('לא מגיעות נסיעות',
-            'ודא שאתה פנוי, שהוואטסאפ מקושר ושבהתראה הקבועה כתוב "מחובר".',
-            'בסמסונג הוסף את האפליקציה ל"אפליקציות שלעולם לא במצב שינה".')),
-
-        h('section', { className: 'section' },
-          button('התנתק', async () => {
-            await api('POST', '/logout');
-            resetSession();
-            renderLogin();
-          }, 'danger wide'),
-          h('p', { className: 'muted' }, `גרסה ${info.version}`)),
-      ];
-    },
+    chats: () => chats.screen(),
+    settings: () => settings.screen(),
   };
 
   function editShortcuts() {
@@ -689,33 +723,69 @@
     document.documentElement.className = size === 'normal' ? '' : `size-${size}`;
   }
 
+  function navButtons() {
+    const fresh = freshRides().length;
+    const unread = chats.unread();
+    return TABS.map(([id, label, glyph]) => {
+      const count = id === 'rides' ? fresh : id === 'chats' ? unread : 0;
+      return button([h('span', { className: 'pill' }, icon(glyph)), label, count ? h('span', { className: 'count' }, count) : null],
+        () => {
+          if (state.tab === id && id === 'settings') settings.back();
+          if (state.tab === id && id === 'chats') chats.back();
+          state.tab = id;
+          render();
+          load();
+        }, id === state.tab ? 'active' : '');
+    });
+  }
+
+  // בצ'אט פתוח אין כותרת ותפריט, כמו בוואטסאפ
+  function layout() {
+    const shell = root.querySelector('.shell');
+    if (!shell) return;
+    shell.classList.toggle('chat-tab', state.tab === 'chats');
+    shell.classList.toggle('in-chat', state.tab === 'chats' && chats.isOpen());
+  }
+
   function render() {
-    if (!device().loggedIn) return renderLogin();
+    if (!device().loggedIn) {
+      chats.setActive(false);
+      return renderLogin();
+    }
+    const key = state.tab === 'rides' ? `rides:${state.view}` : state.tab === 'settings' ? `settings:${settings.page()}` : state.tab;
     const old = root.querySelector('main');
-    const same = old?.dataset.tab === state.tab;
+    const same = old?.dataset.key === key;
+
+    if (same && state.tab === 'chats') {
+      // לא מחליפים את המסך, כדי שהמקלדת וההודעה לא ייעלמו
+      root.querySelector('nav').replaceChildren(...navButtons());
+      chats.update();
+      layout();
+      chats.setActive(!state.hidden);
+      return;
+    }
+
     const scrollTop = same ? old.scrollTop : 0;
     // רענון לא סוגר הסברים שהנהג פתח
     const opened = same ? [...old.querySelectorAll('details')].map((el) => el.open) : [];
 
     const main = h('main', null, screens[state.tab]());
-    main.dataset.tab = state.tab;
+    main.dataset.key = key;
     main.querySelectorAll('details').forEach((el, i) => { el.open = el.open || Boolean(opened[i]); });
 
-    const fresh = freshRides().length;
+    const inPage = state.tab === 'settings' && settings.page();
+    const title = state.tab === 'settings' ? settings.title() : TABS.find(([id]) => id === state.tab)[1];
     root.replaceChildren(h('div', { className: 'shell' },
       h('header', null,
-        h('h1', null, TABS.find(([id]) => id === state.tab)[1]),
+        h('div', { className: 'title' },
+          inPage ? button(icon('back'), () => settings.back(), '', 'חזרה') : null,
+          h('h1', null, title)),
         button(icon('refresh'), load, '', 'רענן')),
       main,
-      h('nav', null, TABS.map(([id, label, glyph]) => button(
-        [h('span', { className: 'pill' }, icon(glyph)), label,
-          id === 'rides' && fresh ? h('span', { className: 'count' }, fresh) : null],
-        () => {
-          state.tab = id;
-          render();
-          load();
-        }, id === state.tab ? 'active' : '')))));
+      h('nav', null, navButtons())));
     main.scrollTop = scrollTop;
+    layout();
+    chats.setActive(state.tab === 'chats' && !state.hidden);
   }
 
   async function load() {
@@ -724,14 +794,15 @@
     try {
       const [me, rides, mine] = await Promise.all([api('GET', '/me'), api('GET', '/rides'), api('GET', '/rides?view=mine')]);
       if (seq !== loadSeq) return;
-      Object.assign(state, { me, rides: rides.rides, mine: mine.rides, loaded: true, offline: false });
+      Object.assign(state, { me: settings.merge(me, state.me), rides: rides.rides, mine: mine.rides, loaded: true, offline: false });
+      chats.refresh();
     } catch (err) {
       if (seq !== loadSeq || err.status === 401) return;
       state.offline = true;
       state.loaded = true;
     }
     // לא מוחקים לנהג את מה שהוא מקליד
-    if (document.activeElement?.tagName !== 'INPUT' || !root.contains(document.activeElement)) render();
+    if (!typing()) render();
     if (!state.offline) openFromNotification();
   }
 
@@ -745,10 +816,18 @@
   window.onNativeRide = load;
   // הקול בעברית נבדק ברקע, ומעדכן את המסך כשהתשובה מגיעה
   window.onNativeVoice = () => {
-    if (device().loggedIn && document.activeElement?.tagName !== 'INPUT' && root.querySelector('.shell')) render();
+    if (device().loggedIn && !typing() && root.querySelector('.shell')) render();
+  };
+  window.onNativePause = () => {
+    state.hidden = true;
+    chats.setActive(false);
   };
   window.onNativeResume = () => {
-    if (device().loggedIn) load();
+    state.hidden = false;
+    if (device().loggedIn) {
+      chats.setActive(state.tab === 'chats' && Boolean(root.querySelector('.shell')));
+      load();
+    }
     else if (root.querySelector('.shell')) {
       resetSession();
       renderLogin();
@@ -759,17 +838,52 @@
       closeSheet();
       return true;
     }
-    if (root.querySelector('.shell') && state.tab !== 'rides') {
-      state.tab = 'rides';
-      render();
-      return true;
+    if (root.querySelector('.shell')) {
+      if (state.tab === 'chats' && chats.back()) return true;
+      if (state.tab === 'settings' && settings.back()) return true;
+      if (state.tab !== 'rides' || state.view !== 'new') {
+        state.tab = 'rides';
+        state.view = 'new';
+        render();
+        return true;
+      }
     }
     return false;
   };
 
   setInterval(() => {
-    if (!document.hidden && device().loggedIn) load();
+    if (!document.hidden && !state.hidden && device().loggedIn) load();
   }, 30000);
+
+  function typing() {
+    const el = document.activeElement;
+    return Boolean(el && ['INPUT', 'TEXTAREA'].includes(el.tagName) && root.contains(el));
+  }
+
+  const shared = {
+    h, icon, button, toggle, segments, toast, sheet, closeSheet, native, api, secure, local, clock, device,
+    pref, setPref, applySize, render, load, layout, toggleSpeech, voiceHelp, speak,
+    me: () => state.me,
+    // מונה וכפתור חיוג ללקוח במסכים שמחוץ לצ'אט
+    changed() {
+      const shell = root.querySelector('.shell');
+      if (!shell) return;
+      if (state.tab === 'rides' && !typing()) render();
+      else shell.querySelector('nav').replaceChildren(...navButtons());
+    },
+    goChats() {
+      state.tab = 'chats';
+      render();
+    },
+    chatsOff: () => chats.confirmOff(),
+    async logout() {
+      await api('POST', '/logout');
+      resetSession();
+      renderLogin();
+    },
+  };
+  const chats = window.createChats(shared);
+  const settings = window.createSettings(shared);
 
   start();
 })();

@@ -35,6 +35,30 @@ final class Settings {
         prefs.edit().putString("speechMode", mode).commit();
     }
 
+    boolean respectQuiet() {
+        return prefs.getBoolean("respectQuiet", false);
+    }
+
+    void setRespectQuiet(boolean on) {
+        prefs.edit().putBoolean("respectQuiet", on).commit();
+    }
+
+    boolean location() {
+        return prefs.getBoolean("location", false);
+    }
+
+    void setLocation(boolean on) {
+        prefs.edit().putBoolean("location", on).commit();
+    }
+
+    int maxKm() {
+        return prefs.getInt("maxKm", 0);
+    }
+
+    void setMaxKm(int km) {
+        prefs.edit().putInt("maxKm", km).commit();
+    }
+
     String speechRate() {
         return prefs.getString("speechRate", "normal");
     }

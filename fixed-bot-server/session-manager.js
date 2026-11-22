@@ -167,6 +167,13 @@ function persistSentStoreSoon() {
   }, 15000); // מאגר גדול (אלפי הודעות) - כתיבה מרוכזת כדי לא להעמיס על הדיסק
 }
 
+// הודעות מהצ'אט הפרטי של האפליקציה: לשליחה חוזרת מהזיכרון בלבד, לעולם לא לדיסק
+const privateSentStore = new Map();
+function rememberPrivateSent(id, message) {
+  privateSentStore.set(id, message);
+  if (privateSentStore.size > 500) privateSentStore.delete(privateSentStore.keys().next().value);
+}
+
 function rememberSent(id, message) {
   if (!id || !message) return;
   sentStore.set(id, message);
@@ -237,7 +244,10 @@ function wrapSendStore(sock) {
     try {
       const res = await origSend(...args);
       try {
-        if (res?.key?.id && res.message) rememberSent(res.key.id, res.message);
+        if (res?.key?.id && res.message) {
+          if (args[2]?.privateChat) rememberPrivateSent(res.key.id, res.message);
+          else rememberSent(res.key.id, res.message);
+        }
       } catch (e) {}
       return res;
     } catch (err) {
@@ -287,7 +297,7 @@ function buildSocket(version, state) {
     defaultQueryTimeoutMs: 60000,
     getMessage: async (key) => {
       if (!key?.id) return undefined;
-      const msg = sentStore.get(key.id);
+      const msg = sentStore.get(key.id) || privateSentStore.get(key.id);
       if (!msg) return undefined;
       return reviveBuffers(msg);
     },

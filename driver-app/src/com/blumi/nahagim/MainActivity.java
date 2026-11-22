@@ -28,6 +28,9 @@ public final class MainActivity extends Activity {
     private static final String PAGE = "file:///android_asset/index.html";
     private static volatile WeakReference<MainActivity> visible = new WeakReference<>(null);
 
+    private static final int LOCATION_REQUEST = 2;
+    private boolean askedLocation;
+
     private WebView web;
     private Bridge bridge;
     private volatile String rideToOpen = "";
@@ -79,6 +82,7 @@ public final class MainActivity extends Activity {
     protected void onResume() {
         super.onResume();
         visible = new WeakReference<>(this);
+        Locator.get(this).use("screen", true);
         PushService.sync(this);
         Speech.get(this).check();
         run("window.onNativeResume && window.onNativeResume()");
@@ -98,6 +102,34 @@ public final class MainActivity extends Activity {
         Speech.get(this).stop();
     }
 
+    void requestLocation() {
+        if (Locator.allowed(this)) {
+            locationChanged();
+            return;
+        }
+        if (askedLocation && !shouldShowRequestPermissionRationale(Manifest.permission.ACCESS_FINE_LOCATION)) {
+            // Refused for good: only the app's settings page can allow it
+            start(new Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                    Uri.parse("package:" + getPackageName())));
+            return;
+        }
+        askedLocation = true;
+        requestPermissions(new String[] {
+                Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION}, LOCATION_REQUEST);
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int request, String[] permissions, int[] results) {
+        super.onRequestPermissionsResult(request, permissions, results);
+        if (request == LOCATION_REQUEST) locationChanged();
+    }
+
+    void locationChanged() {
+        Locator.get(this).update();
+        PushService.sync(this); // refreshes the service's location type
+        run("window.onNativeVoice && window.onNativeVoice()");
+    }
+
     String takeRide() {
         String id = rideToOpen;
         rideToOpen = "";
@@ -112,6 +144,8 @@ public final class MainActivity extends Activity {
     @Override
     protected void onPause() {
         visible.clear();
+        Locator.get(this).use("screen", false);
+        run("window.onNativePause && window.onNativePause()");
         super.onPause();
     }
 

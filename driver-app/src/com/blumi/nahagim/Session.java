@@ -20,11 +20,20 @@ final class Session {
     }
 
     void login(String token) {
-        prefs.edit().putString("token", token).putLong("cursor", 0).putBoolean("alerts", true).commit();
+        prefs.edit().remove("chatKey").putString("token", token).putLong("cursor", 0).putBoolean("alerts", true).commit();
     }
 
     void clear() {
         prefs.edit().clear().commit();
+    }
+
+    String chatKey() {
+        return prefs.getString("chatKey", "");
+    }
+
+    void setChatKey(String forToken, String key) {
+        if (!forToken.equals(token())) return; // logged out meanwhile
+        prefs.edit().putString("chatKey", key).commit();
     }
 
     long cursor() {

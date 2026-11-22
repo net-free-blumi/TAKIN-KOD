@@ -5,6 +5,9 @@ import android.content.ClipboardManager;
 import android.webkit.JavascriptInterface;
 
 import java.io.IOException;
+import java.net.URLEncoder;
+import java.security.GeneralSecurityException;
+import java.util.Locale;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -16,17 +19,22 @@ final class Bridge {
     private final MainActivity activity;
     private final Session session;
     private final Settings settings;
-    private final ExecutorService network = Executors.newFixedThreadPool(3);
+    private final ExecutorService network = Executors.newFixedThreadPool(5);
+    private final ExecutorService chatNetwork = Executors.newFixedThreadPool(4);
+    private final ChatLink chats;
 
     Bridge(MainActivity activity) {
         this.activity = activity;
         this.session = new Session(activity);
         this.settings = new Settings(activity);
+        this.chats = new ChatLink(session);
     }
 
     @JavascriptInterface
     public void request(int id, String method, String path, String json) {
         if (network.isShutdown()) return;
+        // Chats only through secure(), never as plain text
+        if (path != null && path.startsWith("/api/app/chat")) return;
         network.execute(() -> {
             JSONObject result = new JSONObject();
             try {
@@ -55,6 +63,74 @@ final class Bridge {
         });
     }
 
+    /** Chat operations. "start" begins pairing, the rest are encrypted. */
+    @JavascriptInterface
+    public void secure(int id, String operation, String argsJson) {
+        if (operation == null || chatNetwork.isShutdown()) return;
+        chatNetwork.execute(() -> {
+            JSONObject result = new JSONObject();
+            try {
+                try {
+                    result = "start".equals(operation) ? chats.start() : chats.call(operation, argsJson);
+                } catch (IOException e) {
+                    result.put("status", 0);
+                } catch (GeneralSecurityException e) {
+                    result.put("status", 502).put("body",
+                            new JSONObject().put("error", "החיבור המוצפן נכשל. חבר מחדש את הצ'אטים."));
+                }
+            } catch (JSONException e) {
+                return;
+            }
+            activity.reply(id, result.toString());
+        });
+    }
+
+    @JavascriptInterface
+    public void forgetChats() {
+        session.setChatKey(session.token(), "");
+    }
+
+    @JavascriptInterface
+    public void confirmInWhatsApp(String number, String text) {
+        if (number == null || !number.matches("[1-9][0-9]{8,14}")) return;
+        if (text == null || !text.matches("אישור צאטים [0-9A-F]{16}")) return;
+        try {
+            String url = "https://wa.me/" + number + "?text=" + URLEncoder.encode(text, "UTF-8").replace("+", "%20");
+            activity.runOnUiThread(() -> activity.openExternal(url));
+        } catch (java.io.UnsupportedEncodingException impossible) {
+            throw new IllegalStateException(impossible);
+        }
+    }
+
+    @JavascriptInterface
+    public void openPoint(double lat, double lng) {
+        if (!(Math.abs(lat) <= 90 && Math.abs(lng) <= 180)) return;
+        String url = String.format(Locale.US, "https://waze.com/ul?ll=%f,%f&navigate=yes", lat, lng);
+        activity.runOnUiThread(() -> activity.openExternal(url));
+    }
+
+    @JavascriptInterface
+    public void setLocation(boolean on) {
+        settings.setLocation(on);
+        if (on) activity.runOnUiThread(activity::requestLocation);
+        else activity.runOnUiThread(activity::locationChanged);
+    }
+
+    @JavascriptInterface
+    public void setMaxKm(int km) {
+        if (km >= 0 && km <= 300) settings.setMaxKm(km);
+    }
+
+    @JavascriptInterface
+    public double distance(double lat, double lng) {
+        return Locator.get(activity).km(lat, lng);
+    }
+
+    @JavascriptInterface
+    public void setRespectQuiet(boolean on) {
+        settings.setRespectQuiet(on);
+    }
+
     @JavascriptInterface
     public String state() throws JSONException {
         return new JSONObject()
@@ -66,18 +142,24 @@ final class Bridge {
                 .put("speechMode", settings.speechMode())
                 .put("speechRate", settings.speechRate())
                 .put("voice", Speech.get(activity).voice())
+                .put("muted", Speech.get(activity).muted())
+                .put("respectQuiet", settings.respectQuiet())
+                .put("chatKey", !session.chatKey().isEmpty())
+                .put("location", settings.location())
+                .put("locationAllowed", Locator.allowed(activity))
+                .put("maxKm", settings.maxKm())
                 .put("version", BuildInfo.VERSION)
                 .toString();
     }
 
     @JavascriptInterface
     public String getPref(String key) {
-        return key != null && key.matches("saved|last|size") ? settings.page(key) : "";
+        return key != null && key.matches("saved|last|size|compact") ? settings.page(key) : "";
     }
 
     @JavascriptInterface
     public void setPref(String key, String json) {
-        if (key != null && json != null && key.matches("saved|last|size") && json.length() < 10000) {
+        if (key != null && json != null && key.matches("saved|last|size|compact") && json.length() < 10000) {
             settings.setPage(key, json);
         }
     }
@@ -85,8 +167,16 @@ final class Bridge {
     @JavascriptInterface
     public void setSpeech(boolean on) {
         settings.setSpeech(on);
-        if (on) Speech.get(activity).check();
-        else Speech.get(activity).stop();
+        if (on) {
+            Speech.get(activity).check();
+            // Rides are read by the alert service, so it must run
+            if (!session.alertsEnabled()) {
+                session.setAlertsEnabled(true);
+                PushService.sync(activity);
+            }
+        } else {
+            Speech.get(activity).stop();
+        }
     }
 
     @JavascriptInterface
@@ -176,5 +266,6 @@ final class Bridge {
 
     void close() {
         network.shutdown();
+        chatNetwork.shutdown();
     }
 }

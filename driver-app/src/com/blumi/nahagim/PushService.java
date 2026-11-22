@@ -73,8 +73,8 @@ public final class PushService extends Service {
         getSystemService(ConnectivityManager.class).registerDefaultNetworkCallback(networkCallback);
 
         running = true;
-        worker = new Thread(this::loop, "ride-alerts");
-        worker.start();
+        startWorker();
+        Speech.get(this).check(); // so the first ride is not waiting for the voice engine
     }
 
     @Override
@@ -85,15 +85,35 @@ public final class PushService extends Service {
             stopSelf();
             return START_NOT_STICKY;
         }
+        if (!worker.isAlive()) startWorker();
+        Locator.get(this).use("service", true);
         return START_STICKY;
     }
 
+    private void startWorker() {
+        worker = new Thread(this::loop, "ride-alerts");
+        worker.start();
+    }
+
     private void showForeground() {
-        if (Build.VERSION.SDK_INT >= 34) {
-            startForeground(Notifications.SERVICE_ID, Notifications.status(this, connected),
-                    ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE);
+        int id = Notifications.SERVICE_ID;
+        boolean location = Build.VERSION.SDK_INT >= 29 && Locator.get(this).active();
+        int special = Build.VERSION.SDK_INT >= 34 ? ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE : 0;
+        if (location) {
+            try {
+                startForeground(id, Notifications.status(this, connected),
+                        special | ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION);
+                return;
+            } catch (RuntimeException e) {
+                // Not allowed from the background (after boot). Alerts matter more than distance
+                Log.w(TAG, "no location in background until the app opens", e);
+            }
+        }
+        if (Build.VERSION.SDK_INT >= 29) {
+            // Naming the type matters: the default would include location
+            startForeground(id, Notifications.status(this, connected), special);
         } else {
-            startForeground(Notifications.SERVICE_ID, Notifications.status(this, connected));
+            startForeground(id, Notifications.status(this, connected));
         }
     }
 
@@ -155,15 +175,16 @@ public final class PushService extends Service {
 
     private void showRides(JSONArray rides) {
         if (rides == null) return;
+        Speech speech = Speech.get(this);
         for (int i = 0; i < rides.length(); i++) {
             JSONObject ride = rides.optJSONObject(i);
-            if (ride == null) continue;
+            if (ride == null || !Locator.get(this).withinRange(ride)) continue;
             String title = "נסיעה חדשה";
             // An older server can mistake a departure time for the price
             double price = ride.optBoolean("checked") ? ride.optDouble("price", 0) : 0;
             if (price > 0) title += " · ₪" + Math.round(price);
-            Notifications.ride(this, ride.optString("id"), title, ride.optString("text"));
-            Speech.get(this).announce(ride);
+            Notifications.ride(this, ride.optString("id"), title, ride.optString("text"), speech.willRead());
+            speech.announce(ride);
         }
         if (rides.length() > 0) MainActivity.refreshIfOpen();
     }
@@ -176,6 +197,7 @@ public final class PushService extends Service {
     @Override
     public void onDestroy() {
         running = false;
+        Locator.get(this).use("service", false);
         abortRequest();
         worker.interrupt();
         getSystemService(ConnectivityManager.class).unregisterNetworkCallback(networkCallback);

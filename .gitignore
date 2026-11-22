@@ -16,6 +16,7 @@ group-metadata.json
 onboarding-alerts.json
 alerts-cache.json
 driver-app-data
+driver-app-chats
 .restart-writer.mjs
 *.jks
 *.keystore

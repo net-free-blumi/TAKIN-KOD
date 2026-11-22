@@ -114,6 +114,7 @@ import {
 } from "./telegram-manager.js";
 import { startTelegramBot, getBotLinkStatus, getTelegramBotInfo } from "./telegram-bot.js";
 import { describeRoute } from "./driver-app-route.js";
+import { CONFIRM_RE } from "./driver-app-secure.js";
 import { createDriverApp } from "./driver-app.js";
 import { normalizeMobile } from "./driver-app-auth.js";
 
@@ -1488,6 +1489,7 @@ export async function handleDriverStatusChange(driverPhone, sessionObj) {
 async function handleIncomingMessage(sock, upsert, sessionContext) {
   const { messages } = upsert;
   if (!messages || !messages.length) return;
+  if (!sessionContext.isMainBot && sessionContext.driverPhone) driverApp.ingestChats(sock, upsert, sessionContext.driverPhone);
 
   for (const m of messages) {
     // 0. טיפול בתגובות אימוג'י (דיסלייק 👎 על הודעות הבוט להעברה לקבוצת התיקונים)
@@ -1535,6 +1537,8 @@ async function handleIncomingMessage(sock, upsert, sessionContext) {
 
     const text = extractMessageText(m);
     if (!text) continue;
+    // אישור הצ'אטים של האפליקציה מטופל בסשן של הנהג. הבוט לא עונה עליו
+    if (!isGroup && sessionContext.isMainBot && CONFIRM_RE.test(text.trim())) continue;
 
     // בקבוצה: התעלמות מהודעות תפיסה של הבוט עצמו אך מתן אפשרות לסריקת הודעות נסיעה שנשלחו לבדיקה
     if (m.key.fromMe && isGroup) {
@@ -2248,6 +2252,13 @@ async function handleIncomingMessage(sock, upsert, sessionContext) {
           continue;
         }
 
+        // לפני הכפילות: נסיעה מקבוצה כבויה לא חוסמת את אותה נסיעה מקבוצה פעילה
+        const skip = driverApp.filterRide(driverPhone, { text: cleanedText, groupJid: jid });
+        if (skip) {
+          recordEvent("filter_reject", `נהג ${driverPhone}: ${skip}`);
+          continue;
+        }
+
         // בדיקת כפילות מבודדת לפי נהג
         const dup = deduper.check(cleanedText, driverPhone);
         if (dup.duplicate) {
@@ -2332,12 +2343,42 @@ const driverApp = createDriverApp({
       group: data.groupName || "",
       dispatcher: data.senderName || "",
       contact: contact || null,
+      chatJid: data.senderJid && !String(data.senderJid).endsWith("@g.us") ? data.senderJid : null,
+      contactIsSender: Boolean(contact) && contact === normalizeMobile(data.senderPhone),
     };
   },
   claimRide: (phone, alertId, options) => {
     const info = sentAlertsCache.get(alertId);
     if (!info || cleanPhone(info.driverPhone) !== phone) return { success: false, message: "הנסיעה כבר לא זמינה לבקשה" };
-    return claimRideFromWeb(alertId, phone, "תן", options);
+    return claimRideFromWeb(alertId, phone, options?.claimText || "תן", options);
+  },
+  chatsDir: path.join(__dirname, "driver-app-chats"),
+  getSession: getDriverSession,
+  getBotPhone: () => cleanPhone(loadUsersData().botPhone || getMainBotStatus().phone),
+  listGroups: async (phone) => {
+    const session = getDriverSession(phone);
+    const sock = session?.status === "connected" ? session.sock : null;
+    if (!sock?.groupFetchAllParticipating || String(sock.user?.id || "").split(/[:@]/)[0] !== phone) return null;
+    let timer;
+    try {
+      const all = await Promise.race([
+        sock.groupFetchAllParticipating(),
+        new Promise((resolve, reject) => { timer = setTimeout(() => reject(new Error("groups timeout")), 18000); }),
+      ]);
+      return Object.values(all || {})
+        .filter((g) => String(g?.id).endsWith("@g.us") && !g.isCommunity)
+        .map((g) => ({ id: g.id, name: g.subject || "קבוצה ללא שם", size: g.size || g.participants?.length || 0 }))
+        .sort((a, b) => a.name.localeCompare(b.name, "he", { numeric: true }));
+    } catch (err) {
+      recordError("driver_app_groups", err);
+      return null;
+    } finally {
+      clearTimeout(timer);
+    }
+  },
+  quoteForRide: (phone, ride) => {
+    const info = ride.alertId ? sentAlertsCache.get(ride.alertId) : null;
+    return info && cleanPhone(info.driverPhone) === phone ? buildQuotedRideMessage(info) : null;
   },
   getSearch: () => dashboardRuntime.driverSearch,
   onError: (err) => recordError("driver_app", err),

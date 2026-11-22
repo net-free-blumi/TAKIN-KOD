@@ -12,6 +12,7 @@ final class Notifications {
     static final int SERVICE_ID = 1;
     private static final int LOGIN_ID = 2;
     private static final String RIDES = "rides";
+    private static final String RIDES_SPOKEN = "rides_spoken";
     private static final String STATUS = "status";
     static final String EXTRA_RIDE = "ride";
 
@@ -25,6 +26,13 @@ final class Notifications {
         rides.setVibrationPattern(new long[] {0, 350, 150, 350});
         rides.setLockscreenVisibility(Notification.VISIBILITY_PRIVATE);
         manager.createNotificationChannel(rides);
+
+        NotificationChannel spoken = new NotificationChannel(
+                RIDES_SPOKEN, "נסיעות עם הקראה", NotificationManager.IMPORTANCE_HIGH);
+        spoken.setSound(null, null); // the beep and the voice are the sound
+        spoken.enableVibration(true);
+        spoken.setLockscreenVisibility(Notification.VISIBILITY_PRIVATE);
+        manager.createNotificationChannel(spoken);
 
         NotificationChannel status = new NotificationChannel(STATUS, "חיבור להתראות", NotificationManager.IMPORTANCE_LOW);
         status.setShowBadge(false);
@@ -65,7 +73,11 @@ final class Notifications {
     }
 
     static void ride(Context context, String id, String title, String text) {
-        Notification.Builder builder = base(context, RIDES, title, text);
+        ride(context, id, title, text, false);
+    }
+
+    static void ride(Context context, String id, String title, String text, boolean spoken) {
+        Notification.Builder builder = base(context, spoken ? RIDES_SPOKEN : RIDES, title, text);
         if (!id.isEmpty()) {
             PendingIntent open = openApp(context, id);
             // Opens the ride for a deliberate tap on "ת". Never sends by itself
