@@ -2,7 +2,7 @@ import cron from "node-cron";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { normalizeText, parseDriverCommand, processDriverCommand, rideMatches, matchesAnySearch, findPlaces, extractDispatcherContact, buildQuotedRideMessage } from "./matcher.js";
+import { normalizeText, isSearchCommand, parseDriverCommand, processDriverCommand, rideMatches, matchesAnySearch, findPlaces, extractDispatcherContact, buildQuotedRideMessage } from "./matcher.js";
 import { createDeduper } from "./dedupe.js";
 import { startDashboard, recordEvent, recordError } from "./dashboard-api.js";
 
@@ -176,17 +176,52 @@ try {
 }
 
 let alertsCacheTimer = null;
+function persistAlertsCacheNow() {
+  clearTimeout(alertsCacheTimer);
+  alertsCacheTimer = null;
+  try {
+    const keys = Array.from(sentAlertsCache.keys()).slice(-ALERTS_CACHE_MAX);
+    const obj = {};
+    for (const k of keys) obj[k] = sentAlertsCache.get(k);
+    fs.writeFileSync(ALERTS_CACHE_FILE, JSON.stringify(obj), "utf8");
+  } catch (e) {
+    console.error("שגיאה בשמירת alerts-cache.json:", e.message);
+  }
+}
+
 function persistAlertsCacheSoon() {
   if (alertsCacheTimer) return;
-  alertsCacheTimer = setTimeout(() => {
-    alertsCacheTimer = null;
-    try {
-      const keys = Array.from(sentAlertsCache.keys()).slice(-ALERTS_CACHE_MAX);
-      const obj = {};
-      for (const k of keys) obj[k] = sentAlertsCache.get(k);
-      fs.writeFileSync(ALERTS_CACHE_FILE, JSON.stringify(obj), "utf8");
-    } catch (e) {}
-  }, 10000);
+  alertsCacheTimer = setTimeout(persistAlertsCacheNow, 10000);
+}
+
+// ==========================================
+// נעילת תפיסה - משותפת לכפתור, להקלדה ולאתר
+// beginClaim רץ סינכרונית לפני ה-await הראשון, ולכן שתי לחיצות במקביל לא יכולות לעבור שתיהן.
+// רק הצלחה נשמרת (גם להפעלה מחדש). כשל משחרר ומאפשר ניסיון חוזר.
+// ==========================================
+const claimsInFlight = new Set();
+const claimKey = (info, phone) => `${info.msgId}|${cleanPhone(phone)}`;
+
+// מחזיר הודעה אם אסור לשלוח שוב, או null אם הנעילה נתפסה
+function beginClaim(info, phone) {
+  if (info.claimed && cleanPhone(info.claimedBy) === cleanPhone(phone)) {
+    return "✋ בקשת התפיסה על הנסיעה הזו כבר נשלחה, לא שלחתי שוב.";
+  }
+  const key = claimKey(info, phone);
+  if (claimsInFlight.has(key)) return "⏳ הבקשה על הנסיעה הזו כבר בשליחה.";
+  claimsInFlight.add(key);
+  return null;
+}
+
+function markClaimed(info, phone) {
+  info.claimed = true;
+  info.claimedBy = cleanPhone(phone);
+  info.claimedAt = Date.now();
+  persistAlertsCacheNow();
+}
+
+function endClaim(info, phone) {
+  claimsInFlight.delete(claimKey(info, phone));
 }
 
 // מיקומי נהגים לשירות מרחק ורדאר בזמן אמת
@@ -295,13 +330,21 @@ export async function claimRideFromWeb(rideId, driverPhone, claimText = "תן") 
 
   const phone = driverPhone ? cleanPhone(driverPhone) : cleanPhone(targetAlertInfo.driverPhone);
 
+  const blocked = beginClaim(targetAlertInfo, phone);
+  if (blocked) return { success: false, duplicate: true, message: blocked };
+  try {
+    const result = await performWebClaim(targetAlertInfo, phone, claimText);
+    if (result.success) markClaimed(targetAlertInfo, phone);
+    return result;
+  } finally {
+    endClaim(targetAlertInfo, phone);
+  }
+}
+
+async function performWebClaim(targetAlertInfo, phone, claimText) {
   // תפיסת נסיעת טלגרם
   if (targetAlertInfo.isTelegram) {
     const tgResult = await claimTelegramRide(phone, targetAlertInfo);
-    targetAlertInfo.claimed = true;
-    targetAlertInfo.claimedBy = phone;
-    targetAlertInfo.claimedAt = Date.now();
-    sentAlertsCache.set(rideId, targetAlertInfo);
     return {
       success: Boolean(tgResult.ok),
       sentInGroup: tgResult.action === "replied",
@@ -369,20 +412,18 @@ export async function claimRideFromWeb(rideId, driverPhone, claimText = "תן") 
     }
   }
 
-  targetAlertInfo.claimed = true;
-  targetAlertInfo.claimedBy = phone;
-  targetAlertInfo.claimedAt = Date.now();
-  sentAlertsCache.set(rideId, targetAlertInfo);
-
+  const sent = sentInGroup || sentDirect || sentToDriveBot;
   let message = "";
-  if (isDriveBot) {
+  if (!sent) {
+    message = "הבקשה לא נשלחה. אפשר לנסות שוב או לפנות לסדרן.";
+  } else if (isDriveBot) {
     message = `נשלחה פקודת תפיסה ישירות לבוט דרייבוט (${parsedRoute.drivebotCommand || 'ת'})! לא נשלח תן לקבוצה כנדרש.`;
   } else {
     message = `הנסיעה נתפסה בהצלחה! נשלח "${claimText}" ${sentInGroup ? 'בקבוצה' : ''} ${sentDirect ? 'ולסדרן' : ''}`;
   }
 
   return {
-    success: true,
+    success: sent,
     sentInGroup,
     sentDirect,
     sentToDriveBot,
@@ -1829,124 +1870,130 @@ async function handleIncomingMessage(sock, upsert, sessionContext) {
       const isClaimIntent = isClaimWord || ((norm === "ת" || norm === "ת פה" || norm === "תן פה") && quotedStanzaId && targetAlertInfo);
 
       if (isClaimIntent && targetAlertInfo) {
-        // תפיסת נסיעת טלגרם (לחיצה אוטומטית על Inline Button או תגובה בטלגרם)
-        if (targetAlertInfo.isTelegram) {
-          const tgResult = await claimTelegramRide(senderPhone, targetAlertInfo);
-          targetAlertInfo.claimed = true;
-          targetAlertInfo.claimedBy = senderPhone;
-          targetAlertInfo.claimedAt = Date.now();
-          if (targetAlertInfo.msgId) {
-            sentAlertsCache.set(targetAlertInfo.msgId, targetAlertInfo);
-          }
-
-          let claimReply = "";
-          if (tgResult.ok) {
-            claimReply = `🚕 *נסיעת טלגרם נתפסה בהצלחה!*\n\n${tgResult.message || "הנסיעה נתפסה!"}\n\n📍 *קבוצה:* ${targetAlertInfo.groupName}\n👤 *סדרן:* ${targetAlertInfo.senderName}\n`;
-            if (targetAlertInfo.telegramUrl) {
-              claimReply += `\n🔗 *פתח בטלגרם:* ${targetAlertInfo.telegramUrl}`;
-            }
-          } else {
-            claimReply = `⚠️ *תפיסת נסיעה בטלגרם:*\n${tgResult.reason || tgResult.error || "לא ניתן היה לבצע תפיסה אוטומטית"}\n\n`;
-            if (targetAlertInfo.telegramUrl) {
-              claimReply += `🔗 *פתח באפליקציית טלגרם לתפיסה מיידית:*\n${targetAlertInfo.telegramUrl}`;
-            }
-          }
-          await sock.sendMessage(jid, { text: claimReply.trim() });
-          recordEvent("command", `נהג ${senderPhone} תפס נסיעת טלגרם: ${tgResult.ok ? 'הצלחה' : 'נכשל'}`);
+        const blocked = beginClaim(targetAlertInfo, senderPhone);
+        if (blocked) {
+          await sock.sendMessage(jid, { text: blocked });
           continue;
         }
+        try {
+          // תפיסת נסיעת טלגרם (לחיצה אוטומטית על Inline Button או תגובה בטלגרם)
+          if (targetAlertInfo.isTelegram) {
+            const tgResult = await claimTelegramRide(senderPhone, targetAlertInfo);
+            if (tgResult.ok) markClaimed(targetAlertInfo, senderPhone);
 
-        const driverSession = getDriverSession(senderPhone);
-        const driverSock = driverSession?.sock;
-
-        const rideTextForDb = targetAlertInfo.rawText || targetAlertInfo.rideData?.rawText || "";
-        const parsedRoute = parseRideRoute(rideTextForDb, targetAlertInfo.senderPhone);
-        const isDriveBot = parsedRoute.isDriveBot || /דרייבוט/i.test(targetAlertInfo.groupName || "");
-
-        const claimTextToSend = (norm === "ת פה" || norm === "תן פה" || norm === "פה") ? "ת פה" : "תן";
-
-        let sentDirect = false;
-        let sentInGroup = false;
-        let sentToDriveBot = false;
-        const sentDirectPhones = [];
-
-        // הכנת אובייקט הציטוט הרשמי של הודעת הנסיעה המקורית
-        const quoteObj = buildQuotedRideMessage(targetAlertInfo);
-
-        // שליחה אוטומטית מחשבון הוואטסאפ של הנהג
-        if (driverSock && driverSession?.status === "connected") {
-          if (isDriveBot) {
-            // אם זו נסיעת דרייבוט - לא שולחים תן לקבוצה! אך ורק שליחת קוד התפיסה ישירות לבוט של דרייבוט
-            const driveBotTargetPhone = parsedRoute.drivebotPhone || "972552732722";
-            const commandToSend = parsedRoute.drivebotCommand || claimTextToSend;
-            const targetJid = `${driveBotTargetPhone}@s.whatsapp.net`;
-            try {
-              await driverSock.sendMessage(targetJid, { text: commandToSend });
-              sentToDriveBot = true;
-              sentDirect = true;
-              sentDirectPhones.push(driveBotTargetPhone);
-            } catch (err) {
-              console.error("שגיאה בשליחת תפיסה לבוט דרייבוט:", err.message);
+            let claimReply = "";
+            if (tgResult.ok) {
+              claimReply = `🚕 *נסיעת טלגרם נתפסה בהצלחה!*\n\n${tgResult.message || "הנסיעה נתפסה!"}\n\n📍 *קבוצה:* ${targetAlertInfo.groupName}\n👤 *סדרן:* ${targetAlertInfo.senderName}\n`;
+              if (targetAlertInfo.telegramUrl) {
+                claimReply += `\n🔗 *פתח בטלגרם:* ${targetAlertInfo.telegramUrl}`;
+              }
+            } else {
+              claimReply = `⚠️ *תפיסת נסיעה בטלגרם:*\n${tgResult.reason || tgResult.error || "לא ניתן היה לבצע תפיסה אוטומטית"}\n\n`;
+              if (targetAlertInfo.telegramUrl) {
+                claimReply += `🔗 *פתח באפליקציית טלגרם לתפיסה מיידית:*\n${targetAlertInfo.telegramUrl}`;
+              }
             }
-          } else {
-            // 1. שליחת תגובה בקבוצה שבה פורסמה הנסיעה (עם ציטוט מלא של הודעת הנסיעה)
-            if (targetAlertInfo.groupJid) {
-              const okGroup = await sendRideClaimReply(driverSock, targetAlertInfo.groupJid, claimTextToSend, quoteObj);
-              if (okGroup) sentInGroup = true;
-            }
+            await sock.sendMessage(jid, { text: claimReply.trim() });
+            recordEvent("command", `נהג ${senderPhone} תפס נסיעת טלגרם: ${tgResult.ok ? 'הצלחה' : 'נכשל'}`);
+            continue;
+          }
 
-            // 2. שליחת תגובה אישית לסדרן שפרסם את הנסיעה (לא סתם הודעה, אלא תגובה המצטטת את הודעת הנסיעה שלו!)
-            const directRecipients = new Set();
+          const driverSession = getDriverSession(senderPhone);
+          const driverSock = driverSession?.sock;
 
-            const senderPhoneClean = cleanPhone(targetAlertInfo.senderPhone);
-            if (senderPhoneClean && senderPhoneClean.length >= 9 && !isLid(senderPhoneClean) && senderPhoneClean !== "זמין בקבוצה") {
-              directRecipients.add(senderPhoneClean);
-            }
+          const rideTextForDb = targetAlertInfo.rawText || targetAlertInfo.rideData?.rawText || "";
+          const parsedRoute = parseRideRoute(rideTextForDb, targetAlertInfo.senderPhone);
+          const isDriveBot = parsedRoute.isDriveBot || /דרייבוט/i.test(targetAlertInfo.groupName || "");
 
-            const textPhone = extractDispatcherContact(targetAlertInfo);
-            if (textPhone && textPhone.length >= 9 && !isLid(textPhone)) {
-              directRecipients.add(cleanPhone(textPhone));
-            }
+          const claimTextToSend = (norm === "ת פה" || norm === "תן פה" || norm === "פה") ? "ת פה" : "תן";
 
-            for (const p of directRecipients) {
-              const targetJid = `${p}@s.whatsapp.net`;
-              const okDirect = await sendRideClaimReply(driverSock, targetJid, claimTextToSend, quoteObj);
-              if (okDirect) {
+          let sentDirect = false;
+          let sentInGroup = false;
+          let sentToDriveBot = false;
+          const sentDirectPhones = [];
+
+          // הכנת אובייקט הציטוט הרשמי של הודעת הנסיעה המקורית
+          const quoteObj = buildQuotedRideMessage(targetAlertInfo);
+
+          // שליחה אוטומטית מחשבון הוואטסאפ של הנהג
+          if (driverSock && driverSession?.status === "connected") {
+            if (isDriveBot) {
+              // אם זו נסיעת דרייבוט - לא שולחים תן לקבוצה! אך ורק שליחת קוד התפיסה ישירות לבוט של דרייבוט
+              const driveBotTargetPhone = parsedRoute.drivebotPhone || "972552732722";
+              const commandToSend = parsedRoute.drivebotCommand || claimTextToSend;
+              const targetJid = `${driveBotTargetPhone}@s.whatsapp.net`;
+              try {
+                await driverSock.sendMessage(targetJid, { text: commandToSend });
+                sentToDriveBot = true;
                 sentDirect = true;
-                sentDirectPhones.push(p);
+                sentDirectPhones.push(driveBotTargetPhone);
+              } catch (err) {
+                console.error("שגיאה בשליחת תפיסה לבוט דרייבוט:", err.message);
+              }
+            } else {
+              // 1. שליחת תגובה בקבוצה שבה פורסמה הנסיעה (עם ציטוט מלא של הודעת הנסיעה)
+              if (targetAlertInfo.groupJid) {
+                const okGroup = await sendRideClaimReply(driverSock, targetAlertInfo.groupJid, claimTextToSend, quoteObj);
+                if (okGroup) sentInGroup = true;
+              }
+
+              // 2. שליחת תגובה אישית לסדרן שפרסם את הנסיעה (לא סתם הודעה, אלא תגובה המצטטת את הודעת הנסיעה שלו!)
+              const directRecipients = new Set();
+
+              const senderPhoneClean = cleanPhone(targetAlertInfo.senderPhone);
+              if (senderPhoneClean && senderPhoneClean.length >= 9 && !isLid(senderPhoneClean) && senderPhoneClean !== "זמין בקבוצה") {
+                directRecipients.add(senderPhoneClean);
+              }
+
+              const textPhone = extractDispatcherContact(targetAlertInfo);
+              if (textPhone && textPhone.length >= 9 && !isLid(textPhone)) {
+                directRecipients.add(cleanPhone(textPhone));
+              }
+
+              for (const p of directRecipients) {
+                const targetJid = `${p}@s.whatsapp.net`;
+                const okDirect = await sendRideClaimReply(driverSock, targetJid, claimTextToSend, quoteObj);
+                if (okDirect) {
+                  sentDirect = true;
+                  sentDirectPhones.push(p);
+                }
               }
             }
           }
-        }
 
-        let claimReply = sentDirect || sentInGroup || sentToDriveBot
-          ? `✋ *בקשת הנסיעה נשלחה. בהצלחה!*\n\n`
-          : `⚠️ *בקשת הנסיעה לא נשלחה.*\n\n`;
-        if (isDriveBot) {
-          claimReply += `🤖 *נסיעת דרייבוט:* נשלחה פקודת תפיסה ("${parsedRoute.drivebotCommand || claimTextToSend}") ישירות לבוט של דרייבוט.\n✅ *לא נשלחה תגובה לקבוצה כנדרש!*\n`;
-        } else {
-          if (sentInGroup) {
-            claimReply += `✅ נשלחה תגובת *"${claimTextToSend}"* עם ציטוט בקבוצה: *${targetAlertInfo.groupName}*\n`;
-          }
-          if (sentDirect) {
-            claimReply += `✅ נשלחה תגובה אישית לסדרן (${sentDirectPhones.join(", ")}) המצטטת את הודעת הנסיעה שלו עם *"${claimTextToSend}"*!\n`;
-          }
-        }
-
-        if (!sentDirect && !sentInGroup && !sentToDriveBot) {
-          if (!driverSock || driverSession?.status !== "connected") {
-            claimReply += `⚠️ הוואטסאפ שלך מתחבר מחדש כרגע. נסה שוב בעוד כמה שניות, או פנה ישירות לסדרן.\n`;
+          const claimSent = sentDirect || sentInGroup || sentToDriveBot;
+          if (claimSent) markClaimed(targetAlertInfo, senderPhone);
+          let claimReply = claimSent
+            ? `✋ *בקשת הנסיעה נשלחה. בהצלחה!*\n\n`
+            : `⚠️ *בקשת הנסיעה לא נשלחה.*\n\n`;
+          if (isDriveBot && claimSent) {
+            claimReply += `🤖 *נסיעת דרייבוט:* נשלחה פקודת תפיסה ("${parsedRoute.drivebotCommand || claimTextToSend}") ישירות לבוט של דרייבוט.\n✅ *לא נשלחה תגובה לקבוצה כנדרש!*\n`;
           } else {
-            claimReply += `⚠️ לא זוהה מספר סדרן ישיר ואין גישת כתיבה בקבוצה.\n`;
+            if (sentInGroup) {
+              claimReply += `✅ נשלחה תגובת *"${claimTextToSend}"* עם ציטוט בקבוצה: *${targetAlertInfo.groupName}*\n`;
+            }
+            if (sentDirect) {
+              claimReply += `✅ נשלחה תגובה אישית לסדרן (${sentDirectPhones.join(", ")}) המצטטת את הודעת הנסיעה שלו עם *"${claimTextToSend}"*!\n`;
+            }
           }
+
+          if (!sentDirect && !sentInGroup && !sentToDriveBot) {
+            if (!driverSock || driverSession?.status !== "connected") {
+              claimReply += `⚠️ הוואטסאפ שלך מתחבר מחדש כרגע. נסה שוב בעוד כמה שניות, או פנה ישירות לסדרן.\n`;
+            } else {
+              claimReply += `⚠️ לא זוהה מספר סדרן ישיר ואין גישת כתיבה בקבוצה.\n`;
+            }
+          }
+
+          claimReply += `\n📍 *קבוצה:* ${targetAlertInfo.groupName}\n`;
+          claimReply += `👤 *סדרן:* ${targetAlertInfo.senderName} (${targetAlertInfo.senderPhone})`;
+
+          await sock.sendMessage(jid, { text: claimReply });
+          recordEvent("command", `נהג ${senderPhone} תפס נסיעה ${isDriveBot ? 'בדרייבוט' : ''} (קבוצה: ${sentInGroup}, פרטי: ${sentDirect})`);
+          continue;
+        } finally {
+          endClaim(targetAlertInfo, senderPhone);
         }
-
-        claimReply += `\n📍 *קבוצה:* ${targetAlertInfo.groupName}\n`;
-        claimReply += `👤 *סדרן:* ${targetAlertInfo.senderName} (${targetAlertInfo.senderPhone})`;
-
-        await sock.sendMessage(jid, { text: claimReply });
-        recordEvent("command", `נהג ${senderPhone} תפס נסיעה ${isDriveBot ? 'בדרייבוט' : ''} (קבוצה: ${sentInGroup}, פרטי: ${sentDirect})`);
-        continue;
       }
 
       // 0.1 מענה לשאלת מרחק ושכונה ("מרחק", "איפה זה", "איפה", "איזה שכונה")
@@ -2078,10 +2125,7 @@ async function handleIncomingMessage(sock, upsert, sessionContext) {
       }
 
       // 3. זיהוי פקודת חיפוש חדשה
-      const isSearchCmd = norm.startsWith("פנוי") || norm.includes("מחפש") || norm.includes("צמצם") || norm.includes("פנימי") ||
-        /^פ\s+/.test(norm) || /\s+פ$/.test(norm) ||
-        norm === "שמש" || norm === "ים" || norm === "מירון" || norm === "בב" ||
-        /^(?:בית\s+)?שמש|ירושלים|מירון|בני\s+ברק|מודיעין\s+עילית|תל\s+אביב|ביתר|אלעד|אשדוד|צפת|טבריה|חיפה|נתבג$/.test(norm);
+      const isSearchCmd = isSearchCommand(text);
 
       if (isSearchCmd) {
         const parsed = processDriverCommand(text);

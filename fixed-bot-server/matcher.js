@@ -138,6 +138,8 @@ export function stripStationAndLinks(text) {
 export function createMatcher(citiesData, streetsData = {}) {
   const phrases = new Map();
   const abbreviations = new Set();
+  // כל שמות המקומות כפי שנהג מקליד אותם, כולל דו-משמעיים ש-findPlaces משמיט (לזיהוי פקודות בלבד)
+  const commandPlaces = new Set();
 
   const add = (raw, city, kind) => {
     const norm = normalizeText(raw);
@@ -154,6 +156,9 @@ export function createMatcher(citiesData, streetsData = {}) {
   };
 
   for (const c of citiesData.cities) {
+    for (const name of [c.name, ...(c.aliases || []), ...(c.neighborhoods || []), ...(c.surroundingVillages || [])]) {
+      commandPlaces.add(normalizeText(name));
+    }
     add(c.name, c.name, "alias");
     (c.aliases || []).forEach((a) => add(a, c.name, "alias"));
     (c.neighborhoods || []).forEach((n) => add(n, c.name, "neighborhood"));
@@ -607,7 +612,7 @@ export function createMatcher(citiesData, streetsData = {}) {
     return no("מצב חיפוש לא מוכר");
   }
 
-  return {
+  return { commandPlaces,
     findPlaces,
     resolveRoles,
     parseDriverCommand,
@@ -760,6 +765,48 @@ export function processDriverCommand(rawText) {
   }
 
   return { mode: "city_all", origin: singleCity, destination: null, displayText: `${singleCity} (בתוך ומחוץ לעיר)` };
+}
+
+// מילים שמותר שיופיעו בפקודת חיפוש לצד שמות מקומות
+const SEARCH_COMMAND_WORDS = new Set([
+  "פנוי", "פ", "אני", "מחפש", "מחפשת", "חפש", "תחפש", "לי", "נסיעה", "נסיעות",
+  "פנימי", "פנימית", "פנימיות", "צמצם", "צמצום", "בלבד", "רק", "גם", "וגם", "הכל", "כל",
+  "עכשיו", "בבקשה", "יוצא", "ויוצא", "יציאה", "החוצה", "בתוך", "ומחוץ", "לעיר",
+  "מ", "ל", "ב", "ו", "אל", "עד", "או",
+]);
+
+// האם הודעה של נהג היא פקודת חיפוש, ולא משפט שבמקרה יש בו שם של עיר.
+// "פנוי ..." ו-"פ ..." הן פקודות מפורשות. בכל צורה אחרת כל מילה חייבת להיות מקום או מילת חיפוש.
+export function isSearchCommand(rawText) {
+  const norm = normalizeText(rawText);
+  if (norm === "פנוי" || /^(?:פנוי|פ) /.test(norm)) return true;
+
+  const hasKeyword = /(^| )(?:פנימי|צמצם|צמצום)( |$)/.test(norm) || / פ$/.test(norm);
+  const looksLikeSearch = /מחפש|צמצם|פנימי| פ$/.test(norm) ||
+    /^(?:בית )?שמש|^(?:ים|בב)$|ירושלים|מירון|בני ברק|מודיעין עילית|תל אביב|ביתר|אלעד|אשדוד|צפת|טבריה|חיפה|נתבג$/.test(norm);
+  if (!looksLikeSearch || /[?؟]/.test(String(rawText))) return false;
+
+  const tokens = norm.split(" ");
+  const isPlace = new Array(tokens.length).fill(false);
+  for (const p of findPlaces(norm)) {
+    // רחוב של מילה אחת הוא לרוב מילה רגילה ("שלום"), ונחשב מקום רק ליד מילת חיפוש
+    if (p.kind === "street" && p.start === p.end && !hasKeyword) continue;
+    for (let i = p.start; i <= p.end; i++) isPlace[i] = true;
+  }
+  // שמות וכינויים, גם עם אות שימוש אחת: "ים", "לבב", "בגוש עציון"
+  const { commandPlaces } = get();
+  const known = (name) => Object.hasOwn(CITY_ALIAS_MAP, name) || commandPlaces.has(name);
+  for (let i = 0; i < tokens.length; i++) {
+    for (let len = Math.min(6, tokens.length - i); len > 0; len--) {
+      const phrase = tokens.slice(i, i + len).join(" ");
+      if (known(phrase) || (/^[בלמו]/.test(phrase) && known(phrase.slice(1)))) {
+        isPlace.fill(true, i, i + len);
+        break;
+      }
+    }
+  }
+
+  return (hasKeyword || isPlace.includes(true)) && tokens.every((t, i) => isPlace[i] || SEARCH_COMMAND_WORDS.has(t));
 }
 
 // חילוץ איש קשר/טלפון של הסדרן מתוך טקסט הנסיעה או פרטי השולח

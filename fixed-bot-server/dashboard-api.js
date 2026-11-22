@@ -1160,7 +1160,7 @@ export function startDashboard(runtime) {
 
       const result = await ctx.claimRideFromWeb(rideId, driverPhone, claimText || "תן");
       recordEvent("command", `תפיסת נסיעה מהאתר: נהג ${driverPhone || 'ראשי'} | ${claimText || 'תן'}`);
-      return res.json({ ok: true, ...result });
+      return res.json({ ...result, ok: Boolean(result.success), ...(result.success ? {} : { error: result.message }) });
     } catch (err) {
       recordError("claim_ride_api", err);
       return res.status(500).json({ ok: false, error: err.message });

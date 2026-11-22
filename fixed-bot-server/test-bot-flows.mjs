@@ -25,6 +25,7 @@ patch("session-manager.js", "function buildSocket(version, state) {", "function 
 patch("session-manager.js", "async function getWaVersion() {", "async function getWaVersion() {\n  return [2, 3000, 1];");
 patch("session-manager.js", "export function getMainBotSock() {", "export function getMainBotSock() {\n  return globalThis.__main;");
 patch("session-manager.js", "export function getMainBotStatus() {", "export function getMainBotStatus() {\n  return { ...mainBotStatus, connected: globalThis.__mainUp };");
+patch("telegram-manager.js", "export async function claimTelegramRide(", "export async function claimTelegramRide() { return globalThis.__tgClaim(); }\nasync function claimTelegramRideReal(");
 patch("telegram-manager.js", "export async function requestTelegramCode(", "export async function requestTelegramCode() { return { ok: true }; }\nasync function requestTelegramCodeReal(");
 fs.appendFileSync(path.join(tmp, "index.js"), "\nexport { handleIncomingMessage as __handle, sentAlertsCache as __alerts };\n");
 
@@ -73,6 +74,8 @@ globalThis.__fakeBuild = (state) => {
     ws: { close() {} },
     end() {},
     async sendMessage(jid, content) {
+      await sleep(40); // שליחה אמיתית לוקחת זמן - כאן נוצר המרוץ של לחיצה כפולה
+      if (globalThis.__driverSendFails) throw new Error("send failed");
       driverOut.push({ jid, content });
       return { key: { id: "D" }, message: {} };
     },
@@ -275,6 +278,98 @@ try {
   r = await tap(DRIVER, `${ix.CLAIM_BUTTON_PREFIX}ALERT1`);
   check("כפתור ת שולח תפיסה לקבוצה", driverOut.some((m) => m.jid.endsWith("@g.us")) && /נשלחה. בהצלחה/.test(textOf(r)), textOf(r));
 
+  // ---------- תפיסה כפולה ----------
+  const addAlert = (id, extra = {}) =>
+    bot.__alerts.set(id, { msgId: id, driverPhone: DRIVER, rawText: "שמש 100", rideData: { cleanedText: "שמש 100" }, groupName: "קבוצה", groupJid: "120363000000000001@g.us", senderName: "סדרן", senderPhone: "972500000004", originalMsgKey: { id: `G${id}`, remoteJid: "120363000000000001@g.us" }, originalMessage: { conversation: "שמש 100" }, sentAt: Date.now(), ...extra });
+  const claimId = (id) => `${ix.CLAIM_BUTTON_PREFIX}${id}`;
+  const groupSends = (from) => driverOut.slice(from).filter((m) => m.jid.endsWith("@g.us")).length;
+  const privateSends = (from) => driverOut.slice(from).filter((m) => !m.jid.endsWith("@g.us")).length;
+
+  addAlert("DBL1");
+  let sentFrom = driverOut.length;
+  await Promise.all(Array.from({ length: 5 }, () => tap(DRIVER, claimId("DBL1"))));
+  check("5 לחיצות בו זמנית: שליחה אחת לקבוצה ואחת לסדרן", groupSends(sentFrom) === 1 && privateSends(sentFrom) === 1, `${groupSends(sentFrom)}/${privateSends(sentFrom)}`);
+  sentFrom = driverOut.length;
+  r = await tap(DRIVER, claimId("DBL1"));
+  check("לחיצה מאוחרת יותר: לא שולח שוב", driverOut.length === sentFrom && /כבר נשלחה/.test(textOf(r)));
+  r = await receive(DRIVER, { extendedTextMessage: { text: "ת", contextInfo: { stanzaId: "DBL1" } } });
+  check("ת בציטוט אחרי כפתור: לא שולח שוב", driverOut.length === sentFrom, textOf(r));
+
+  addAlert("DBL2", { sentAt: Date.now() + 5 });
+  sentFrom = driverOut.length;
+  await type(DRIVER, "תן");
+  await type(DRIVER, "תן");
+  check("תן פעמיים בהקלדה: שליחה אחת", groupSends(sentFrom) === 1, String(groupSends(sentFrom)));
+
+  addAlert("DBL3");
+  addAlert("DBL4");
+  sentFrom = driverOut.length;
+  await Promise.all([tap(DRIVER, claimId("DBL3")), tap(DRIVER, claimId("DBL4"))]);
+  check("שתי נסיעות שונות: שתיהן נשלחות", groupSends(sentFrom) === 2);
+
+  addAlert("DBL5");
+  sentFrom = driverOut.length;
+  await Promise.all([tap(DRIVER, claimId("DBL5")), bot.claimRideFromWeb("DBL5", DRIVER)]);
+  check("וואטסאפ ואתר יחד: שליחה אחת", groupSends(sentFrom) === 1, String(groupSends(sentFrom)));
+
+  addAlert("DBL6");
+  globalThis.__driverSendFails = true;
+  await tap(DRIVER, claimId("DBL6"));
+  globalThis.__driverSendFails = false;
+  sentFrom = driverOut.length;
+  await tap(DRIVER, claimId("DBL6"));
+  check("שליחה שנכשלה: אפשר לנסות שוב", groupSends(sentFrom) === 1);
+
+  let tgCalls = 0;
+  let tgOk = true;
+  globalThis.__tgClaim = async () => { tgCalls++; await sleep(40); return { ok: tgOk, message: "נשלח", reason: "נכשל" }; };
+  addAlert("DBL7", { isTelegram: true });
+  await Promise.all([tap(DRIVER, claimId("DBL7")), tap(DRIVER, claimId("DBL7")), bot.claimRideFromWeb("DBL7", DRIVER)]);
+  check("טלגרם: תפיסה אחת", tgCalls === 1, String(tgCalls));
+  addAlert("DBL8", { isTelegram: true });
+  tgOk = false;
+  await tap(DRIVER, claimId("DBL8"));
+  tgOk = true;
+  tgCalls = 0;
+  await tap(DRIVER, claimId("DBL8"));
+  check("טלגרם: כשל מאפשר ניסיון חוזר", tgCalls === 1);
+
+  const savedAlerts = fs.readdirSync(tmp).find((f) => /alerts-cache/.test(f));
+  check("התפיסה נשמרת מיד (הפעלה מחדש לא תשלח שוב)", Boolean(savedAlerts && JSON.parse(fs.readFileSync(path.join(tmp, savedAlerts), "utf8")).DBL1?.claimed));
+
+  // ---------- חיפוש שנדלק בטעות ----------
+  const chat = [
+    "מה קורה בירושלים", "יש פקקים בירושלים", "מה המצב בבית שמש", "שמש חמה היום", "אני גר בירושלים",
+    "אני לא מחפש", "אני לא מחפש נסיעות", "מחפש דירה בירושלים", "מישהו מחפש טרמפ", "מה זה פנימי",
+    "איך עושים צמצם", "תודה רבה מירושלים", "נסעתי לחיפה", "הייתי אתמול בצפת", "יש אירוע במירון",
+    "ירושלים?", "שבת שלום מבני ברק", "כמה עולה לאשדוד", "הלכתי לתל אביב", "גשם בטבריה",
+    "אני בדרך למודיעין עילית", "לא רוצה פנימי", "הבן שלי בביתר", "ירושלים שמש 150", "למה אין נסיעות בירושלים",
+    "מתי יש מנחה בנתבג", "אלעד תתקשר אלי", "שמש הבוקר", "חיפה יפה", "שלום ירושלים",
+  ];
+  const lit = [];
+  for (const t of chat) {
+    um.stopUserSearch(DRIVER);
+    await type(DRIVER, t);
+    if (um.getUserSearch(DRIVER).active) lit.push(t);
+  }
+  check(`הודעות רגילות לא מדליקות חיפוש (${chat.length})`, !lit.length, lit.join(" | "));
+
+  const commands = [
+    "פנוי שמש", "פנוי ים", "פנוי מירון", "פנוי שמש פנימי", "פנוי פנימי ים", "פנוי", "פנוי ירושלים לבית שמש", "פנוי פ שמש",
+    "פ שמש", "פ ים שמש", "פ שמש ים", "פ ים בב", "פ בב לאשדוד", "פ שמש למוע", "פ פ שמש", "פ פנימי שמש",
+    "שמש", "ים", "מירון", "בב", "בית שמש", "ירושלים", "נתבג", "חיפה", "ביתר עילית", "בני ברק", "תל אביב",
+    "שמש פנימי", "פנימי ים", "פנימי בית שמש", "פנימי", "פנימי רמה ד", "שמש פ", "ים פ", "שמש צמצם", "ים צמצם", "שמש צמצום",
+    "שמש ים", "ירושלים לבית שמש", "מחפש שמש", "מחפש נסיעה מירושלים לבית שמש", "אני מחפש בירושלים", "גם ירושלים", "ירושלים בבקשה",
+    "שמש פנימי בלבד", "שמש פנימי ויוצא", "שמש!", "ירושלים.",
+  ];
+  const ignored = [];
+  for (const t of commands) {
+    um.stopUserSearch(DRIVER);
+    await type(DRIVER, t);
+    if (!um.getUserSearch(DRIVER).active) ignored.push(t);
+  }
+  check(`פקודות חיפוש ממשיכות לעבוד (${commands.length})`, !ignored.length, ignored.join(" | "));
+
   // ---------- האתר ----------
   const base = `http://127.0.0.1:${port}/api`;
   let token = "";
@@ -302,6 +397,16 @@ try {
   mark = out.length;
   res = await api("/search", { phone: DRIVER, command: "תפוס" });
   check("אתר: תפוס כפקודה -> הודעה לנהג", res.driverNotice === "sent" && /נעצר מהאתר/.test(textOf(out.slice(mark))));
+  addAlert("API1");
+  res = await api("/rides/claim", { rideId: "API1", driverPhone: DRIVER });
+  const again = await api("/rides/claim", { rideId: "API1", driverPhone: DRIVER });
+  check("אתר: תפיסה חוזרת לא מוצגת כהצלחה", res.ok === true && again.ok === false && /כבר נשלחה/.test(again.error || ""), JSON.stringify(again));
+  addAlert("API2");
+  globalThis.__driverSendFails = true;
+  res = await api("/rides/claim", { rideId: "API2", driverPhone: DRIVER });
+  globalThis.__driverSendFails = false;
+  check("אתר: כשל בשליחה לא מוצג כהצלחה", res.ok === false, JSON.stringify(res));
+
   globalThis.__mainUp = false;
   res = await api("/search", { phone: DRIVER, command: "פנוי ים" });
   check("אתר: בוט מנותק -> השינוי נשמר והאתר אומר שלא נשלח", res.driverNotice === "offline" && um.getUserSearch(DRIVER).active);

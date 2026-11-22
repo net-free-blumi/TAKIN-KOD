@@ -806,9 +806,9 @@ export async function claimRideApi(rideId: string, driverPhone?: string, claimTe
     });
   } catch (err: any) {
     return {
-      ok: true,
-      success: true,
-      message: `הנסיעה נתפסה בהצלחה! נשלחה תגובת "${claimText}" בקבוצה ולסדרן.`,
+      ok: false,
+      success: false,
+      error: `לא התקבל אישור שהתפיסה נשלחה: ${err?.message || 'שגיאת תקשורת'}`,
     };
   }
 }
