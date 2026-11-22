@@ -12,7 +12,8 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const PORT = Number(process.env.PORT || process.env.DASHBOARD_PORT || 3000);
-const DEFAULT_PASSWORD = process.env.DASHBOARD_PASSWORD || '0515157166';
+// שרת פיתוח. אין סיסמת ברירת מחדל: בלי DASHBOARD_PASSWORD מוגרלת סיסמה שאינה ידועה לאיש
+const DASHBOARD_PASSWORD = process.env.DASHBOARD_PASSWORD || crypto.randomBytes(24).toString('hex');
 const startedAt = Date.now();
 
 // Sessions in memory
@@ -22,12 +23,12 @@ function isValidAuth(req: Request): boolean {
   const authHeader = req.headers.authorization;
   if (authHeader && authHeader.startsWith('Bearer ')) {
     const token = authHeader.slice(7).trim();
-    if (authTokens.has(token) || token.startsWith('demo-') || token.startsWith('dash-') || token === 'preview-token' || token === DEFAULT_PASSWORD) {
+    if (authTokens.has(token)) {
       return true;
     }
   }
   const xAuth = req.headers['x-auth-token'];
-  if (typeof xAuth === 'string' && (authTokens.has(xAuth) || xAuth === DEFAULT_PASSWORD)) {
+  if (typeof xAuth === 'string' && authTokens.has(xAuth)) {
     return true;
   }
   return false;
@@ -274,8 +275,7 @@ async function startServer() {
   // ==========================================
   app.post(['/api/login', '/api/auth'], (req: Request, res: Response) => {
     const inputPass = String(req.body?.password || req.body?.secret || '').trim();
-    // Allow default password, demo, admin, or empty in dev
-    const valid = inputPass === DEFAULT_PASSWORD || inputPass === 'demo' || inputPass === 'admin' || inputPass === '0515157166' || (process.env.NODE_ENV !== 'production' && !inputPass);
+    const valid = inputPass === DASHBOARD_PASSWORD;
 
     if (valid) {
       const token = `dash-${Date.now()}-${crypto.randomBytes(16).toString('hex')}`;
@@ -286,7 +286,7 @@ async function startServer() {
     return res.status(401).json({
       ok: false,
       success: false,
-      error: 'סיסמה שגויה. נסה את סיסמת המערכת: 0515157166',
+      error: 'סיסמה שגויה',
     });
   });
 

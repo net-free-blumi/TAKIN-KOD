@@ -58,12 +58,15 @@ function loadPassword() {
   if (process.env.DASHBOARD_PASSWORD) return process.env.DASHBOARD_PASSWORD.trim();
   const secretPath = path.join(__dirname, "dashboard.secret");
   if (existsSync(secretPath)) return readFileSync(secretPath, "utf8").trim();
-  const defaultPass = "0515157166";
+  // אין סיסמת ברירת מחדל בקוד (הריפו ציבורי): מגרילים, שומרים בשרת ולא מדפיסים ללוג
+  const generated = crypto.randomBytes(12).toString("base64url");
   try {
-    writeFileSync(secretPath, defaultPass, "utf8");
-    console.log(`🔐 נוצר קובץ dashboard.secret עם סיסמת לוח הבקרה: ${defaultPass}`);
-  } catch (e) {}
-  return defaultPass;
+    writeFileSync(secretPath, generated, { encoding: "utf8", mode: 0o600 });
+    console.log(`🔐 נוצרה סיסמת ניהול אקראית. היא שמורה בשרת בקובץ ${secretPath}`);
+  } catch (e) {
+    console.error("לא ניתן לשמור dashboard.secret:", e.message);
+  }
+  return generated;
 }
 
 function safeEqual(a, b) {
@@ -81,6 +84,8 @@ function newToken() {
 
 // Anti-Brute-Force & Rate Limiting state
 const failedLogins = new Map(); // ip -> { count: number, lockedUntil: number }
+const failedBySocket = new Map(); // socket ip -> { count, resetAt } (אי אפשר לזייף, בניגוד ל-X-Forwarded-For)
+const MAX_FAILURES_PER_SOCKET = 30;
 const apiRateLimits = new Map(); // ip -> { count: number, resetAt: number }
 let lastWebhookDeployAt = 0;
 
@@ -175,9 +180,7 @@ function maskPhone(phone) {
 function isValidToken(token) {
   if (!token || typeof token !== "string") return false;
   const trimmed = token.trim();
-  const masterPass = loadPassword();
-  if (safeEqual(trimmed, masterPass)) return true;
-
+  // הסיסמה אינה טוקן: היא מתקבלת רק ב-/api/login, שמוגן מפני ניחושים
   const expiresAt = sessions.get(trimmed);
   if (!expiresAt) return false;
   if (Date.now() > expiresAt) {
@@ -753,10 +756,17 @@ export function startDashboard(runtime) {
   listenStarted = true;
 
   const password = loadPassword();
+  // סיסמה ששווה לטלפון המנהל היא ציבורית: המספר מופיע באתר ובריפו
+  const adminDigits = cleanPhone(loadUsersData().adminPhone);
+  if (password.length < 8 || (/^\+?[\d -]+$/.test(password) && cleanPhone(password) === adminDigits)) {
+    console.warn("⚠️ סיסמת הניהול חלשה או שווה לטלפון הציבורי. החלף אותה ב-dashboard.secret או ב-DASHBOARD_PASSWORD והפעל מחדש.");
+  }
   const app = express();
   app.disable("x-powered-by");
   app.set("trust proxy", 1);
   app.use(express.json({ limit: "64kb" }));
+  // אפליקציית הנהגים: התחברות נפרדת, בלי CORS ובלי גישה לנתיבי הניהול
+  if (runtime.driverApp) app.use(runtime.driverApp.handle);
 
   // כותרות אבטחה מחמירות (OWASP Security Headers)
   app.use((req, res, next) => {
@@ -796,6 +806,12 @@ export function startDashboard(runtime) {
     const ip = getClientIp(req);
     const now = Date.now();
     const failed = failedLogins.get(ip);
+    const socketIp = req.socket?.remoteAddress || "unknown";
+    let bySocket = failedBySocket.get(socketIp);
+    if (!bySocket || now > bySocket.resetAt) bySocket = { count: 0, resetAt: now + 15 * 60 * 1000 };
+    if (bySocket.count >= MAX_FAILURES_PER_SOCKET) {
+      return res.status(429).json({ ok: false, error: "יותר מדי ניסיונות כושלים. נסה שוב בעוד 15 דקות." });
+    }
 
     if (failed && now < failed.lockedUntil) {
       const waitSec = Math.ceil((failed.lockedUntil - now) / 1000);
@@ -812,6 +828,8 @@ export function startDashboard(runtime) {
       return res.json({ ok: true, success: true, token: newToken() });
     }
 
+    bySocket.count += 1;
+    failedBySocket.set(socketIp, bySocket);
     const currentAttempts = (failed && now < failed.lockedUntil + 15 * 60 * 1000 ? failed.count : 0) + 1;
     if (currentAttempts >= 5) {
       failedLogins.set(ip, { count: currentAttempts, lockedUntil: now + 15 * 60 * 1000 });
@@ -1190,27 +1208,24 @@ export function startDashboard(runtime) {
     res.json({ ok: true, activeSearch: state.active ? state.displayText : null, search: state, phone: cleanPhone(phone) });
   });
 
-  app.post("/api/search", requireAuth, async (req, res) => {
-    const phone = req.body?.phone || loadUsersData().adminPhone;
-    const cleanP = cleanPhone(phone);
-    const cmd = String(req.body?.command || req.body?.text || "").trim();
-
+  // לוגיקה אחת לאתר הניהול ולאפליקציית הנהגים
+  async function applySearch(cleanP, cmd) {
     if (cmd === "ת") {
       const state = ctx?.getUserSearch ? ctx.getUserSearch(cleanP) : {};
-      return res.json({ ok: true, success: true, message: "האות 'ת' לבדה אינה פקודת תפוס", search: state });
+      return { ok: true, success: true, message: "האות 'ת' לבדה אינה פקודת תפוס", search: state };
     }
 
     const before = ctx?.getUserSearch?.(cleanP);
 
     const isStop = isStopCommand(cmd);
     if (!isStop && hasStopWord(cmd)) {
-      return res.status(400).json({ ok: false, error: 'הפקודה לא ברורה, החיפוש לא שונה. לעצירה כתוב "תפוס" בלבד.' });
+      return { ok: false, error: 'הפקודה לא ברורה, החיפוש לא שונה. לעצירה כתוב "תפוס" בלבד.' };
     }
     if (isStop) {
       const empty = ctx?.stopUserSearch ? ctx.stopUserSearch(cleanP) : {};
       recordEvent("command", `חיפוש הופסק (תפוס) עבור ${cleanP}`);
       const driverNotice = await notifyDriverOfSiteChange(cleanP, before, empty);
-      return res.json({ ok: true, success: true, message: `החיפוש הופסק (תפוס) · ${NOTICE_TEXT[driverNotice]}`, driverNotice, search: empty });
+      return { ok: true, success: true, message: `החיפוש הופסק (תפוס) · ${NOTICE_TEXT[driverNotice]}`, driverNotice, search: empty };
     }
 
     let parsedCommand = cmd;
@@ -1224,18 +1239,32 @@ export function startDashboard(runtime) {
     recordEvent("command", `הופעל חיפוש עבור ${cleanP}: ${nextState.displayText}`);
     const driverNotice = await notifyDriverOfSiteChange(cleanP, before, saved);
 
-    res.json({ ok: true, success: true, message: `חיפוש הופעל: ${nextState.displayText} · ${NOTICE_TEXT[driverNotice]}`, driverNotice, search: nextState });
-  });
+    return { ok: true, success: true, message: `חיפוש הופעל: ${nextState.displayText} · ${NOTICE_TEXT[driverNotice]}`, driverNotice, search: nextState };
+  }
 
-  app.post("/api/search/stop", requireAuth, async (req, res) => {
-    const phone = req.body?.phone || loadUsersData().adminPhone;
-    const cleanP = cleanPhone(phone);
+  async function stopSearch(cleanP) {
     const before = ctx?.getUserSearch?.(cleanP);
     const empty = ctx?.stopUserSearch ? ctx.stopUserSearch(cleanP) : {};
     recordEvent("command", `חיפוש הופסק מהאתר עבור ${cleanP}`);
     const driverNotice = await notifyDriverOfSiteChange(cleanP, before, empty);
-    res.json({ ok: true, success: true, message: `החיפוש הופסק (תפוס) · ${NOTICE_TEXT[driverNotice]}`, driverNotice, search: empty });
+    return { ok: true, success: true, message: `החיפוש הופסק (תפוס) · ${NOTICE_TEXT[driverNotice]}`, driverNotice, search: empty };
+  }
+
+  app.post("/api/search", requireAuth, async (req, res) => {
+    const phone = cleanPhone(req.body?.phone || loadUsersData().adminPhone);
+    const result = await applySearch(phone, String(req.body?.command || req.body?.text || "").trim());
+    res.status(result.ok ? 200 : 400).json(result);
   });
+
+  app.post("/api/search/stop", requireAuth, async (req, res) => {
+    res.json(await stopSearch(cleanPhone(req.body?.phone || loadUsersData().adminPhone)));
+  });
+
+  runtime.driverSearch = {
+    get: (phone) => ctx?.getUserSearch?.(phone) || {},
+    apply: applySearch,
+    stop: stopSearch,
+  };
 
   // ==========================================
   // ניהול משתמשים, עריכת פרטים ושליחת הדרכה מיידית (מוגן באבטחה מלאה)

@@ -113,6 +113,8 @@ import {
   getTelegramDialogs,
 } from "./telegram-manager.js";
 import { startTelegramBot, getBotLinkStatus, getTelegramBotInfo } from "./telegram-bot.js";
+import { createDriverApp } from "./driver-app.js";
+import { normalizeMobile } from "./driver-app-auth.js";
 
 const DEBUG_FILTER = true;
 const DEDUPE_MINUTES = 15;
@@ -219,6 +221,7 @@ function markClaimed(info, phone) {
   info.claimed = true;
   info.claimedBy = cleanPhone(phone);
   info.claimedAt = Date.now();
+  driverApp.markRequested(info.claimedBy, info.msgId);
   persistAlertsCacheNow();
 }
 
@@ -324,7 +327,7 @@ export function getLiveRides(driverPhone = null) {
 }
 
 // תפיסת נסיעה מהירה מהאתר ("תן")
-export async function claimRideFromWeb(rideId, driverPhone, claimText = "תן") {
+export async function claimRideFromWeb(rideId, driverPhone, claimText = "תן", { privateOnly = false } = {}) {
   const targetAlertInfo = sentAlertsCache.get(rideId);
   if (!targetAlertInfo) {
     throw new Error("נסיעה זו לא נמצאה במאגר או שפג תוקפה");
@@ -335,7 +338,7 @@ export async function claimRideFromWeb(rideId, driverPhone, claimText = "תן") 
   const blocked = beginClaim(targetAlertInfo, phone);
   if (blocked) return { success: false, duplicate: true, message: blocked };
   try {
-    const result = await performWebClaim(targetAlertInfo, phone, claimText);
+    const result = await performWebClaim(targetAlertInfo, phone, claimText, privateOnly);
     if (result.success) markClaimed(targetAlertInfo, phone);
     return result;
   } finally {
@@ -431,9 +434,9 @@ function claimsThroughTelegram(info, privateOnly = false) {
   return Boolean(info.isTelegram) && !privateOnly && !extractRequestPhone(info.rawText || info.rideData?.rawText || "");
 }
 
-async function performWebClaim(targetAlertInfo, phone, claimText) {
+async function performWebClaim(targetAlertInfo, phone, claimText, privateOnly = false) {
   // תפיסת נסיעת טלגרם
-  if (claimsThroughTelegram(targetAlertInfo)) {
+  if (claimsThroughTelegram(targetAlertInfo, privateOnly)) {
     const tgResult = await claimTelegramRide(phone, targetAlertInfo);
     return {
       success: Boolean(tgResult.ok),
@@ -451,7 +454,7 @@ async function performWebClaim(targetAlertInfo, phone, claimText) {
   const rawText = targetAlertInfo.rawText || targetAlertInfo.rideData?.rawText || "";
   const webText = extractRequestPhone(rawText) ? "תן" : claimText;
   const { sent, isDriveBot, requestPhone, route: parsedRoute, sentInGroup, sentDirect, sentToDriveBot, sentDirectPhones } =
-    await sendWhatsAppClaim(targetAlertInfo, phone, { claimText: webText });
+    await sendWhatsAppClaim(targetAlertInfo, phone, { claimText: webText, privateOnly });
   let message = "";
   if (!sent) {
     message = "הבקשה לא נשלחה. אפשר לנסות שוב או לפנות לסדרן.";
@@ -866,6 +869,37 @@ function buildSafeGroupQuote(originalMsg, fallbackText = "נסיעה") {
 
 // שליחת התראת נסיעה לנהג עם ציטוט הודעת הקבוצה המקורית
 async function deliverRideAlert(driverSock, driverPhone, rideData, originalMsg) {
+  // האפליקציה מקבלת מיד, ואחרי השליחה מקושרת לאותה רשומה כדי שנעילת התפיסה תהיה משותפת
+  const appRide = driverApp.addRide(driverPhone, rideData);
+  let result;
+  try {
+    result = await deliverToMessengers(driverSock, driverPhone, rideData, originalMsg);
+    return result;
+  } finally {
+    if (appRide) driverApp.linkAlert(appRide, result?.alertId || cacheAppOnlyAlert(appRide, rideData, originalMsg));
+  }
+}
+
+// וואטסאפ וטלגרם לא מסרו: הנהג עדיין יכול לבקש את הנסיעה מהאפליקציה
+function cacheAppOnlyAlert(appRide, rideData, originalMsg) {
+  const id = `app-${appRide.id}`;
+  sentAlertsCache.set(id, {
+    ...rideData,
+    msgId: id,
+    rideData,
+    rawText: rideData.rawText || rideData.cleanedText,
+    driverPhone: appRide.phone,
+    groupJid: rideData.groupJid || originalMsg?.key?.remoteJid || null,
+    senderJid: rideData.senderJid || originalMsg?.key?.participant || null,
+    originalMsgKey: rideData.originalMsgKey || originalMsg?.key || null,
+    originalMessage: originalMsg?.message || null,
+    sentAt: Date.now(),
+  });
+  persistAlertsCacheSoon();
+  return id;
+}
+
+async function deliverToMessengers(driverSock, driverPhone, rideData, originalMsg) {
   const alertMsg = rideData.customAlertText || buildRideAlertText(rideData);
   // בניית רשימת יעדי שליחה עם גיבוי:
   // 1. יעד ראשי (LID או מזהה מותאם)
@@ -950,7 +984,7 @@ async function deliverRideAlert(driverSock, driverPhone, rideData, originalMsg) 
           }
           persistAlertsCacheSoon();
         }
-        return { ok: true, via: a.via };
+        return { ok: true, via: a.via, alertId: sentMsg.key?.id };
       } catch (err) {
         lastError = err;
         console.error(`❌ שליחת התראה לנהג ${driverPhone} דרך ${a.via} ל-${jid} נכשלה:`, err.message);
@@ -983,7 +1017,7 @@ async function deliverRideAlert(driverSock, driverPhone, rideData, originalMsg) 
         sentAt: Date.now(),
       });
       persistAlertsCacheSoon();
-      return { ok: true, via: "telegram" };
+      return { ok: true, via: "telegram", alertId: tgId };
     }
   }
 
@@ -2265,8 +2299,48 @@ async function handleIncomingMessage(sock, upsert, sessionContext) {
   }
 }
 
+// אפליקציית הנהגים: הבוט הראשי שולח את קוד הכניסה
+const driverApp = createDriverApp({
+  dir: path.join(__dirname, "driver-app-data"),
+  isApproved: (phone) => phone !== cleanPhone(loadUsersData().botPhone) && isUserApproved(phone),
+  getProfile: (phone) => {
+    const data = loadUsersData();
+    const user = (data.approvedUsers || []).find((u) => cleanPhone(u.phone) === phone);
+    return { name: user?.name || "נהג", whatsappLinked: isDriverSessionConnected(phone) };
+  },
+  isBotOnline: () => Boolean(getMainBotSock() && getMainBotStatus().connected),
+  // ישירות למספר שהוקלד, בלי מיפוי LID שעלול להפנות למישהו אחר
+  sendCode: (phone, code) =>
+    getMainBotSock().sendMessage(`${phone}@s.whatsapp.net`, {
+      text: `🔐 קוד הכניסה שלך לאפליקציית הנהגים: *${code}*\n\nבתוקף ל-5 דקות. לא ביקשת? אל תעביר אותו לאף אחד.`,
+    }),
+  describeRide: (data) => {
+    const text = data.cleanedText || data.rawText || "";
+    const route = parseRideRoute(text, data.senderPhone);
+    const contact = [extractRequestPhone(data.rawText || text), route.dispatcherPhone, data.senderPhone].map(normalizeMobile).find(Boolean);
+    return {
+      text,
+      from: route.originText || "",
+      to: route.destinationText || "",
+      price: route.price || null,
+      group: data.groupName || "",
+      dispatcher: data.senderName || "",
+      contact: contact || null,
+      waze: route.originText ? generateWazeUrl(route.originText, "בית שמש", route.originCoords) : null,
+    };
+  },
+  claimRide: (phone, alertId, options) => {
+    const info = sentAlertsCache.get(alertId);
+    if (!info || cleanPhone(info.driverPhone) !== phone) return { success: false, message: "הנסיעה כבר לא זמינה לבקשה" };
+    return claimRideFromWeb(alertId, phone, "תן", options);
+  },
+  getSearch: () => dashboardRuntime.driverSearch,
+  onError: (err) => recordError("driver_app", err),
+});
+
 // הפעלת לוח הבקרה ו-API ישירות בתוך הבוט
-startDashboard({
+const dashboardRuntime = {
+  driverApp,
   getUserSearch,
   setUserSearch,
   stopUserSearch,
@@ -2427,7 +2501,8 @@ startDashboard({
   getTelegramDialogs: (phone) => getTelegramDialogs(phone),
   getTelegramBotLink: (phone) => getBotLinkStatus(phone),
   getTelegramBotInfo: () => getTelegramBotInfo(),
-});
+};
+startDashboard(dashboardRuntime);
 
 // הפעלת הבוט הראשי ושחזור סשנים שמורים של נהגים
 async function boot() {
@@ -2511,6 +2586,11 @@ async function handleGracefulShutdown(signal) {
   if (shuttingDown) return;
   shuttingDown = true;
   console.log(`🛑 התקבל אות ${signal} - סוגר סוקטים של וואטסאפ בצורה מסודרת טרם יציאה...`);
+  try {
+    driverApp.shutdown();
+  } catch (e) {
+    console.error("שמירת נתוני האפליקציה נכשלה:", e.message);
+  }
   try {
     await shutdownAllSockets();
   } catch (e) {}

@@ -10,3 +10,14 @@ lid-map.json
 telegram-bot-links.json
 .aistudio
 ui-settings.json
+dashboard.secret
+telegram_sessions
+group-metadata.json
+onboarding-alerts.json
+alerts-cache.json
+driver-app-data
+.restart-writer.mjs
+*.jks
+*.keystore
+signing.properties
+driver-app/build
