@@ -173,6 +173,16 @@ export function pairingCodeCard(code, { waitSec = 0 } = {}) {
   };
 }
 
+export function appLoginCodeCard(code) {
+  return {
+    text:
+      `🔐 *כניסה לאפליקציית הנהגים*\n\n` +
+      `הקוד נשלח בהודעה הבאה, להעתקה והדבקה.\n` +
+      `⏱️ בתוקף ל-5 דקות. לא ביקשת? אל תעביר אותו לאף אחד.`,
+    buttons: [{ text: "📋 העתק קוד", copy: code }],
+  };
+}
+
 export function pairingExpiredCard() {
   return {
     text: "⌛ *קוד החיבור פג.*\nלא נורא, אפשר לקבל קוד חדש בלחיצה.",

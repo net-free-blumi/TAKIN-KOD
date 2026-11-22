@@ -2310,10 +2310,17 @@ const driverApp = createDriverApp({
   },
   isBotOnline: () => Boolean(getMainBotSock() && getMainBotStatus().connected),
   // ישירות למספר שהוקלד, בלי מיפוי LID שעלול להפנות למישהו אחר
-  sendCode: (phone, code) =>
-    getMainBotSock().sendMessage(`${phone}@s.whatsapp.net`, {
-      text: `🔐 קוד הכניסה שלך לאפליקציית הנהגים: *${code}*\n\nבתוקף ל-5 דקות. לא ביקשת? אל תעביר אותו לאף אחד.`,
-    }),
+  sendCode: async (phone, code) => {
+    const sock = getMainBotSock();
+    const jid = `${phone}@s.whatsapp.net`;
+    try {
+      await sendCard(sock, jid, ui.appLoginCodeCard(code));
+    } catch (e) {
+      console.log(`⚠️ [אפליקציה] הודעת ההסבר לקוד הכניסה נכשלה: ${e?.message}`);
+    }
+    // הקוד תמיד לבד ואחרון: להעתקה בלחיצה ארוכה, וגם כשכפתור ההעתקה לא מוצג במכשיר
+    await sock.sendMessage(jid, { text: code });
+  },
   describeRide: (data) => {
     const text = data.cleanedText || data.rawText || "";
     const route = parseRideRoute(text, data.senderPhone);
