@@ -448,7 +448,7 @@ export const UsersManagementModal: React.FC<UsersManagementModalProps> = ({
     try {
       const res = await stopSearch(userPhone);
       if (res.ok) {
-        setActionSuccess(`החיפוש הופסק בהצלחה (תפוס) עבור ${userPhone}!`);
+        setActionSuccess(`${userPhone}: ${res.message}`);
         await loadData();
         onUserModified?.();
       } else {
@@ -471,7 +471,7 @@ export const UsersManagementModal: React.FC<UsersManagementModalProps> = ({
     try {
       const res = await sendSearchCommand(customCommand.trim(), commandingUser.phone);
       if (res.ok) {
-        setActionSuccess(`החיפוש הופעל בהצלחה עבור ${commandingUser.name || commandingUser.phone}!`);
+        setActionSuccess(`${commandingUser.name || commandingUser.phone}: ${res.message}`);
         setCommandingUser(null);
         setCustomCommand('');
         await loadData();

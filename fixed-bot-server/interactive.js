@@ -4,6 +4,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { MAIN_MENU } from "./bot-ui.js";
 
 /**
  * חילוץ תגובות כפתורים מתוך מבני הודעה שונים בוואטסאפ
@@ -101,28 +102,38 @@ export function setInteractiveVariant(variant) {
   return value;
 }
 
-function toNativeButton(b) {
-  const text = String(b.text || b.displayText || "").slice(0, 24);
-  if (b.type === "url" || b.url) {
-    return { name: "cta_url", buttonParamsJson: JSON.stringify({ display_text: text, url: b.url, merchant_url: b.url }) };
+// חיתוך לפי תווים שלמים (לא שובר אימוג'י)
+const clip = (value, max) => {
+  let out = "";
+  for (const ch of String(value ?? "")) {
+    if (out.length + ch.length > max) break;
+    out += ch;
   }
-  if (b.type === "call" || b.phoneNumber) {
-    return { name: "cta_call", buttonParamsJson: JSON.stringify({ display_text: text, phone_number: b.phoneNumber }) };
+  return out;
+};
+
+function toNativeButton(b) {
+  const text = clip(b.text || b.displayText, 24);
+  if (b.copy) {
+    return { name: "cta_copy", buttonParamsJson: JSON.stringify({ display_text: text, id: "copy_code", copy_code: b.copy }) };
+  }
+  if (b.url) {
+    return { name: "cta_url", buttonParamsJson: JSON.stringify({ display_text: text, url: b.url, merchant_url: b.url }) };
   }
   return { name: "quick_reply", buttonParamsJson: JSON.stringify({ display_text: text, id: String(b.id || b.buttonId || b.text).slice(0, 50) }) };
 }
 
 function toSingleSelect(buttonText, sections) {
   const formattedSections = sections.map((sec) => ({
-    title: String(sec.title || "").slice(0, 24),
-    rows: (sec.rows || []).map((r) => ({
-      header: String(r.header || "").slice(0, 24),
-      title: String(r.title || "").slice(0, 24),
-      description: String(r.description || "").slice(0, 72),
-      id: String(r.id || r.rowId || r.title || "").slice(0, 50),
-    })).slice(0, 10),
+    title: clip(sec.title, 24),
+    rows: (sec.rows || []).slice(0, 10).map((r) => ({
+      header: "",
+      title: clip(r.title, 24),
+      description: clip(r.description, 72),
+      id: String(r.id || r.title || "").slice(0, 50),
+    })),
   })).slice(0, 10);
-  return { name: "single_select", buttonParamsJson: JSON.stringify({ title: String(buttonText || "תפריט").slice(0, 24), sections: formattedSections }) };
+  return { name: "single_select", buttonParamsJson: JSON.stringify({ title: clip(buttonText || "תפריט", 24), sections: formattedSections }) };
 }
 
 /**
@@ -175,62 +186,46 @@ export async function relayNativeFlow(sock, jid, { title = "", body = "", footer
 }
 
 /**
- * שליחת הודעת כפתורים (Quick Reply / קישור / חיוג). אם הכפתורים כבויים או נכשלו - טקסט רגיל.
- * body חייב לכלול גם את ההנחיה בטקסט (למי שלא רואה כפתורים).
+ * כרטיס כטקסט רגיל: כל כפתור הופך לפקודה שאפשר להקליד, כך ששום אפשרות לא הולכת לאיבוד.
  */
-export async function sendInteractiveButtons(sock, jid, {
-  title = "",
-  body = "",
-  footer = "🚕 נסיעות בוט איכותי",
-  buttons = [],
-  quoted = null,
-  variant,
-}) {
+export function cardToText(card) {
+  const options = [];
+  const seen = new Set();
+  const add = (id, label) => {
+    if (!id || seen.has(id)) return;
+    seen.add(id);
+    options.push(`• *${id}* - ${label}`);
+  };
+  const links = [];
+  for (const b of card.buttons || []) {
+    if (b.url) links.push(`${b.text}: ${b.url}`);
+    else if (!b.copy) add(b.id, b.text);
+  }
+  for (const sec of card.menu?.sections || []) {
+    for (const r of sec.rows) add(r.id, r.description ? `${r.title}, ${r.description}` : r.title);
+  }
+  let text = card.text;
+  if (links.length) text += `\n\n${links.join("\n")}`;
+  if (options.length) text += `\n\n*אפשר לכתוב:*\n${options.join("\n")}`;
+  return text;
+}
+
+/**
+ * הדרך היחידה לשליחת מסך של הבוט (bot-ui.js): כפתורים + תפריט נפתח, ובגיבוי טקסט מלא.
+ */
+export async function sendCard(sock, jid, card, { variant } = {}) {
   if (!sock) return null;
   const v = variant || getInteractiveVariant();
-  if (v !== "off" && buttons.length) {
+  const nativeButtons = (card.buttons || []).map(toNativeButton);
+  if (card.menu) nativeButtons.push(toSingleSelect(card.menu.label, card.menu.sections));
+  if (v !== "off" && nativeButtons.length && sock.relayMessage) {
     try {
-      return await relayNativeFlow(sock, jid, { title, body, footer, nativeButtons: buttons.map(toNativeButton), quoted, variant: v });
+      return await relayNativeFlow(sock, jid, { body: card.text, nativeButtons, variant: v });
     } catch (e) {
       console.log(`ℹ️ [כפתורים] שליחה אינטראקטיבית נכשלה (${e?.message}) - שולח טקסט`);
     }
   }
-  return await sock.sendMessage(jid, { text: body }, quoted ? { quoted } : {});
-}
-
-/**
- * שליחת תפריט נפתח (Single Select) + כפתורים נוספים אופציונליים. גיבוי: טקסט מלא.
- */
-export async function sendInteractiveList(sock, jid, {
-  title = "📋 תפריט פעולות",
-  body = "בחר פעולה מהרשימה:",
-  buttonText = "📋 פתח תפריט אפשרויות",
-  sections = [],
-  extraButtons = [],
-  footer = "🚕 נסיעות בוט איכותי",
-  quoted = null,
-  variant,
-}) {
-  if (!sock) return null;
-  const v = variant || getInteractiveVariant();
-  if (v !== "off") {
-    try {
-      const nativeButtons = [toSingleSelect(buttonText, sections), ...extraButtons.map(toNativeButton)];
-      return await relayNativeFlow(sock, jid, { title, body, footer, nativeButtons, quoted, variant: v });
-    } catch (e) {
-      console.log(`ℹ️ [תפריט נפתח] שליחה אינטראקטיבית נכשלה (${e?.message}) - שולח טקסט`);
-    }
-  }
-
-  let fallbackText = `*${title}*\n${body}\n\n`;
-  sections.forEach((sec) => {
-    fallbackText += `📂 *${sec.title}*\n`;
-    sec.rows.forEach((r) => {
-      fallbackText += `• *${r.id || r.title}* ${r.description ? `(${r.description})` : ""}\n`;
-    });
-    fallbackText += `\n`;
-  });
-  return await sock.sendMessage(jid, { text: fallbackText.trim() }, quoted ? { quoted } : {});
+  return await sock.sendMessage(jid, { text: cardToText(card) });
 }
 
 /**
@@ -268,192 +263,8 @@ export async function sendInteractiveTest(sock, jid) {
 }
 
 /**
- * שליחת התראת נסיעה עם כפתור תפיסה מהיר "ת" וכפתור וואטסאפ לסדרן
- */
-export async function sendRideAlertWithButtons(sock, jid, rideData, quoted = null) {
-  let alertBody = `${rideData.cleanedText}\n\n` +
-    `📍 ${rideData.groupName}\n` +
-    `👤 ${rideData.senderName} · ${rideData.senderPhone}\n\n` +
-    `🚕 *לתפיסה מהירה השב:* "ת" או "תן"`;
-
-  const buttons = [
-    {
-      id: "ת",
-      text: "🚕 ת (תן לי)",
-      type: "quick_reply",
-    },
-  ];
-
-  // אם יש מספר סדרן תקין, הוספת כפתור קישור ישיר לוואטסאפ של הסדרן
-  const rawPhone = String(rideData.senderPhone || "").replace(/\D/g, "");
-  if (rawPhone && rawPhone.length >= 9 && rawPhone !== "זמין בקבוצה") {
-    let intlPhone = rawPhone;
-    if (intlPhone.startsWith("0")) intlPhone = "972" + intlPhone.slice(1);
-    const waUrl = `https://wa.me/${intlPhone}`;
-    alertBody += `\n💬 *וואטסאפ ישיר לסדרן:* ${waUrl}`;
-    buttons.push({
-      text: "💬 וואטסאפ לסדרן",
-      url: waUrl,
-      type: "url",
-    });
-  }
-
-  return await sendInteractiveButtons(sock, jid, {
-    body: alertBody,
-    footer: "💡 לחץ 'ת' לתפיסה מהירה · סמן 👎 לדיווח תקלה",
-    buttons,
-    quoted,
-  });
-}
-
-/**
- * שליחת הודעת אישור חיפוש מקבילי עם 3 כפתורים + הנחיות תגובה מפורשות בגוף ההודעה
- */
-export async function sendPendingSearchConfirmationWithButtons(sock, jid, { currentSearches = [], newSearch, modeDesc = "" }) {
-  const currentList = currentSearches.map((s, idx) => `${idx + 1}. ${s.displayText}`).join("\n");
-  
-  let body = `🔍 *יש לך כרגע חיפוש פעיל במערכת:*\n${currentList}\n\n`;
-  body += `❓ *האם להוסיף את החיפוש החדש במקביל?*\n`;
-  body += `📍 *חיפוש חדש:* ${newSearch.displayText} (${modeDesc})\n\n`;
-  body += `*השב עכשיו במספר או מילה (או לחץ על כפתור):*\n`;
-  body += `👉 *1* או *הוסף* (או *כן*) ⬅️ להוספה במקביל\n`;
-  body += `👉 *2* או *החלף* ⬅️ להחליף את כל החיפושים בחדש בלבד\n`;
-  body += `👉 *ביטול* (או *לא*) ⬅️ להישאר עם הקיים ללא שינוי`;
-
-  const buttons = [
-    {
-      id: "1",
-      text: "➕ הוסף במקביל",
-      type: "quick_reply",
-    },
-    {
-      id: "2",
-      text: "🔄 החלף את הקיים",
-      type: "quick_reply",
-    },
-    {
-      id: "ביטול",
-      text: "❌ ביטול",
-      type: "quick_reply",
-    },
-  ];
-
-  return await sendInteractiveButtons(sock, jid, {
-    title: "⚡ חיפוש מקבילי - אישור",
-    body,
-    footer: "בחר בלחיצה על אחד הכפתורים למטה",
-    buttons,
-  });
-}
-
-/**
- * שליחת תפריט פעולות נפתח מלא (אינטראקטיבי)
- */
-export async function sendFullInteractiveMenu(sock, jid, { activeSearches = [], describeMode }) {
-  let body = `📊 *סטטוס נוכחי:* `;
-  if (activeSearches.length > 0) {
-    body += `🟢 ${activeSearches.length} חיפושים פעילים במקביל:\n`;
-    activeSearches.forEach((s, idx) => {
-      body += `${idx + 1}. ${s.displayText} (${describeMode ? describeMode(s) : s.displayText})\n`;
-    });
-  } else {
-    body += `🔴 מופסק (תפוס / לא מחפש כרגע)\n`;
-  }
-  body += `\n💡 *קיצורים מהירים להקלדה:*\n` +
-    `• *פנוי שמש* / *פנוי ים* / *פנוי מירון*\n` +
-    `• *פנוי שמש פנימי* / *פנימי ים*\n` +
-    `• *פ ים שמש* (ירושלים לבית שמש)\n` +
-    `• *פ שמש ים* (בית שמש לירושלים)\n` +
-    `• *תפוס* (עצירת כל החיפושים)\n\n` +
-    `📋 *בחר מהתפריט הנפתח למטה או הקלד פקודה:*`;
-
-  const sections = [
-    {
-      title: "🛑 שליטה ובקרה",
-      rows: [
-        {
-          id: "תפוס",
-          title: "🛑 תפוס (עצור הכל)",
-          description: "מפסיק את כל החיפושים הפעילים מיד",
-        },
-        {
-          id: "תפריט",
-          title: "📋 רענן סטטוס",
-          description: "מציג שוב את רשימת החיפושים הפעילים",
-        },
-      ],
-    },
-    {
-      title: "🏠 חיפושים מהירים - בית שמש",
-      rows: [
-        {
-          id: "פנוי שמש",
-          title: "🚕 פנוי שמש (בתוך ומחוץ לעיר)",
-          description: "נסיעות פנימיות + נסיעות מבית שמש החוצה",
-        },
-        {
-          id: "פנוי שמש פנימי",
-          title: "🔒 פנוי שמש פנימי בלבד",
-          description: "רק נסיעות בתוך בית שמש",
-        },
-        {
-          id: "פ שמש ים",
-          title: "🚗 בית שמש ⬅️ ירושלים",
-          description: "נסיעות מבית שמש לירושלים בלבד",
-        },
-      ],
-    },
-    {
-      title: "🏛️ חיפושים מהירים - ירושלים ומירון",
-      rows: [
-        {
-          id: "פנוי ים",
-          title: "🚕 פנוי ים (בתוך ומחוץ לעיר)",
-          description: "נסיעות פנימיות + מירושלים החוצה",
-        },
-        {
-          id: "פנוי ים פנימי",
-          title: "🔒 פנוי ים פנימי בלבד",
-          description: "רק נסיעות בתוך ירושלים",
-        },
-        {
-          id: "פ ים שמש",
-          title: "🚗 ירושלים ⬅️ בית שמש",
-          description: "נסיעות מירושלים לבית שמש בלבד",
-        },
-        {
-          id: "פנוי מירון",
-          title: "⛰️ פנוי מירון",
-          description: "נסיעות מאזור מירון וצפת",
-        },
-      ],
-    },
-    {
-      title: "🔗 הגדרות וסנכרון",
-      rows: [
-        {
-          id: "חבר אותי",
-          title: "🔗 קישור וואטסאפ (ווב)",
-          description: "הפקת קוד צימוד לסריקת הקבוצות שלך",
-        },
-      ],
-    },
-  ];
-
-  return await sendInteractiveList(sock, jid, {
-    title: "🚕 תפריט נסיעות בוט איכותי",
-    body,
-    buttonText: "📋 בחר פקודה",
-    sections,
-    extraButtons: [{ text: "🛑 תפוס", id: "תפוס" }],
-    footer: "נסיעות בוט איכותי · שליטה קלה בלחיצה אחת",
-  });
-}
-
-/**
- * כפתורים להתראת נסיעה (כמו בבוטים מקצועיים):
- * ✋ ת = תפיסת הנסיעה הזו בדיוק (המזהה של ההודעה מוטמע בכפתור) | פתח בטלגרם / וואטסאפ לסדרן | 📋 תפריט
- * מחזיר את ההודעה שנשלחה, או null אם הכפתורים כבויים (ואז השולח שולח טקסט רגיל).
+ * התראת נסיעה קומפקטית: בדיוק 2 כפתורים - ✋ ת (המזהה של ההתראה מוטמע בכפתור) + התפריט הראשי.
+ * מחזיר null אם הכפתורים כבויים (ואז השולח שולח טקסט רגיל עם ציטוט).
  */
 export const CLAIM_BUTTON_PREFIX = "claim:";
 
@@ -463,42 +274,10 @@ export async function sendRideAlertInteractive(sock, jid, { body, quoted = null,
   const { generateMessageID } = await import("@whiskeysockets/baileys");
   const messageId = generateMessageID();
 
-  // קומפקטי: 2 כפתורים בלבד, כדי לראות כמה שיותר נסיעות במסך אחד
   const nativeButtons = [
     toNativeButton({ text: "✋ ת", id: `${CLAIM_BUTTON_PREFIX}${messageId}` }),
-    toSingleSelect("📋 תפריט", ALERT_MENU_SECTIONS),
+    toSingleSelect(MAIN_MENU.label, MAIN_MENU.sections),
   ];
 
   return await relayNativeFlow(sock, jid, { body, nativeButtons, quoted, variant: v, messageId });
-}
-
-const ALERT_MENU_SECTIONS = [
-  {
-    title: "פעולות",
-    rows: [
-      { id: "תפוס", title: "🛑 תפוס", description: "עצירת כל החיפושים" },
-      { id: "תפריט", title: "📋 תפריט מלא", description: "חיפושים פעילים וכל הפקודות" },
-      { id: "מדריך", title: "📖 מדריך", description: "הסבר קצר על הבוט" },
-    ],
-  },
-];
-
-/**
- * תשובה קצרה של הבוט + כפתור "📋 תפריט" מתחת (אם הכפתורים פעילים), אחרת טקסט רגיל.
- */
-export async function sendTextWithMenuButton(sock, jid, text, extraButtons = []) {
-  const v = getInteractiveVariant();
-  if (v !== "off" && sock?.relayMessage) {
-    try {
-      return await relayNativeFlow(sock, jid, {
-        body: text,
-        footer: "נסיעות בוט איכותי",
-        nativeButtons: [...extraButtons, { text: "📋 תפריט", id: "תפריט" }].map(toNativeButton),
-        variant: v,
-      });
-    } catch (e) {
-      console.log(`ℹ️ [כפתורים] שליחה עם כפתור תפריט נכשלה (${e?.message}) - שולח טקסט`);
-    }
-  }
-  return await sock.sendMessage(jid, { text });
 }

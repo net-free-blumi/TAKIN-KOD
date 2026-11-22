@@ -79,7 +79,7 @@ export const MainScreenAnalytics: React.FC<MainScreenAnalyticsProps> = ({
     setActionDriverPhone(phone);
     try {
       const res = await stopSearch(phone);
-      showToast(`החיפוש הופסק (תפוס) עבור ${phone} - הבוט נכנס לשינה`, 'ok');
+      showToast(`${phone}: ${res.message}`, 'ok');
       await Promise.all([loadData(), onRefreshAll()]);
     } catch (err: any) {
       showToast(err.message || 'שגיאה בעצירת החיפוש', 'err');

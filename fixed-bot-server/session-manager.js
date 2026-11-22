@@ -310,7 +310,6 @@ function buildSocket(version, state) {
 // קבצי חיבור לעולם לא נמחקים אוטומטית. גם איפוס ידני רק מעביר אותם לארכיון (auth/_archive).
 // ==========================================
 const ARCHIVE_DIR = path.join(AUTH_BASE_DIR, "_archive");
-const ARCHIVE_KEEP = 5; // ארכיונים של חיבורים שהוחלפו (כל אחד יכול לשקול מאות MB)
 
 function readCreds(dir) {
   // creds.json, ואם הוא פגום - הגיבוי של מצב מחובר (safe-auth-state ישחזר ממנו)
@@ -325,15 +324,26 @@ function readCreds(dir) {
   return null;
 }
 
-// חשבון שכבר קושר לוואטסאפ (QR מסמן me.id, קוד צימוד מסמן registered)
+// בקשת קוד צימוד כותבת me.id (בלי מספר מכשיר) ולפעמים registered עוד לפני שהחיבור הושלם.
+// רק pair-success מוסיף account ומזהה מכשיר. עד אז זה צימוד שלא הושלם, ולא חשבון מקושר.
+function isUnfinishedPairing(creds) {
+  return Boolean(creds?.pairingCode && !creds.account && !/:\d+@/.test(creds.me?.id || ""));
+}
+
 function isPairedCreds(creds) {
-  return Boolean(creds && (creds.registered || creds.me?.id));
+  return Boolean(creds && (creds.registered || creds.me?.id) && !isUnfinishedPairing(creds));
 }
 
 export function isPairedOnDisk(dir) {
   return isPairedCreds(readCreds(dir));
 }
 
+// קוד שלא הוזן משאיר me בקבצים, ואז Baileys מנסה login במקום רישום. לקוד / QR חדש צריך תיקייה נקייה.
+function archiveUnfinishedPairing(dir, label) {
+  if (isUnfinishedPairing(readCreds(dir))) archiveAuthDir(dir, `${label}-unfinished`);
+}
+
+// ארכיון לא נמחק לעולם. פינוי מקום - רק ידנית על ידי המנהל.
 function archiveAuthDir(dir, label) {
   try {
     if (!fs.existsSync(dir)) return null;
@@ -343,12 +353,6 @@ function archiveAuthDir(dir, label) {
     fs.renameSync(dir, dest);
     fs.mkdirSync(dir, { recursive: true });
     console.log(`📦 קובצי האימות של ${label} הועברו לארכיון: ${dest}`);
-    try {
-      const all = fs.readdirSync(ARCHIVE_DIR).sort();
-      while (all.length > ARCHIVE_KEEP) {
-        fs.rmSync(path.join(ARCHIVE_DIR, all.shift()), { recursive: true, force: true });
-      }
-    } catch (e) {}
     return dest;
   } catch (e) {
     console.error(`שגיאה בהעברת ${dir} לארכיון:`, e.message);
@@ -582,6 +586,7 @@ async function prepareMainForPairing(callbacks) {
   }
   if (paired) archiveAuthDir(BOT_AUTH_DIR, "bot");
   stopMainSocket();
+  archiveUnfinishedPairing(BOT_AUTH_DIR, "bot");
   mainBotStatus.pairingCode = null;
   mainBotStatus.qr = null;
   await startMainBot(callbacks, { forPairing: true });
@@ -802,6 +807,9 @@ export async function connectDriverSession(phone, callbacks = {}) {
   return p;
 }
 
+// נהגים שהתחילו צימוד חדש ועדיין לא נפתח להם חיבור (שורד את ה-515)
+const freshPairings = new Set();
+
 async function createDriverSocket(driverPhone, callbacks = {}) {
   if (callbacks && Object.keys(callbacks).length) lastDriverCallbacks = callbacks;
   const { onRideMessage, onReaction, onStatusChange, onEvent } = callbacks;
@@ -826,6 +834,7 @@ async function createDriverSocket(driverPhone, callbacks = {}) {
   }
 
   const { state, saveCreds, backupCreds } = await useSafeMultiFileAuthState(driverAuthDir);
+  if (!isPairedCreds(state.creds)) freshPairings.add(driverPhone);
   const version = await getWaVersion();
 
   const sock = buildSocket(version, state);
@@ -859,8 +868,10 @@ async function createDriverSocket(driverPhone, callbacks = {}) {
     }
 
     if (connection === "open") {
-      const isFirstEverPairing = !sessionObj.wasAlreadyRegisteredOnDisk;
+      // אחרי צימוד וואטסאפ מפעיל מחדש את הסוקט (515), ולכן הקבצים כבר "מקושרים" כשהחיבור נפתח
+      const isFirstEverPairing = freshPairings.delete(driverPhone);
       sessionObj.isInitialPairing = isFirstEverPairing;
+      sessionObj.isRestoredSession = !isFirstEverPairing;
       sessionObj.wasAlreadyRegisteredOnDisk = true;
       driverRetryCount.set(driverPhone, 0);
       recordConnEvent(driverPhone, "open");
@@ -894,7 +905,7 @@ async function createDriverSocket(driverPhone, callbacks = {}) {
       const nowPaired = isPairedCreds(sock.authState?.creds);
 
       // 401 = הנהג ניתק את המכשיר מהטלפון. לא מנסים שוב עם אותם מפתחות (לולאה), הקבצים נשמרים.
-      if (code === DisconnectReason.loggedOut) {
+      if (code === DisconnectReason.loggedOut && nowPaired) {
         console.log(`⚠️ [נהג ${driverPhone}] 401 Logged Out - נותק מהטלפון. הקבצים נשמרו, נדרש חיבור מחדש.`);
         sessionObj.sock = null;
         sessionObj.status = "logged_out";
@@ -1103,9 +1114,17 @@ export async function requestDriverPairingCode(phone, callbacks = {}, options = 
   if (existingSession?.status === "connected") {
     throw new Error("הוואטסאפ של הנהג כבר מחובר. אין צורך בקוד צימוד חדש.");
   }
+  // נהג מקושר שרק מתחבר מחדש: קוד חדש היה מעביר חיבור תקין לארכיון ומנתק אותו
+  if (!options.forceReset && getDriverLinkState(driverPhone) === "reconnecting") {
+    throw Object.assign(new Error("הנהג כבר מקושר ומתחבר מחדש לבד. אין צורך בקוד."), { code: "ALREADY_LINKED" });
+  }
   if (!options.forceReset && now - lastTime < cooldownMs) {
     const waitSec = Math.ceil((cooldownMs - (now - lastTime)) / 1000);
-    throw new Error(`קוד צימוד כבר הופק עבור מספר זה. אנא המתן ${waitSec} שניות לפני בקשת קוד נוסף.`);
+    throw Object.assign(new Error(`קוד צימוד כבר הופק עבור מספר זה. אנא המתן ${waitSec} שניות לפני בקשת קוד נוסף.`), {
+      code: "PAIRING_COOLDOWN",
+      waitSec,
+      activeCode: existingSession?.sock ? existingSession.pairingCode : null,
+    });
   }
 
   // סוגרים סוקט צימוד ישן (לא מחובר) כדי לפתוח צימוד נקי
@@ -1117,22 +1136,24 @@ export async function requestDriverPairingCode(phone, callbacks = {}, options = 
   const driverAuthDir = path.join(SESSIONS_DIR, driverPhone);
   if (isPairedOnDisk(driverAuthDir)) {
     archiveAuthDir(driverAuthDir, `driver-${driverPhone}`);
+  } else {
+    archiveUnfinishedPairing(driverAuthDir, `driver-${driverPhone}`);
   }
 
   lastPairingRequestTimes.set(driverPhone, now);
 
-  const session = await connectDriverSession(driverPhone, callbacks);
-
-  // ממתינים שהסוקט יהיה מוכן (אירוע QR ראשון) לפני בקשת קוד
-  await waitFor(() => Boolean(session.qr) || !session.sock, 20000);
-  if (!session.sock) throw new Error("השרת לא הצליח להתחבר לוואטסאפ כדי להפיק קוד. נסה שוב.");
-
   try {
+    const session = await connectDriverSession(driverPhone, callbacks);
+
+    // ממתינים שהסוקט יהיה מוכן (אירוע QR ראשון) לפני בקשת קוד
+    await waitFor(() => Boolean(session.qr) || !session.sock, 20000);
+    if (!session.sock) throw new Error("השרת לא הצליח להתחבר לוואטסאפ כדי להפיק קוד. נסה שוב.");
     const code = await session.sock.requestPairingCode(driverPhone);
     session.pairingCode = code;
     session.status = "pairing_ready";
     return code;
   } catch (err) {
+    lastPairingRequestTimes.delete(driverPhone); // בקשה שנכשלה לא חוסמת ניסיון חוזר
     recordError("pairing_code_request", err, { driverPhone });
     console.error(`שגיאה בהפקת קוד צימוד לנהג ${driverPhone}:`, err.message);
     throw err;
@@ -1146,6 +1167,9 @@ export function cancelDriverPairing(phone) {
   if (!session) return { cancelled: true, message: "אין תהליך צימוד פעיל." };
   if (session.status === "connected") {
     return { cancelled: false, message: "הנהג מחובר - אין תהליך צימוד לבטל." };
+  }
+  if (getDriverLinkState(driverPhone) === "reconnecting") {
+    return { cancelled: false, message: "הנהג מקושר ומתחבר מחדש - לא בוטל כדי לא לנתק אותו." };
   }
   clearDriverReconnect(driverPhone);
   if (session.sock) killSock(session.sock);
@@ -1161,6 +1185,16 @@ export function isDriverSessionConnected(phone) {
   if (!driverPhone) return false;
   const session = driverSessions.get(driverPhone);
   return Boolean(session && session.status === "connected" && session.registered);
+}
+
+// connected | reconnecting (מקושר, החיבור חוזר לבד) | logged_out | unlinked
+export function getDriverLinkState(phone) {
+  const driverPhone = cleanPhone(phone);
+  if (!driverPhone) return "unlinked";
+  const session = driverSessions.get(driverPhone);
+  if (session?.status === "connected") return "connected";
+  if (session?.status === "logged_out") return "logged_out";
+  return isPairedOnDisk(path.join(SESSIONS_DIR, driverPhone)) ? "reconnecting" : "unlinked";
 }
 
 export function disconnectDriverSession(phone) {
@@ -1181,6 +1215,8 @@ export async function ensureDriverSessionForQr(phone, callbacks = {}, options = 
     const authDir = path.join(SESSIONS_DIR, driverPhone);
     if (session?.status === "logged_out" && isPairedOnDisk(authDir)) {
       archiveAuthDir(authDir, `driver-${driverPhone}`);
+    } else {
+      archiveUnfinishedPairing(authDir, `driver-${driverPhone}`);
     }
     session = await connectDriverSession(driverPhone, callbacks);
   }

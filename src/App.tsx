@@ -266,7 +266,7 @@ export default function App() {
     setActionLoading(true);
     try {
       const res = await stopSearch(selectedDriverPhone || undefined);
-      showToast('החיפוש הופסק (תפוס) - הבוט עבר למצב שינה', 'ok');
+      showToast(res.message, 'ok');
       await refreshData();
     } catch (err: any) {
       showToast(err.message || 'שגיאה בעצירת החיפוש', 'err');

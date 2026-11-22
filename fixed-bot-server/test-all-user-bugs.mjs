@@ -2,7 +2,8 @@
 import { createMatcher, normalizeText, parseDriverCommand, processDriverCommand, rideMatches, matchesAnySearch, findPlaces, extractPrice } from "./matcher.js";
 import { createDeduper, isUniqueRideLink } from "./dedupe.js";
 import { addOrStageUserSearch, confirmPendingSearch, cancelPendingSearch, removeUserSearchByIndex, getUserSearch, stopUserSearch } from "./users-manager.js";
-import { extractInteractiveResponse, sendRideAlertWithButtons, sendPendingSearchConfirmationWithButtons, sendFullInteractiveMenu } from "./interactive.js";
+import { extractInteractiveResponse, sendRideAlertInteractive, sendCard } from "./interactive.js";
+import * as ui from "./bot-ui.js";
 import { extractDispatcherContact, buildQuotedRideMessage } from "./matcher.js";
 import { formatIsraeliPhone, extractPhoneFromText } from "./matcher.js";
 import { readFileSync } from "node:fs";
@@ -566,14 +567,14 @@ const mockInteractiveSock = {
   }
 };
 
-await sendRideAlertWithButtons(mockInteractiveSock, "123@s.whatsapp.net", mockRideData);
+await sendRideAlertInteractive(mockInteractiveSock, "123@s.whatsapp.net", { body: mockRideData.cleanedText });
 assert(capturedPayload !== null, "התראת נסיעה עם כפתורים נוצרה ונשלחה לסוקט");
 const hasAlertButtons = Boolean(
   capturedPayload?.viewOnceMessage?.message?.interactiveMessage?.nativeFlowMessage?.buttons ||
   capturedPayload?.buttons ||
   capturedPayload?.templateButtons
 );
-assert(hasAlertButtons, "התראת נסיעה מכילה כפתורים (כפתור 'ת' + כפתור וואטסאפ לסדרן)");
+assert(hasAlertButtons, "התראת נסיעה מכילה כפתורים (כפתור 'ת' + תפריט נפתח)");
 
 // 6. בדיקת בניית הודעת אישור הוספת חיפוש במקביל (3 כפתורים)
 let capturedConfirm = null;
@@ -588,11 +589,10 @@ const mockSockConfirm = {
   }
 };
 
-await sendPendingSearchConfirmationWithButtons(mockSockConfirm, "123@s.whatsapp.net", {
-  currentSearches: [{ displayText: "בית שמש" }],
-  newSearch: { displayText: "ירושלים לבית שמש" },
-  modeDesc: "נסיעות מירושלים לבית שמש"
-});
+await sendCard(mockSockConfirm, "123@s.whatsapp.net", ui.pendingSearchCard({
+  search: { searches: [{ displayText: "בית שמש" }] },
+  pending: { displayText: "ירושלים לבית שמש" },
+}));
 const confirmButtons =
   capturedConfirm?.viewOnceMessage?.message?.interactiveMessage?.nativeFlowMessage?.buttons ||
   capturedConfirm?.buttons ||
@@ -612,10 +612,10 @@ const mockSockMenu = {
   }
 };
 
-await sendFullInteractiveMenu(mockSockMenu, "123@s.whatsapp.net", {
-  activeSearches: [{ displayText: "בית שמש", mode: "city_all", origin: "בית שמש" }],
-  describeMode: () => "בתוך ומחוץ לעיר"
-});
+await sendCard(mockSockMenu, "123@s.whatsapp.net", ui.menuCard({
+  linkState: "connected",
+  search: { active: true, searches: [{ displayText: "בית שמש", mode: "city_all", origin: "בית שמש" }] },
+}));
 const menuSections =
   capturedMenu?.viewOnceMessage?.message?.interactiveMessage?.nativeFlowMessage?.buttons ||
   capturedMenu?.interactiveMessage?.nativeFlowMessage?.buttons ||

@@ -26,7 +26,7 @@ try {
   delete process.env.INTERACTIVE_VARIANT;
   check("ברירת מחדל: כפתורים כבויים (טקסט)", ix.getInteractiveVariant() === "off");
 
-  await ix.sendInteractiveList(sock, jid, { title: "t", body: "b", sections: [{ title: "s", rows: [{ id: "תפוס", title: "תפוס" }] }] });
+  await ix.sendCard(sock, jid, { text: "b", menu: { label: "t", sections: [{ title: "s", rows: [{ id: "תפוס", title: "תפוס" }] }] } });
   check("כשהכפתורים כבויים התפריט נשלח כטקסט עם הפקודות", relayed.length === 0 && texts.at(-1).content.text.includes("תפוס"));
 
   const sent = await ix.sendInteractiveTest(sock, jid);
@@ -43,7 +43,7 @@ try {
 
   // בקבוצה אין צומת bot גם בפורמט A
   relayed.length = 0;
-  await ix.sendInteractiveButtons(sock, "120363000000000000@g.us", { body: "x", buttons: [{ text: "ת", id: "ת" }], variant: "A" });
+  await ix.sendCard(sock, "120363000000000000@g.us", { text: "x", buttons: [{ text: "ת", id: "ת" }] }, { variant: "A" });
   check("בקבוצה לא נשלח צומת bot", !relayed[0].opts.additionalNodes.some((n) => n.tag === "bot"));
 
   // שמירת פורמט נבחר
@@ -64,7 +64,7 @@ try {
 
   // תשובה עם כפתור תפריט: טקסט כשכבוי
   texts.length = 0;
-  await ix.sendTextWithMenuButton(sock, jid, "החיפוש הופעל");
+  await ix.sendCard(sock, jid, { text: "החיפוש הופעל" });
   check("תשובה עם כפתור תפריט חוזרת לטקסט כשכבוי", texts.at(-1)?.content.text === "החיפוש הופעל");
 
   // פענוח לחיצה

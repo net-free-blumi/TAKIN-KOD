@@ -31,19 +31,15 @@ async function sendSticker(sock, jid, stickerPath) {
 }
 import {
   extractInteractiveResponse,
-  sendInteractiveButtons,
-  sendInteractiveList,
-  sendRideAlertWithButtons,
-  sendPendingSearchConfirmationWithButtons,
-  sendFullInteractiveMenu,
+  sendCard,
   sendInteractiveTest,
   sendRideAlertInteractive,
-  sendTextWithMenuButton,
   CLAIM_BUTTON_PREFIX,
   getInteractiveVariant,
   setInteractiveVariant,
   INTERACTIVE_VARIANTS,
 } from "./interactive.js";
+import * as ui from "./bot-ui.js";
 import { 
   loadUsersData, 
   saveUsersData,
@@ -83,6 +79,7 @@ import {
   getConnectionHealth,
   initSavedDriverSessions,
   isDriverSessionConnected,
+  getDriverLinkState,
   purgeAllDriverSessions,
   ensureDriverSessionForQr,
   getDriverSession,
@@ -160,6 +157,7 @@ function persistGroupMetadataSoon() {
 }
 
 const recentUnlinkedPrompts = new Map(); // senderPhone -> timestamp (צינון הודעות קישור)
+const recentStatusChecks = new Map();
 
 // מטמון התראות שנשלחו למעקב אחרי דיסלייקים (👍 / 👎)
 // מפתח: ID הודעת הבוט שנשלחה אל הנהג
@@ -480,16 +478,6 @@ function detectNonRide(cleaned) {
   return null;
 }
 
-// הודעת "ניתוק לילי" לנהג שהחיפוש שלו הופסק
-function buildNightlyStopMessage(displayText) {
-  return `🌙 *ניתוק לילי*\n\n` +
-    `החיפוש שלך: ${displayText || "פעיל"}\n` +
-    `הופסק כחלק מהתחזוקה הלילית שאנחנו מבצעים כל יום ב-02:00\n\n` +
-    `זה נועד למנוע חיפושים שנשארים דלוקים ימים בלי שאף אחד משתמש בהם.\n\n` +
-    `כדי לחזור לקבל נסיעות — הגדר חיפוש מחדש. 👇\n` +
-    `למשל: *פנוי שמש פנימי*`;
-}
-
 // איפוס יומי ב-2:00 בלילה
 cron.schedule("0 2 * * *", async () => {
   const adminClean = cleanPhone(loadUsersData().adminPhone);
@@ -504,7 +492,7 @@ cron.schedule("0 2 * * *", async () => {
     // מספר המנהל משמש לניהול בלבד - אליו לא שולחים; לכל נהג אחר עם חיפוש פעיל נשלחת הודעה
     if (cleanPhone(phone) === adminClean || !mainSock) continue;
     try {
-      await mainSock.sendMessage(getDestinationJid(phone), { text: buildNightlyStopMessage(wasActive) });
+      await sendCard(mainSock, getDestinationJid(phone), ui.nightlyStopCard(wasActive));
     } catch (e) {
       console.error(`שגיאה בשליחת הודעת ניתוק לילי ל-${phone}:`, e.message);
     }
@@ -1028,23 +1016,8 @@ export async function sendApprovalAndOnboarding(targetPhone, targetName = "נה�
   const recipientJid = getDestinationJid(targetPhone);
   const isTargetLid = isLid(targetPhone) || recipientJid.endsWith("@lid");
 
-  let welcomeText = `🎉 *שלום ${targetName}! חשבונך אושר בהצלחה במערכת.*\n\n` +
-    `ברוך הבא ל*נסיעות בוט איכותי* 🚕\n\n` +
-    `📲 *חיבור הוואטסאפ שלך לסריקת קבוצות הנסיעות:*\n`;
-
-  if (isTargetLid) {
-    welcomeText += `כדי להפיק קוד צימוד, וואטסאפ דורשת מספר סלולרי רגיל.\n\n` +
-      `👉 *שלח עכשיו:* חבר אותי 0521234567\n` +
-      `(במקום המספר הדוגמה - המספר שלך). מיד לאחר מכן תקבל קוד צימוד בן 8 תווים.`;
-  } else {
-    welcomeText += `כדי שהמערכת תסרוק נסיעות ישירות מכל קבוצות הנסיעות שאתה חבר בהן, השב עכשיו למספר זה:\n\n` +
-      `👉 *"חבר אותי"*\n\n` +
-      `מיד תקבל קוד צימוד בן 8 תווים והסבר פשוט איך להזין אותו בוואטסאפ במכשירים מקושרים.\n\n` +
-      `💡 *לצפייה בפקודות חיפוש:* השב *"תפריט"*`;
-  }
-
   try {
-    await sock.sendMessage(recipientJid, { text: welcomeText });
+    await sendCard(sock, recipientJid, ui.approvedCard({ name: targetName, needsPhone: isTargetLid }));
     recordEvent("command", `נשלחה הודעת אישור והדרכה לנהג: ${targetName} (${recipientJid})`);
   } catch (err) {
     console.error(`שגיאה בשליחת הודעת אישור ל-${recipientJid}:`, err.message);
@@ -1052,118 +1025,57 @@ export async function sendApprovalAndOnboarding(targetPhone, targetName = "נה�
   }
 }
 
-// שליחת הודעת תפריט / עזרה עם תפריט נפתח (Single Select) וגיבוי מלא בטקסט
-async function sendHelpMenu(sock, jid, driverPhone) {
-  const search = getUserSearch(driverPhone);
-  // תפריט נפתח רק אחרי שנבחר פורמט שעובד בפועל ("בדיקת כפתורים"); אחרת תפריט טקסט מלא
-  const useInteractive = process.env.USE_INTERACTIVE_MENU !== "false" && getInteractiveVariant() !== "off";
+// מצב הנהג שהמסכים צריכים (bot-ui.js)
+function getScreenContext(phone) {
+  return {
+    linkState: getDriverLinkState(phone),
+    search: getUserSearch(phone),
+    telegram: getTelegramStatus(phone),
+    botLink: getBotLinkStatus(phone),
+  };
+}
 
-  if (useInteractive && sock && typeof sendFullInteractiveMenu === "function") {
-    try {
-      const res = await sendFullInteractiveMenu(sock, jid, {
-        activeSearches: search.searches || [],
-        describeMode,
-      });
-      if (res?.key?.id) return res;
-    } catch (e) {
-      console.log(`ℹ️ שליחת תפריט נפתח נכשלה (${e.message}), ממשיך לתפריט טקסט מלא`);
-    }
-  }
+const DRIVER_SCREENS = {
+  menu: ui.menuCard,
+  searches: ui.searchesCard,
+  howSearch: ui.howSearchCard,
+  howClaim: ui.howClaimCard,
+  guide: ui.guideCard,
+  connections: ui.connectionsCard,
+  connectHelp: ui.connectHelpCard,
+  telegram: ui.telegramCard,
+  telegramBot: ui.telegramBotCard,
+  disconnect: ui.disconnectCard,
+};
 
-  let menuText = `🚕 *תפריט נסיעות בוט איכותי*\n\n`;
-  if (search.active && search.searches.length > 0) {
-    menuText += `📊 *סטטוס החיפושים הפעילים שלך במקביל:*\n`;
-    search.searches.forEach((s, idx) => {
-      menuText += `${idx + 1}. ${s.displayText} (${describeMode(s)})\n`;
+async function sendDriverScreen(sock, jid, phone, screen) {
+  return await sendCard(sock, jid, DRIVER_SCREENS[screen](getScreenContext(phone)));
+}
+
+// שינוי חיפוש מהאתר -> הודעה לנהג מהבוט הראשי. מחזיר: sent | sending | unchanged | offline | failed
+async function notifySearchChangedFromSite(phone, before, after) {
+  const signature = (st) =>
+    st?.active ? st.searches.map((s) => `${s.mode}|${s.origin}|${s.destination || ""}`).sort().join(";") : "";
+  if (signature(before) === signature(after)) return "unchanged";
+
+  const sock = getMainBotSock();
+  if (!sock || !getMainBotStatus().connected) return "offline";
+
+  const card = ui.siteSearchCard({ before, after, linkState: getDriverLinkState(phone) });
+  const jid = getDestinationJid(phone);
+  // מספר המנהל הוא לניהול בלבד (כפתורי הנהג לא פועלים בו), ולכן הוא מקבל טקסט בלבד
+  const sending = (isUserAdmin(phone) ? sock.sendMessage(jid, { text: card.text }) : sendCard(sock, jid, card))
+    .then(() => "sent")
+    .catch((e) => {
+      console.error(`הודעה לנהג ${phone} על שינוי חיפוש מהאתר נכשלה:`, e.message);
+      return "failed";
     });
-    menuText += `\n`;
-  } else {
-    menuText += `📊 *סטטוס נוכחי שלך:* 🔴 מופסק (תפוס)\n\n`;
-  }
-  menuText += `🔍 *פקודות חיפוש נפוצות:*\n`;
-  menuText += `• *פנוי שמש* / *פנוי ים* / *פנוי מירון* (בתוך ומחוץ לעיר)\n`;
-  menuText += `• *פנוי שמש פנימי* / *פנימי ים* (פנימי בלבד בעיר)\n`;
-  menuText += `• *פ ים שמש* (מירושלים לבית שמש)\n`;
-  menuText += `• *פ שמש ים* (מבית שמש לירושלים)\n\n`;
-  menuText += `⚡ *חיפוש מקבילי:* שליחת פקודת חיפוש נוספת תאפשר לך להוסיף אותה במקביל (למשל: גם שמש וגם ים בו-זמנית!)\n`;
-  menuText += `🚕 *לתפיסת נסיעה מהירה:* השב *"ת"* או *"תן"* על הודעת הנסיעה (הבוט יגיב בקבוצה ולסדרן בשמך!)\n`;
-  menuText += `🛑 *תפוס* (עצירת כל החיפושים)\n\n`;
-  menuText += `📖 *למדריך שימוש מפורט ומקצועי:* השב *"מדריך"*\n`;
-  menuText += `✈️ *למדריך חיבור טלגרם:* השב *"מדריך טלגרם"* או *"חבר טלגרם"*\n`;
-  menuText += `🔗 *לקישור הוואטסאפ שלך:* השב *"חבר אותי"*`;
 
-  return await sock.sendMessage(jid, { text: menuText });
-}
-
-// שליחת מדריך שימוש מפורט, קצר ומקצועי לנהג
-export async function sendDriverGuide(sock, jid) {
-  let guideText = `📖 *מדריך נהגים מקצועי – נסיעות בוט איכותי* 🚕\n\n`;
-
-  guideText += `🔹 *1. חיבור הוואטסאפ (פעם אחת בלבד מהנייד)*\n` +
-    `• שולחים לבוט: *"חבר אותי"*\n` +
-    `• מקבלים קוד צימוד בן 8 אותיות.\n` +
-    `• נכנסים בוואטסאפ: *הגדרות ⬅️ מכשירים מקושרים ⬅️ קישור מכשיר ⬅️ "קישור עם מספר טלפון במקום"*\n` +
-    `• מזינים את הקוד — וזהו! הבוט מחובר ומתחיל לסרוק עבורך את כל הקבוצות.\n\n`;
-
-  guideText += `🔹 *2. חיבור וסנכרון טלגרם (מקביל לוואטסאפ!)*\n` +
-    `• שלח לבוט: *"מדריך טלגרם"* או *"חבר טלגרם"* לקבלת קוד אימות רשמי באפליקציית טלגרם.\n` +
-    `• מעכשיו נסיעות מקבוצות וערוצי הטלגרם ייסרקו במקביל ויגיעו ישירות לוואטסאפ!\n\n`;
-
-  guideText += `🔹 *3. הגדרת חיפושים*\n` +
-    `• *בתוך ומחוץ לעיר:* שלח למשל *"פנוי שמש"* או *"פנוי ים"* (מקבל נסיעות פנימיות + נסיעות שיוצאות מהעיר).\n` +
-    `• *פנימי בעיר בלבד:* שלח *"פנוי שמש פנימי"* או *"שמש פנימי"* (מסנן רק נסיעות מקומיות בתוך העיר).\n` +
-    `• *מסלול בין שתי ערים:* שלח *"פ ים שמש"* (מירושלים לבית שמש) או *"פ שמש ים"*.\n\n`;
-
-  guideText += `🔹 *4. חיפושים מקביליים (כמה יעדים יחד!)*\n` +
-    `• יש לך חיפוש פעיל? שלח פקודת חיפוש נוספת (למשל: *"פנוי ים"*).\n` +
-    `• הבוט ישאל אותך מיד:\n` +
-    `  👉 *1* או *הוסף* ⬅️ להוספת החיפוש במקביל (קבלת נסיעות מכל היעדים בו-זמנית!)\n` +
-    `  👉 *2* או *החלף* ⬅️ להחליף את הכל בחיפוש החדש בלבד\n` +
-    `  👉 *ביטול* ⬅️ להישאר עם הקיים\n\n`;
-
-  guideText += `🔹 *5. תפיסת נסיעה סופר-מהירה ("ת" או "תן")*\n` +
-    `• קיבלת נסיעה מתאימה מהבוט? השב עליה: *"ת"* או *"תן"*.\n` +
-    `• בנסיעת וואטסאפ: שולח תגובת "תן" בקבוצה עם ציטוט, והודעה פרטית לסדרן.\n` +
-    `• בנסיעת טלגרם: לוחץ אוטומטית על כפתור התפיסה הפנימי בטלגרם או מגיב בקבוצה!\n\n`;
-
-  guideText += `🔹 *6. עצירת חיפוש (מצב תפוס)*\n` +
-    `• תפסת נסיעה או סיימת משמרת? שלח: *"תפוס"*.\n` +
-    `• הבוט יעצור את כל הסינונים מיד ולא ישלח התראות.\n\n`;
-
-  guideText += `🔹 *7. פקודת "תפריט"*\n` +
-    `• שלח *"תפריט"* בכל רגע כדי לצפות בסטטוס החיפושים הפעילים שלך ובאפשרויות מהירות.\n\n`;
-
-  guideText += `🔹 *8. דיווח תקלה (דיסלייק 👎)*\n` +
-    `• קיבלת נסיעה לא קשורה? סמן *👎* ישירות על הודעת הבוט.\n` +
-    `• המקרה יישלח מיד לטיפול ותיקון בקבוצת הבאגים!`;
-
-  await sock.sendMessage(jid, { text: guideText });
-}
-
-// שליחת מדריך מפורט ומקצועי לחיבור טלגרם
-export async function sendTelegramGuide(sock, jid) {
-  let tgGuide = `✈️ *מדריך חיבור וסנכרון טלגרם – נסיעות בוט איכותי* 🚕\n\n`;
-  tgGuide += `מעכשיו המערכת תומכת בסריקת נסיעות במקביל גם מקבוצות וואטסאפ וגם מקבוצות טלגרם!\n\n`;
-  tgGuide += `🔹 *איך זה עובד?*\n`;
-  tgGuide += `החיבור מתבצע בדיוק כמו בחיבור וואטסאפ ווב – מקבלים קוד אימות רשמי באפליקציית טלגרם שלך, ומזינים אותו לבוט או באתר.\n\n`;
-  tgGuide += `🔹 *שלבי החיבור דרך הוואטסאפ:*\n`;
-  tgGuide += `1️⃣ שלח לבוט: *"חבר טלגרם"*\n`;
-  tgGuide += `2️⃣ פתח את אפליקציית טלגרם בנייד שלך. תקבל שם הודעת שירות רשמית מטלגרם עם קוד אימות בן 5 ספרות.\n`;
-  tgGuide += `3️⃣ שלח חזרה לבוט כאן:\n   *קוד טלגרם [הקוד שקיבלת]*\n   *(למשל: קוד טלגרם 54321)*\n`;
-  tgGuide += `4️⃣ אם מוגדרת לך סיסמת אימות דו-שלבי (2FA) בטלגרם, שלח:\n   *סיסמת טלגרם [הסיסמה שלך]*\n\n`;
-  tgGuide += `💻 *חיבור מהיר דרך האתר (דשבורד):*\n`;
-  tgGuide += `היכנס לאתר ⬅️ לחץ בסרגל העליון על *"חיבור טלגרם"* ⬅️ הזן מספר ולחץ "שלח קוד אימות לטלגרם" ⬅️ הזן את הקוד והתחבר!\n\n`;
-  tgGuide += `🔹 *איך תופסים נסיעה מטלגרם?*\n`;
-  tgGuide += `• כל נסיעה מתאימה מקבוצות וערוצי הטלגרם שלך תישלח אליך ישירות לוואטסאפ עם הכותרת: *✈️ נסיעה מטלגרם*.\n`;
-  tgGuide += `• לתפיסה מהירה: פשוט השב *"ת"* או *"תן"* על הודעת הנסיעה!\n`;
-  tgGuide += `• הבוט ילחץ עבורך אוטומטית על כפתור התפיסה הפנימי בטלגרם (Inline Button כמו "לחצו כאן לבקשת הנסיעה") או יגיב בקבוצה!\n`;
-  tgGuide += `• בנוסף קיים קישור ישיר להודעה בטלגרם.\n\n`;
-  tgGuide += `🔹 *פקודות נוספות:*\n`;
-  tgGuide += `• *בוט טלגרם* - קבלת הנסיעות בטלגרם בפרטי עם התראה\n`;
-  tgGuide += `• *סטטוס טלגרם* - בדיקת מצב החיבור ושם המשתמש\n`;
-  tgGuide += `• *נתק טלגרם* - ניתוק החשבון`;
-
-  await sock.sendMessage(jid, { text: tgGuide });
+  let timer;
+  const slow = new Promise((resolve) => { timer = setTimeout(() => resolve("sending"), 6000); });
+  const result = await Promise.race([sending, slow]);
+  clearTimeout(timer);
+  return result;
 }
 
 // זיהוי ופענוח מספר טלפון אמיתי של סדרן/שולח (מניעת מזהי LID חסויים וחילוץ מהטקסט)
@@ -1231,70 +1143,44 @@ function describeMode(state) {
   return `נסיעות מ-${state.origin}`;
 }
 
-export function getPairingGuideInstructions() {
-  let guide = `🔗 *חיבור הוואטסאפ שלך למערכת הנסיעות*\n\n`;
-  guide += `📲 *הוראות חיבור בטלפון (ללא צורך במחשב):*\n` +
-    `1. פתח וואטסאפ ⬅️ הגדרות ⬅️ *מכשירים מקושרים*\n` +
-    `2. לחץ *"קישור מכשיר"*\n` +
-    `3. לחץ למטה: *"קישור עם מספר טלפון במקום"*\n` +
-    `4. הזן את קוד הצימוד בן 8 האותיות שנשלח כעת בהודעה הבאה.\n\n` +
-    `⏱️ *הקוד בתוקף לכמה דקות. לאחר ההזנה הוואטסאפ שלך יחובר והשרת יתחיל לסנן נסיעות מהקבוצות שלך!*`;
-  return guide;
-}
-
-export async function sendPairingCodeMessages(sock, jid, code) {
-  const instructions = getPairingGuideInstructions();
-  await sock.sendMessage(jid, { text: instructions });
+// הכרטיס עם כפתור ההעתקה, ואחריו הקוד לבד (להעתקה בלחיצה ארוכה במכשיר שלא מציג כפתורים)
+export async function sendPairingCodeMessages(sock, jid, code, options = {}) {
+  await sendCard(sock, jid, ui.pairingCodeCard(code, options));
   await sock.sendMessage(jid, { text: code });
 }
 
-export function getPairingGuideText(code) {
-  let guide = getPairingGuideInstructions();
-  if (code) {
-    guide += `\n\n🔑 *קוד הצימוד:* ${code}`;
-  }
-  return guide;
-}
-
-// ניהול תזכורות חידוש קוד צימוד אם הנהג לא הספיק להזין אותו תוך כדקה
-const pairingReminders = new Map();
+// הודעה אחת כשהקוד פג: כשוואטסאפ סוגר את הצימוד, ובגיבוי אחרי 3 דקות
+const pairingReminders = new Map(); // phone -> { sock, jid, timer }
+const PAIRING_CODE_TTL_MS = 3 * 60 * 1000;
 
 export function schedulePairingReminder(sock, jid, phone) {
   const clean = cleanPhone(phone);
   if (!clean) return;
+  cancelPairingReminder(clean);
+  const timer = setTimeout(() => notifyPairingExpired(clean), PAIRING_CODE_TTL_MS);
+  timer.unref?.();
+  pairingReminders.set(clean, { sock, jid, timer });
+}
 
-  if (pairingReminders.has(clean)) {
-    clearTimeout(pairingReminders.get(clean));
-    pairingReminders.delete(clean);
+async function notifyPairingExpired(phone) {
+  const pending = pairingReminders.get(cleanPhone(phone));
+  if (!pending) return;
+  cancelPairingReminder(phone);
+  const state = getDriverLinkState(phone);
+  if (state === "connected" || state === "reconnecting") return;
+  try {
+    await sendCard(getMainBotSock() || pending.sock, pending.jid, ui.pairingExpiredCard());
+  } catch (e) {
+    console.log(`שגיאה בשליחת הודעת קוד שפג ל-${phone}:`, e.message);
   }
-
-  const timer = setTimeout(async () => {
-    pairingReminders.delete(clean);
-    // אם הנהג כבר התחבר בהצלחה - אין צורך בתזכורת
-    if (isDriverSessionConnected(clean)) return;
-
-    try {
-      const reminderMsg = `⏳ *לא הספקת להזין את קוד הצימוד או שהיה קושי בהתחברות?*\n\n` +
-        `קוד הצימוד תקף לכ-2 דקות בלבד.\n` +
-        `אם הקוד פג או לא הספקת להזין אותו — אל דאגה!\n\n` +
-        `👉 שלח עכשיו: *"חבר אותי"* לקבלת קוד עדכני מיידית.`;
-
-      await sock.sendMessage(jid, { text: reminderMsg });
-      console.log(`⏱️ נשלחה תזכורת חידוש קוד צימוד לנהג: ${clean}`);
-    } catch (e) {
-      console.log(`שגיאה בשליחת תזכורת צימוד ל-${clean}:`, e.message);
-    }
-  }, 65 * 1000); // תזכורת אחרי 65 שניות
-
-  pairingReminders.set(clean, timer);
 }
 
 export function cancelPairingReminder(phone) {
   const clean = cleanPhone(phone);
-  if (pairingReminders.has(clean)) {
-    clearTimeout(pairingReminders.get(clean));
-    pairingReminders.delete(clean);
-  }
+  const pending = pairingReminders.get(clean);
+  if (!pending) return;
+  clearTimeout(pending.timer);
+  pairingReminders.delete(clean);
 }
 
 // קובץ מעקב קבוע לדיסק - שולחים התראת חיבור למנהל והודעת ברכה לנהג אך ורק פעם אחת בהתחברות הראשונית בלבד!
@@ -1369,26 +1255,15 @@ export async function notifyDriverWelcomeOnConnected(driverPhone) {
   const clean = cleanPhone(driverPhone);
   if (!clean) return;
 
-  // אם הנהג כבר קיבל הודעת ברכה בעבר - לא שולחים שוב לעולם!
   const record = onboardingAlertsSent.get(clean) || {};
-  if (record.driverWelcomeSent) {
-    return;
-  }
 
   const mainSock = getMainBotSock();
   if (!mainSock || !getMainBotStatus().connected) return;
 
-  const welcomeMsg = `✅ *הוואטסאפ שלך חובר ומסונכרן בהצלחה למערכת!* 🎉\n\n` +
-    `מעכשיו הבוט יסנן עבורך נסיעות בזמן אמת מכל הקבוצות שלך.\n\n` +
-    `🔍 *להפעלת חיפוש שלח עכשיו:*\n` +
-    `• *פנוי שמש* או *פנוי ים* (בתוך ומחוץ לעיר)\n` +
-    `• *פנוי שמש פנימי* (פנימי בעיר בלבד)\n` +
-    `• *פ ים שמש* (מסלול מירושלים לבית שמש)\n\n` +
-    `📖 *לצפייה בהוראות בכל רגע שלח:* "מדריך" או "תפריט"`;
-
   try {
     const jid = getDestinationJid(clean);
-    await mainSock.sendMessage(jid, { text: welcomeMsg });
+    // נקרא רק אחרי צימוד חדש (לא בהפעלה מחדש): ברכה מלאה פעם אחת, ובצימוד חוזר אישור קצר
+    await sendCard(mainSock, jid, record.driverWelcomeSent ? ui.reconnectedCard() : ui.welcomeCard());
     console.log(`📢 נשלחה הודעת ברכה ראשונית חד-פעמית לנהג ${clean}`);
     record.driverWelcomeSent = true;
     record.completedAt = new Date().toISOString();
@@ -1412,22 +1287,7 @@ export async function sendConfusedStickerAndMessage(sock, jid, senderPhone) {
   await sendSticker(sock, jid, STICKER_WEBP_PATH);
 
   // 2. הודעה ברורה וקולעת מתחת למדבקה (ללא ציטוט)
-  const search = getUserSearch(senderPhone);
-  const statusLine = search.active
-    ? `🟢 *חיפוש פעיל כעת:* ${search.displayText}`
-    : `🔴 *מצב שינה / תפוס* (הבוט אינו סורק נסיעות כרגע)`;
-
-  const msg = `🤔 לא הבנתי למה התכוונת, תוכל לשלוח שוב?\n\n` +
-    `${statusLine}\n\n` +
-    `💡 *קיצורים מהירים להפעלת חיפוש נסיעות:*\n` +
-    `• *פנוי שמש פנימי* ⬅️ פנימי בית שמש בלבד 🚕\n` +
-    `• *פנוי שמש* ⬅️ פנימי וגם יציאה מבית שמש\n` +
-    `• *פ ים שמש* ⬅️ מירושלים לבית שמש 🔄\n` +
-    `• *שמש צמצם* ⬅️ מצב צמצום (פנימי ויוצא)\n` +
-    `• *תפוס* ⬅️ הפסקת חיפוש / מצב שינה 🛑\n\n` +
-    `להצגת כל האפשרויות והערים שלח: *"תפריט"*.`;
-
-  await sock.sendMessage(jid, { text: msg });
+  await sendCard(sock, jid, ui.notUnderstoodCard({ search: getUserSearch(senderPhone) }));
 }
 
 // טיפול בשינוי סטטוס חיבור של הבוט הראשי
@@ -1438,15 +1298,24 @@ export function handleMainBotStatusChange(status) {
 // טיפול בשינוי סטטוס סשן נהג - מסונן לחלוטין כנגד התעוררות שרת, שחזור סשנים והתחברויות חוזרות
 export async function handleDriverStatusChange(driverPhone, sessionObj) {
   // הטלפון של הנהג הסיר את המכשיר המקושר (401): מודיעים לנהג פעם אחת איך להתחבר מחדש
-  if (sessionObj?.status === "logged_out" && !sessionObj.loggedOutNotified) {
+  if (sessionObj?.status === "qr_expired") {
+    await notifyPairingExpired(driverPhone);
+    return;
+  }
+  const alertKey = cleanPhone(driverPhone);
+  const alerts = onboardingAlertsSent.get(alertKey) || {};
+  if (sessionObj?.status === "logged_out") {
+    // נשמר בדיסק: אובייקט הסשן נוצר מחדש בכל עלייה, ובלי זה ההודעה נשלחה שוב בכל עדכון
+    if (alerts.loggedOutNotified || sessionObj.loggedOutNotified) return;
     sessionObj.loggedOutNotified = true;
-    recordEvent("system", `⚠️ הוואטסאפ של נהג ${driverPhone} הוסר מהמכשירים המקושרים בטלפון - נשלחה לו הודעה לחיבור מחדש`);
+    recordEvent("system", `⚠️ הוואטסאפ של נהג ${driverPhone} הוסר מהמכשירים המקושרים בטלפון`);
     const mainSock = getMainBotSock();
     if (mainSock && getMainBotStatus().connected) {
       try {
-        await mainSock.sendMessage(getDestinationJid(driverPhone), {
-          text: "⚠️ *החיבור של הוואטסאפ שלך לבוט הוסר מהטלפון* (מכשירים מקושרים).\nבלי החיבור הבוט לא סורק עבורך נסיעות מהקבוצות.\n\nלחיבור מחדש שלח: *חבר אותי*",
-        });
+        await sendCard(mainSock, getDestinationJid(driverPhone), ui.loggedOutCard());
+        alerts.loggedOutNotified = true;
+        onboardingAlertsSent.set(alertKey, alerts);
+        persistOnboardingAlerts();
       } catch (e) {
         console.error(`שליחת הודעת ניתוק לנהג ${driverPhone} נכשלה:`, e.message);
       }
@@ -1454,6 +1323,10 @@ export async function handleDriverStatusChange(driverPhone, sessionObj) {
     return;
   }
   if (sessionObj?.status === "connected") {
+    if (alerts.loggedOutNotified) {
+      delete alerts.loggedOutNotified;
+      persistOnboardingAlerts();
+    }
     cancelPairingReminder(driverPhone);
 
     // טעינת כל שמות הקבוצות של הנהג ברקע לזיכרון ולדיסק בהשהיה של 6 שניות (כדי לתת לחיבור הוואטסאפ להתייצב מלא)
@@ -1703,9 +1576,9 @@ async function handleIncomingMessage(sock, upsert, sessionContext) {
           continue;
         }
 
-        if (norm === "תפריט" || norm === "menu" || norm === "עזרה") {
+        if (ui.screenForCommand(norm) === "menu") {
           await sock.sendMessage(jid, {
-            text: `🛠️ *תפריט ניהול מערכת*\n\nפקודות זמינות למנהל:\n• *אשר 0501234567* ⬅️ אישור נהג חדש ושליחת מדריך\n• *דחה 0501234567* ⬅️ דחיית בקשת הצטרפות\n• *שלח מדריך 0501234567* ⬅️ שליחה חוזרת של הודעת אישור ומדריך חיבור ווב\n• *עדכן 0501234567 ל 0507654321* ⬅️ עדכון מספר טלפון של נהג`
+            text: `🛠️ *תפריט ניהול מערכת*\n\nפקודות זמינות למנהל:\n• *אשר 0501234567* ⬅️ אישור נהג חדש ושליחת מדריך\n• *דחה 0501234567* ⬅️ דחיית בקשת הצטרפות\n• *שלח מדריך 0501234567* ⬅️ שליחה חוזרת של הודעת אישור ומדריך חיבור ווב\n• *עדכן 0501234567 ל 0507654321* ⬅️ עדכון מספר טלפון של נהג\n• *בדיקת כפתורים* ⬅️ בדיקה ובחירה של פורמט הכפתורים\n• *כפתורים כבוי* ⬅️ מעבר לטקסט בלבד`
           }, { quoted: m });
         }
         continue;
@@ -1713,6 +1586,15 @@ async function handleIncomingMessage(sock, upsert, sessionContext) {
 
       // 3. משתמש שטרם אושר
       if (!isApproved) {
+        if (norm === ui.CMD.requestStatus) {
+          // לחיצה על כפתור מקבלת מענה גם בתוך 24 שעות הצינון
+          const last = recentStatusChecks.get(senderPhone) || 0;
+          if (Date.now() - last > 10000) {
+            recentStatusChecks.set(senderPhone, Date.now());
+            await sendCard(sock, jid, ui.requestPendingCard());
+          }
+          continue;
+        }
         const canReply = canReplyToUnapproved(senderPhone);
         if (!canReply) {
           continue;
@@ -1722,52 +1604,32 @@ async function handleIncomingMessage(sock, upsert, sessionContext) {
         recordEvent("system", `בקשת הצטרפות: ${pushName} (${senderPhone})`);
 
         const isStillLid = isLid(senderPhone);
-        const unapprovedMsg = `שלום ${pushName}! 👋\n` +
-          `ברוך הבא ל*נסיעות בוט איכותי*.\n\n` +
-          `⚠️ מספרך עדיין אינו מאושר במערכת.\n` +
-          (isStillLid ? `💡 *הערה:* חשבונך מוגדר בוואטסאפ כפרטי (LID). מומלץ לשלוח לכאן את מספר הטלפון הרגיל שלך (למשל: *0521234567*) כדי שנוכל לחברך במהירות.\n\n` : `\n`) +
-          `📩 *בקשת הצטרפות נשלחה למנהל המערכת.*\n` +
-          `ברגע שיאושר חשבונך, תקבל הודעה עם הנחיות חיבור.`;
-
-        await sock.sendMessage(jid, { text: unapprovedMsg }, { quoted: m });
+        await sendCard(sock, jid, ui.awaitingApprovalCard({ name: pushName, needsPhone: isStillLid }));
 
         const adminClean = cleanPhone(usersData.adminPhone);
         if ((pending?.isNew || (!isStillLid && pending?.wasLid)) && adminClean && adminClean !== senderPhone) {
-          let adminAlert = `🔔 *בקשת הצטרפות חדשה לבוט!*\n\n` +
-            `👤 *שם:* ${pushName}\n` +
-            (isStillLid 
-              ? `📱 *טלפון:* ⚠️ מספר לא זוהה (משתמש מוסתר בוואטסאפ - מזהה LID)\n🆔 *מזהה LID:* ${senderPhone}\n`
-              : `📱 *טלפון:* ${senderPhone}\n`
-            );
-          adminAlert += `\nלאישור המשתמש, השב:\n*אשר ${senderPhone}*\n\nלדחייה, השב:\n*דחה ${senderPhone}*`;
-          await sock.sendMessage(`${adminClean}@s.whatsapp.net`, { text: adminAlert });
+          await sendCard(sock, `${adminClean}@s.whatsapp.net`, ui.adminJoinRequestCard({ name: pushName, phone: senderPhone, hidden: isStillLid }));
         }
         continue;
       }
 
       // 4. נהג מאושר
-      // 4.0 מדריכים, פקודות טלגרם וניתוק/איפוס (זמינים לכל נהג מאושר, גם לפני/אחרי חיבור וואטסאפ ווב)
-      if (norm === "בוט טלגרם" || norm === "טלגרם בוט" || norm === "נסיעות בטלגרם" || norm === "קבל נסיעות בטלגרם") {
-        const st = getBotLinkStatus(senderPhone);
-        let t;
-        if (!st.enabled) {
-          t = "ℹ️ בוט הטלגרם עדיין לא הופעל במערכת. הנסיעות ממשיכות להגיע אליך כאן בוואטסאפ.";
-        } else if (st.linked) {
-          t = `✅ אתה כבר מחובר לבוט הטלגרם @${st.username}${st.linkedName ? ` (${st.linkedName})` : ""}.\nכל נסיעה מתאימה מגיעה אליך גם שם, בפרטי עם התראה.\nלהפסקה: שלח /stop לבוט בטלגרם.`;
-        } else {
-          t = `✈️ *קבלת נסיעות בטלגרם*\n\nלחץ על הקישור, ואז על *Start* בטלגרם:\n👉 ${st.link}\n\nמעכשיו כל נסיעה מתאימה תגיע אליך גם לטלגרם בפרטי, עם התראה וכפתור מעבר ישיר להודעה המקורית.\n✈️ = נסיעה מטלגרם · 🟢 = נסיעה מוואטסאפ`;
-        }
-        await sock.sendMessage(jid, { text: t });
+      // 4.0 ניווט בתפריטים (זמין לכל נהג מאושר, גם לפני חיבור הוואטסאפ)
+      const screen = ui.screenForCommand(norm);
+      if (screen) {
+        await sendDriverScreen(sock, jid, senderPhone, screen);
         continue;
       }
 
-      if (norm === "מדריך טלגרם" || norm === "הוראות טלגרם" || norm === "מדריך telegram" || norm === "עזרה טלגרם") {
-        await sendTelegramGuide(sock, jid);
-        continue;
-      }
-
-      if (norm === "מדריך" || norm === "הוראות" || norm === "מדריך שימוש" || norm === "guide") {
-        await sendDriverGuide(sock, jid);
+      const removeByToken = norm.match(/^הסר חיפוש (\d+)$/);
+      // מספר סידורי קצר ("הסר חיפוש 2") נשאר לפי מיקום; כפתור שולח מזהה ארוך
+      if (removeByToken) {
+        const list = getUserSearch(senderPhone).searches;
+        const key = removeByToken[1];
+        const index = key.length <= 2 ? Number(key) - 1 : list.findIndex((s) => ui.searchToken(s) === key);
+        const res = removeUserSearchByIndex(senderPhone, index + 1);
+        const title = res.success ? `🗑️ *הוסר:* ${res.removed.displayText}` : "ℹ️ *החיפוש הזה כבר לא פעיל.*";
+        await sendCard(sock, jid, ui.searchUpdatedCard({ title, search: res.current }));
         continue;
       }
 
@@ -1781,13 +1643,9 @@ async function handleIncomingMessage(sock, upsert, sessionContext) {
             text: `⏳ *שולח בקשה רשמית לטלגרם...*\nמפיק קוד אימות לחשבונך (${senderPhone}).\nנא לפתוח עכשיו את אפליקציית טלגרם הרשמית בטלפון שלך.`,
           });
           const reqRes = await requestTelegramCode(senderPhone);
-          await sock.sendMessage(jid, {
-            text: `📩 *קוד אימות נשלח לאפליקציית טלגרם שלך!*\n\nכדי להשלים את החיבור, שלח לכאן:\n👉 *קוד טלגרם [הקוד שקיבלת]*\n(או פשוט שלח את מספר הקוד, לדוגמה: *54321*)\n\n*(ניתן להתחבר גם דרך האתר בדשבורד!)*`,
-          });
+          await sendCard(sock, jid, ui.telegramCodeSentCard());
         } catch (err) {
-          await sock.sendMessage(jid, {
-            text: `⚠️ לא ניתן היה לקבל קוד מטלגרם: ${err.message}\nוודא שהמספר רשום בטלגרם או נסה שוב בעוד מספר רגעים.`,
-          });
+          await sendCard(sock, jid, ui.telegramErrorCard(`לא ניתן היה לקבל קוד. ${err.message}`));
         }
         continue;
       }
@@ -1812,14 +1670,10 @@ async function handleIncomingMessage(sock, upsert, sessionContext) {
               text: `🔐 *נדרשת סיסמת אימות דו-שלבי (2FA):*\nבחשבון הטלגרם שלך מוגדרת סיסמה נוספת.\nשלח לכאן עכשיו:\n👉 *סיסמת טלגרם [הסיסמה שלך]*`,
             });
           } else {
-            await sock.sendMessage(jid, {
-              text: `🎉 *חשבון הטלגרם שלך (${verifyRes.username || ""}) חובר בהצלחה!* 🚕✈️\n\nמעכשיו המערכת תסרוק נסיעות במקביל גם מוואטסאפ וגם מטלגרם!\nכל נסיעה תתקבל לכאן עם כותרת '🔹 נסיעה מטלגרם' ואפשרות תפיסה מהירה ("ת" או "תן").`,
-            });
+            await sendCard(sock, jid, ui.telegramConnectedCard(verifyRes.username));
           }
         } catch (err) {
-          await sock.sendMessage(jid, {
-            text: `❌ שגיאה באימות קוד טלגרם: ${err.message}\nאם פג תוקף הקוד, שלח *"חבר טלגרם"* לקבלת קוד חדש.`,
-          });
+          await sendCard(sock, jid, ui.telegramErrorCard(`הקוד לא התקבל. ${err.message}`));
         }
         continue;
       }
@@ -1831,28 +1685,9 @@ async function handleIncomingMessage(sock, upsert, sessionContext) {
         try {
           await sock.sendMessage(jid, { text: `🔑 מאמת סיסמת אימות דו-שלבי (2FA) בטלגרם...` });
           const verifyRes = await verifyTelegramCode(senderPhone, null, tgPass);
-          await sock.sendMessage(jid, {
-            text: `🎉 *חשבון הטלגרם שלך (${verifyRes.username || ""}) חובר בהצלחה!* 🚕✈️\nנסיעות טלגרם מסונכרנות מעכשיו ישירות לוואטסאפ במקביל!`,
-          });
+          await sendCard(sock, jid, ui.telegramConnectedCard(verifyRes.username));
         } catch (err) {
-          await sock.sendMessage(jid, {
-            text: `❌ שגיאה באימות סיסמת טלגרם: ${err.message}`,
-          });
-        }
-        continue;
-      }
-
-      // סטטוס טלגרם
-      if (norm === "סטטוס טלגרם" || norm === "מצב טלגרם") {
-        const tgStatus = getTelegramStatus(senderPhone);
-        if (tgStatus.connected || tgStatus.hasSavedSession) {
-          await sock.sendMessage(jid, {
-            text: `✈️ *סטטוס טלגרם נהג:*\n✅ מחובר ומסונכרן\n👤 משתמש: ${tgStatus.username || "נהג"}\n📱 מספר: ${tgStatus.phone}\n\nנסיעות מקבוצות וערוצי הטלגרם נסרקות במקביל לוואטסאפ!\nלניתוק: שלח *"נתק טלגרם"*`,
-          });
-        } else {
-          await sock.sendMessage(jid, {
-            text: `✈️ *סטטוס טלגרם נהג:*\n⚪ לא מחובר\n\nלחיבור וקבלת קוד באפליקציית טלגרם:\n👉 שלח *"חבר טלגרם"* (או התחבר דרך האתר בדשבורד)`,
-          });
+          await sendCard(sock, jid, ui.telegramErrorCard(`הסיסמה לא התקבלה. ${err.message}`));
         }
         continue;
       }
@@ -1864,9 +1699,7 @@ async function handleIncomingMessage(sock, upsert, sessionContext) {
       if (isTgDisconnect) {
         try {
           await disconnectTelegram(senderPhone);
-          await sock.sendMessage(jid, {
-            text: `✅ *חשבון הטלגרם שלך נותק ואופס בהצלחה.*\nהסשן נסגר ולא יסרקו עוד נסיעות מטלגרם.\nלחיבור מחדש בכל עת, שלח *"חבר טלגרם"*.`,
-          });
+          await sendCard(sock, jid, ui.disconnectedTgCard());
         } catch (err) {
           await sock.sendMessage(jid, { text: `⚠️ שגיאה בניתוק טלגרם: ${err.message}` });
         }
@@ -1879,44 +1712,27 @@ async function handleIncomingMessage(sock, upsert, sessionContext) {
       if (isWaDisconnect) {
         try {
           await disconnectDriverSession(senderPhone);
-          await sock.sendMessage(jid, {
-            text: `✅ *חיבור הוואטסאפ שלך נותק ואופס בהצלחה.*\nסשן הסריקה נסגר והקבצים נוקו.\nלחיבור מחדש בכל עת, שלח *"חבר אותי"*.`,
-          });
+          cancelPairingReminder(senderPhone);
+          await sendCard(sock, jid, ui.disconnectedWaCard());
         } catch (err) {
           await sock.sendMessage(jid, { text: `⚠️ שגיאה בניתוק וואטסאפ: ${err.message}` });
         }
         continue;
       }
 
-      // תפריט ניתוק ואיפוס כללי
-      if (norm === "נתק" || norm === "ניתוק" || norm === "איפוס" || norm === "אפס" || norm === "נתק הכל") {
-        const tgStatus = getTelegramStatus(senderPhone);
-        const isWaConnected = isDriverSessionConnected(senderPhone);
-        let resetMsg = `🔌 *תפריט ניתוק ואיפוס חשבון נהג:*\n\n`;
-        resetMsg += `📲 *וואטסאפ:* ${isWaConnected ? "✅ מחובר" : "⚪ מנותק"}\n`;
-        resetMsg += `✈️ *טלגרם:* ${tgStatus.connected ? "✅ מחובר" : "⚪ מנותק"}\n\n`;
-        resetMsg += `מה ברצונך לנתק / לאפס?\n\n`;
-        resetMsg += `1️⃣ *לניתוק טלגרם:* שלח *נתק טלגרם*\n`;
-        resetMsg += `2️⃣ *לניתוק וואטסאפ:* שלח *נתק וואטסאפ*\n\n`;
-        resetMsg += `💡 ניתן לנתק ולאפס בקלות גם דרך האתר בלוח הבקרה!`;
-        await sock.sendMessage(jid, { text: resetMsg });
-        continue;
-      }
-
-      // 4.1 בדיקת חיבור וואטסאפ ווב של הנהג
-      const isDriverConnected = isDriverSessionConnected(senderPhone);
+      // 4.1 חיבור הוואטסאפ של הנהג. נהג מקושר שרק מתחבר מחדש ממשיך לעבוד רגיל ולא מקבל קוד חדש.
+      const linkState = getDriverLinkState(senderPhone);
+      const isLinked = linkState === "connected" || linkState === "reconnecting";
       const connectMatch = norm.match(/^(?:חבר אותי|קוד חדש|חיבור|קוד|ווב)(?: ([0-9 ]{9,15}))?$/);
 
-      if (!isDriverConnected) {
+      if (!isLinked) {
         if (connectMatch) {
           let phoneForPairing = senderPhone;
           const explicit = connectMatch[1] ? cleanPhone(connectMatch[1].replace(/\s+/g, "")) : null;
 
           if (isLid(senderPhone)) {
             if (!explicit || !/^9725\d{8}$/.test(explicit)) {
-              await sock.sendMessage(jid, {
-                text: `📱 *לחיבור הוואטסאפ נדרש מספר סלולרי רגיל.*\n\n👉 שלח: *חבר אותי 0521234567*\n(במקום הדוגמה - המספר שלך)`
-              });
+              await sendCard(sock, jid, ui.needPhoneCard());
               continue;
             }
             registerLidMapping(jid, explicit);
@@ -1926,63 +1742,51 @@ async function handleIncomingMessage(sock, upsert, sessionContext) {
           }
 
           try {
-            await sock.sendMessage(jid, { text: `⏳ מפיק קוד צימוד ייעודי לוואטסאפ שלך (${phoneForPairing})...` });
             const code = await requestDriverPairingCode(phoneForPairing, {
               onRideMessage: handleIncomingMessage,
               onReaction: handleReaction,
               onStatusChange: handleDriverStatusChange,
               onEvent: recordEvent,
             });
-            await sendPairingCodeMessages(sock, jid, code, m);
+            await sendPairingCodeMessages(sock, jid, code);
             schedulePairingReminder(sock, jid, phoneForPairing);
             recordEvent("system", `נוצר קוד חיבור נהג עבור ${phoneForPairing}`);
           } catch (err) {
-            await sock.sendMessage(jid, {
-              text: `⚠️ לא ניתן היה להפיק קוד חיבור כעת: ${err.message}\nנסה שוב בעוד מספר רגעים או פנה למנהל.`
-            });
+            if (err.code === "PAIRING_COOLDOWN" && err.activeCode) {
+              await sendPairingCodeMessages(sock, jid, err.activeCode, { waitSec: err.waitSec });
+            } else if (err.code === "PAIRING_COOLDOWN") {
+              await sendCard(sock, jid, ui.pairingWaitCard(err.waitSec));
+            } else if (err.code === "ALREADY_LINKED") {
+              await sendCard(sock, jid, ui.alreadyLinkedCard("reconnecting"));
+            } else {
+              await sendCard(sock, jid, ui.pairingFailedCard(err.message));
+            }
           }
           continue;
         }
 
-        if (norm === "תפריט" || norm === "menu" || norm === "עזרה") {
-          const tgStatus = getTelegramStatus(senderPhone);
-          let unlinkedMenu = `🚕 *נסיעות בוט איכותי - תפריט*\n\n`;
-          unlinkedMenu += `📊 *סטטוס חשבון:* ✅ מאושר במערכת\n`;
-          unlinkedMenu += `📲 *סטטוס וואטסאפ:* ⚪ לא מחובר (נדרש חיבור ראשוני)\n`;
-          unlinkedMenu += `✈️ *סטטוס טלגרם:* ${tgStatus.connected ? "✅ מחובר ומסונכרן" : "⚪ לא מחובר"}\n\n`;
-          unlinkedMenu += `כדי שנוכל לסרוק עבורך נסיעות מקבוצות הוואטסאפ שלך:\n`;
-          unlinkedMenu += `👉 השב עכשיו *"חבר אותי"*\n\n`;
-          unlinkedMenu += `לחיבור או ניהול טלגרם:\n`;
-          unlinkedMenu += `👉 שלח *"חבר טלגרם"*, *"מדריך טלגרם"* או *"נתק טלגרם"*`;
-          await sock.sendMessage(jid, { text: unlinkedMenu });
+        if (norm === "תפוס" || norm === "עצור" || norm === "סגור") {
+          stopUserSearch(senderPhone);
+          await sendDriverScreen(sock, jid, senderPhone, "menu");
           continue;
         }
 
+        // כפתור או פקודת חיפוש תמיד מקבלים מענה; שאר ההודעות - פעם ב-30 דקות
+        const mustReply = Boolean(extractInteractiveResponse(m.message)) || /^(?:פנוי|פ) /.test(norm);
         const lastPromptTime = recentUnlinkedPrompts.get(senderPhone) || 0;
         const now = Date.now();
-        if (now - lastPromptTime > 30 * 60 * 1000) {
+        if (mustReply || now - lastPromptTime > 30 * 60 * 1000) {
           recentUnlinkedPrompts.set(senderPhone, now);
-          const unlinkedPrompt = `שלום ${pushName}! 👋\n\n` +
-            `🎉 *חשבונך מאושר, אך הוואטסאפ שלך עדיין אינו מחובר לסריקת נסיעות.*\n\n` +
-            `👉 להתחלה השב *"חבר אותי"* ותקבל קוד צימוד בן 8 תווים.\n` +
-            `✈️ לחיבור טלגרם: השב *"חבר טלגרם"* או *"מדריך טלגרם"*.`;
-          await sock.sendMessage(jid, { text: unlinkedPrompt });
+          await sendDriverScreen(sock, jid, senderPhone, "menu");
         }
         continue;
       }
 
       // ==============================================================
-      // נהג מאושר שהוואטסאפ שלו מחובר
+      // נהג מאושר שהוואטסאפ שלו מקושר
       // ==============================================================
       if (connectMatch) {
-        await sock.sendMessage(jid, {
-          text: `✅ הוואטסאפ שלך כבר מחובר ומסונכרן למערכת.\nשלח פקודות חיפוש כגון *"פנוי שמש"*, *"פנוי שמש פנימי"*, *"פ ים שמש"*, או *"תפריט"*.\nלניתוק: שלח *"נתק וואטסאפ"*.`
-        });
-        continue;
-      }
-
-      if (norm === "תפריט" || norm === "menu" || norm === "עזרה") {
-        await sendHelpMenu(sock, jid, senderPhone);
+        await sendCard(sock, jid, ui.alreadyLinkedCard(linkState));
         continue;
       }
 
@@ -2115,7 +1919,9 @@ async function handleIncomingMessage(sock, upsert, sessionContext) {
           }
         }
 
-        let claimReply = `🚕 *נסיעה נתפסה! בהצלחה!*\n\n`;
+        let claimReply = sentDirect || sentInGroup || sentToDriveBot
+          ? `✋ *בקשת הנסיעה נשלחה. בהצלחה!*\n\n`
+          : `⚠️ *בקשת הנסיעה לא נשלחה.*\n\n`;
         if (isDriveBot) {
           claimReply += `🤖 *נסיעת דרייבוט:* נשלחה פקודת תפיסה ("${parsedRoute.drivebotCommand || claimTextToSend}") ישירות לבוט של דרייבוט.\n✅ *לא נשלחה תגובה לקבוצה כנדרש!*\n`;
         } else {
@@ -2129,7 +1935,7 @@ async function handleIncomingMessage(sock, upsert, sessionContext) {
 
         if (!sentDirect && !sentInGroup && !sentToDriveBot) {
           if (!driverSock || driverSession?.status !== "connected") {
-            claimReply += `⚠️ וואטסאפ הנהג שלך אינו מחובר למערכת (שלח *"חבר אותי"* לחיבור כדי שהבוט יוכל להגיב בשמך).\n`;
+            claimReply += `⚠️ הוואטסאפ שלך מתחבר מחדש כרגע. נסה שוב בעוד כמה שניות, או פנה ישירות לסדרן.\n`;
           } else {
             claimReply += `⚠️ לא זוהה מספר סדרן ישיר ואין גישת כתיבה בקבוצה.\n`;
           }
@@ -2214,7 +2020,7 @@ async function handleIncomingMessage(sock, upsert, sessionContext) {
         stopUserSearch(senderPhone);
         recordEvent("command", `חיפוש הופסק ע"י ${pushName} (${senderPhone})`);
         await sendSticker(sock, jid, STICKER_STOPPED_PATH);
-        await sendTextWithMenuButton(sock, jid, `🛑 *החיפוש הופסק בהצלחה!* (מצב תפוס)\nלחזרה כתוב "פנוי..." או "תפריט".`);
+        await sendCard(sock, jid, ui.searchStoppedCard());
         continue;
       }
 
@@ -2231,39 +2037,33 @@ async function handleIncomingMessage(sock, upsert, sessionContext) {
         // אפשרות א': אישור הוספה במקביל
         if (norm === "1" || norm === "כן" || norm === "הוסף" || norm === "אשר" || norm === "אישור" || norm === "תוסיף" || norm === "להוסיף") {
           const res = confirmPendingSearch(senderPhone, false);
-          let msg = `✅ *החיפוש נוסף בהצלחה!*\n\n📋 *כל החיפושים הפעילים שלך במקביל:*\n`;
-          res.current.searches.forEach((s, idx) => {
-            msg += `${idx + 1}. ${s.displayText} (${describeMode(s)})\n`;
-          });
-          msg += `\n🚕 הבוט יסנן עבורך נסיעות מכל המסלולים הללו בו-זמנית!\n💡 להפסקת כל החיפושים שלח "תפוס".`;
           recordEvent("command", `נוסף חיפוש מקבילי עבור ${senderPhone}: ${res.added.displayText}`);
           await sendSticker(sock, jid, STICKER_SPEED_PATH);
-          await sock.sendMessage(jid, { text: msg });
+          await sendCard(sock, jid, ui.searchUpdatedCard({ title: "✅ *החיפוש נוסף.*", search: res.current }));
           continue;
         }
 
         // אפשרות ב': החלפה (רק החיפוש החדש)
         if (norm === "2" || norm === "החלף" || norm === "רק זה" || norm === "החלפה") {
           const res = confirmPendingSearch(senderPhone, true);
-          const s = res.current.searches[0];
-          let msg = `🔄 *החיפושים הוחלפו בהצלחה!*\n\n🔍 *חיפוש פעיל כעת:*\n1. ${s.displayText} (${describeMode(s)})\n\nברגע שתעלה נסיעה מתאימה - תקבל התראה מיידית.`;
-          recordEvent("command", `הוחלף חיפוש עבור ${senderPhone}: ${s.displayText}`);
+          recordEvent("command", `הוחלף חיפוש עבור ${senderPhone}: ${res.current.displayText}`);
           await sendSticker(sock, jid, STICKER_LIKE_PATH);
-          await sock.sendMessage(jid, { text: msg });
+          await sendCard(sock, jid, ui.searchUpdatedCard({ title: "🔁 *החיפוש הוחלף.*", search: res.current }));
           continue;
         }
 
         // אפשרות ג': ביטול (do nothing / cancel staging)
         if (norm === "ביטול" || norm === "בטל" || norm === "לא" || norm === "0" || norm === "אל תוסיף") {
           const res = cancelPendingSearch(senderPhone);
-          let msg = `👌 *הבקשה בוטלה.* נשארת עם החיפושים הקיימים שלך:\n`;
-          res.current.searches.forEach((s, idx) => {
-            msg += `${idx + 1}. ${s.displayText}\n`;
-          });
           recordEvent("command", `בוטלה הוספת חיפוש עבור ${senderPhone}`);
-          await sock.sendMessage(jid, { text: msg });
+          await sendCard(sock, jid, ui.searchUpdatedCard({ title: "👌 *בוטל, לא שיניתי כלום.*", search: res.current }));
           continue;
         }
+      }
+
+      if (!currentSearch.pendingSearch && [ui.CMD.add, ui.CMD.replace, ui.CMD.cancel].includes(norm)) {
+        await sendCard(sock, jid, ui.nothingPendingCard());
+        continue;
       }
 
       // 2. מחיקת חיפוש בודד לפי מספר (למשל: "מחק 2", "הסר 1")
@@ -2272,16 +2072,7 @@ async function handleIncomingMessage(sock, upsert, sessionContext) {
         const num = parseInt(removeMatch[1], 10);
         const res = removeUserSearchByIndex(senderPhone, num);
         if (res.success) {
-          let msg = `🗑️ *החיפוש "${res.removed.displayText}" הוסר.*\n\n`;
-          if (res.current.searches.length > 0) {
-            msg += `📋 *חיפושים שנותרו פעילים במקביל:*\n`;
-            res.current.searches.forEach((s, idx) => {
-              msg += `${idx + 1}. ${s.displayText}\n`;
-            });
-          } else {
-            msg += `🛑 כל החיפושים הוסרו (מצב תפוס).`;
-          }
-          await sock.sendMessage(jid, { text: msg });
+          await sendCard(sock, jid, ui.searchUpdatedCard({ title: `🗑️ *הוסר:* ${res.removed.displayText}`, search: res.current }));
           continue;
         }
       }
@@ -2297,46 +2088,21 @@ async function handleIncomingMessage(sock, upsert, sessionContext) {
         const stageResult = addOrStageUserSearch(senderPhone, parsed);
 
         if (stageResult.status === "already_exists") {
-          await sock.sendMessage(jid, {
-            text: `⚠️ *חיפוש זה כבר מוגדר ופעיל אצלך ברשימה!*\n${parsed.displayText}`
-          });
+          await sendCard(sock, jid, ui.searchExistsCard({ search: stageResult.current }));
           continue;
         }
 
         if (stageResult.status === "activated_immediately") {
-          let responseMsg = `✅ *החיפוש הופעל בהצלחה:*\n\n`;
-          responseMsg += `🔍 *מוגדר:* ${parsed.displayText}\n`;
-          responseMsg += `📌 *סינון:* ${describeMode(parsed)}\n\n`;
-          responseMsg += `ברגע שתעלה נסיעה מתאימה בקבוצות שלך - תקבל התראה מיידית.\n\n`;
-          responseMsg += `💡 *רוצה לחפש מסלול נוסף במקביל?* פשוט שלח פקודה נוספת (למשל: "פ ים בב").`;
-
           console.log(`[פקודת נהג ${senderPhone}]: "${text}" -> ${parsed.mode} | ${parsed.displayText}`);
           recordEvent("command", `הופעל חיפוש עבור ${senderPhone}: ${parsed.displayText}`);
 
           await sendSticker(sock, jid, STICKER_LIKE_PATH);
-          await sendTextWithMenuButton(sock, jid, responseMsg, [{ text: "🛑 תפוס", id: "תפוס" }]);
+          await sendCard(sock, jid, ui.searchStartedCard({ search: stageResult.current }));
           continue;
         }
 
         if (stageResult.status === "pending_confirmation") {
-          const currentList = stageResult.current.searches.map((s, idx) => `${idx + 1}. ${s.displayText}`).join("\n");
-          let promptMsg = `🔍 *יש לך כרגע חיפוש פעיל במערכת:*\n${currentList}\n\n`;
-          promptMsg += `❓ *האם להוסיף את החיפוש החדש במקביל?*\n`;
-          promptMsg += `📍 *חיפוש חדש:* ${parsed.displayText} (${describeMode(parsed)})\n\n`;
-          promptMsg += `*השב עכשיו במספר או מילה:*\n`;
-          promptMsg += `👉 *1* או *הוסף* (או *כן*) ⬅️ להוספה במקביל\n`;
-          promptMsg += `👉 *2* או *החלף* ⬅️ להחליף את כל החיפושים בחדש בלבד\n`;
-          promptMsg += `👉 *ביטול* (או *לא*) ⬅️ להישאר עם הקיים ללא שינוי`;
-
-          await sendInteractiveButtons(sock, jid, {
-            body: promptMsg,
-            footer: "נסיעות בוט איכותי",
-            buttons: [
-              { text: "➕ הוסף במקביל", id: "1" },
-              { text: "🔁 החלף", id: "2" },
-              { text: "✖️ ביטול", id: "ביטול" },
-            ],
-          });
+          await sendCard(sock, jid, ui.pendingSearchCard({ search: stageResult.current, pending: stageResult.pending }));
           continue;
         }
       }
@@ -2469,6 +2235,7 @@ startDashboard({
   processDriverCommand,
   describeMode,
   normalizeText,
+  notifySearchChangedFromSite,
   isRegistered: () => Boolean(getMainBotStatus().registered),
   groupCount: () => groupMetadataCache.size,
   dedupeSize: () => deduper.size,

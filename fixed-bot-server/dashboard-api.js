@@ -200,6 +200,25 @@ function extractToken(req) {
   return null;
 }
 
+// הודעת וואטסאפ לנהג על שינוי חיפוש מהאתר. כשל בהודעה לא מכשיל את השינוי עצמו.
+const NOTICE_TEXT = {
+  sent: "נשלחה הודעה לנהג בוואטסאפ",
+  sending: "ההודעה לנהג בשליחה",
+  unchanged: "ללא שינוי, לא נשלחה הודעה",
+  offline: "לא נשלחה הודעה לנהג: הבוט הראשי מנותק",
+  failed: "שליחת ההודעה לנהג נכשלה",
+};
+
+async function notifyDriverOfSiteChange(phone, before, after) {
+  if (!ctx?.notifySearchChangedFromSite) return "failed";
+  try {
+    return await ctx.notifySearchChangedFromSite(phone, before, after);
+  } catch (err) {
+    recordError("site_search_notice", err, { phone });
+    return "failed";
+  }
+}
+
 function requireAuth(req, res, next) {
   const token = extractToken(req);
   if (!token || !isValidToken(token)) {
@@ -1170,7 +1189,7 @@ export function startDashboard(runtime) {
     res.json({ ok: true, activeSearch: state.active ? state.displayText : null, search: state, phone: cleanPhone(phone) });
   });
 
-  app.post("/api/search", requireAuth, (req, res) => {
+  app.post("/api/search", requireAuth, async (req, res) => {
     const phone = req.body?.phone || loadUsersData().adminPhone;
     const cleanP = cleanPhone(phone);
     const cmd = String(req.body?.command || req.body?.text || "").trim();
@@ -1180,10 +1199,13 @@ export function startDashboard(runtime) {
       return res.json({ ok: true, success: true, message: "האות 'ת' לבדה אינה פקודת תפוס", search: state });
     }
 
+    const before = ctx?.getUserSearch?.(cleanP);
+
     if (/(^| )(תפוס|עצור|סגור)( |$)/.test(cmd)) {
       const empty = ctx?.stopUserSearch ? ctx.stopUserSearch(cleanP) : {};
       recordEvent("command", `חיפוש הופסק (תפוס) עבור ${cleanP}`);
-      return res.json({ ok: true, success: true, message: "החיפוש הופסק בהצלחה (תפוס)", search: empty });
+      const driverNotice = await notifyDriverOfSiteChange(cleanP, before, empty);
+      return res.json({ ok: true, success: true, message: `החיפוש הופסק (תפוס) · ${NOTICE_TEXT[driverNotice]}`, driverNotice, search: empty });
     }
 
     let parsedCommand = cmd;
@@ -1193,18 +1215,21 @@ export function startDashboard(runtime) {
 
     const parsed = ctx?.processDriverCommand ? ctx.processDriverCommand(parsedCommand) : {};
     const nextState = { active: true, ...parsed };
-    ctx?.setUserSearch?.(cleanP, nextState);
+    const saved = ctx?.setUserSearch?.(cleanP, nextState);
     recordEvent("command", `הופעל חיפוש עבור ${cleanP}: ${nextState.displayText}`);
+    const driverNotice = await notifyDriverOfSiteChange(cleanP, before, saved);
 
-    res.json({ ok: true, success: true, message: `חיפוש הופעל: ${nextState.displayText}`, search: nextState });
+    res.json({ ok: true, success: true, message: `חיפוש הופעל: ${nextState.displayText} · ${NOTICE_TEXT[driverNotice]}`, driverNotice, search: nextState });
   });
 
-  app.post("/api/search/stop", requireAuth, (req, res) => {
+  app.post("/api/search/stop", requireAuth, async (req, res) => {
     const phone = req.body?.phone || loadUsersData().adminPhone;
     const cleanP = cleanPhone(phone);
+    const before = ctx?.getUserSearch?.(cleanP);
     const empty = ctx?.stopUserSearch ? ctx.stopUserSearch(cleanP) : {};
     recordEvent("command", `חיפוש הופסק מהאתר עבור ${cleanP}`);
-    res.json({ ok: true, success: true, message: "החיפוש הופסק בהצלחה (תפוס)", search: empty });
+    const driverNotice = await notifyDriverOfSiteChange(cleanP, before, empty);
+    res.json({ ok: true, success: true, message: `החיפוש הופסק (תפוס) · ${NOTICE_TEXT[driverNotice]}`, driverNotice, search: empty });
   });
 
   // ==========================================
