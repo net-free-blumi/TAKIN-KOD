@@ -48,7 +48,7 @@ export function parseFilters(body, current) {
     next[key] = value;
   };
 
-  if (has("blockedGroups")) list("blockedGroups", 1500, 80, (v) => v.endsWith("@g.us"));
+  if (has("blockedGroups")) list("blockedGroups", 1500, 80, (v) => v.endsWith("@g.us") || /^tg:\d+$/.test(v));
   if (has("hideVehicles")) list("hideVehicles", 4, 20, (v) => Object.hasOwn(VEHICLES, v));
   if (has("blockedWords")) {
     list("blockedWords", 20, 40, (v) => Boolean(normalizeText(v)));

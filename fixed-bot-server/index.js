@@ -111,6 +111,7 @@ import {
   hasPendingTelegramVerification,
   sendRideAlertToTelegram,
   getTelegramDialogs,
+  telegramGroupKey,
 } from "./telegram-manager.js";
 import { startTelegramBot, getBotLinkStatus, getTelegramBotInfo } from "./telegram-bot.js";
 import { describeRoute } from "./driver-app-route.js";
@@ -2365,10 +2366,21 @@ const driverApp = createDriverApp({
         sock.groupFetchAllParticipating(),
         new Promise((resolve, reject) => { timer = setTimeout(() => reject(new Error("groups timeout")), 18000); }),
       ]);
-      return Object.values(all || {})
+      const whatsapp = Object.values(all || {})
         .filter((g) => String(g?.id).endsWith("@g.us") && !g.isCommunity)
         .map((g) => ({ id: g.id, name: g.subject || "קבוצה ללא שם", size: g.size || g.participants?.length || 0 }))
         .sort((a, b) => a.name.localeCompare(b.name, "he", { numeric: true }));
+      // גם הסינון חל על טלגרם, ולכן גם הרשימה
+      let telegramTimer;
+      const dialogs = await Promise.race([
+        getTelegramDialogs(phone),
+        new Promise((resolve) => { telegramTimer = setTimeout(() => resolve([]), 4000); }),
+      ]).catch(() => []);
+      clearTimeout(telegramTimer);
+      const telegram = dialogs
+        .filter((d) => (d.isGroup || d.isChannel) && !d.title.includes("נסיעות זמינות") && telegramGroupKey(d.id))
+        .map((d) => ({ id: telegramGroupKey(d.id), name: `טלגרם · ${d.title || "ללא שם"}`, size: 0 }));
+      return [...whatsapp, ...telegram];
     } catch (err) {
       recordError("driver_app_groups", err);
       return null;
@@ -2563,6 +2575,7 @@ async function boot() {
   setTelegramSystemCallbacks({
     getUserSearch,
     matchesAnySearch,
+    filterRide: driverApp.filterRide,
     deliverRideAlert,
     cleanSpamFromRide,
     detectNonRide,

@@ -50,6 +50,7 @@ const pendingVerifications = new Map();
 
 // קולבקים של המערכת (שליחת התראה לוואטסאפ, רישום אירועים, בדיקת חיפוש)
 let systemCallbacks = {
+  filterRide: () => null,
   getUserSearch: () => ({ active: false }),
   matchesAnySearch: () => ({ ok: false }),
   deliverRideAlert: async () => ({ ok: false }),
@@ -556,6 +557,13 @@ async function handleIncomingTelegramMessage(client, driverPhone, message, sourc
       return;
     }
 
+    // הגדרות הנסיעות של הנהג, לפני הכפילות כמו בוואטסאפ
+    const skip = systemCallbacks.filterRide(driverPhone, { text: cleanedText, groupJid: telegramGroupKey(rawChatId) });
+    if (skip) {
+      systemCallbacks.recordEvent?.("filter_reject", `נהג ${driverPhone}: ${skip}`);
+      return;
+    }
+
     // בדיקת כפילות ייעודית לטלגרם (וואטסאפ לא חוסם טלגרם)
     const dup = systemCallbacks.deduper.check(cleanedText, `tg_${driverPhone}`);
     if (dup.duplicate) {
@@ -740,6 +748,12 @@ export async function findDriverAlertGroup(client, phone) {
     console.error(`שגיאה באיתור קבוצת טלגרם עבור ${p}:`, err.message);
   }
   return null;
+}
+
+// אותו ערוץ מופיע כ-777 וגם כ--100777
+export function telegramGroupKey(id) {
+  const digits = String(id ?? "").replace(/^-100/, "").replace(/^-/, "");
+  return /^\d+$/.test(digits) ? `tg:${digits}` : null;
 }
 
 // קבלת רשימת הדיאלוגים והקבוצות של הנהג
