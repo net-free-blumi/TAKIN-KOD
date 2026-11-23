@@ -140,6 +140,15 @@ const adminAi = createAdminAiFromEnv({
 
 export const BUG_REPORT_GROUP_JID = "120363402521442927@g.us";
 
+// מספר שכבר במערכת: מנהל, נהג מאושר או ממתין לאישור
+function isRegisteredPhone(raw) {
+  const phone = cleanPhone(raw);
+  if (!phone) return false;
+  if (isUserAdmin(phone) || isUserApproved(phone)) return true;
+  const data = loadUsersData();
+  return (data.pendingUsers || []).some((u) => cleanPhone(u.phone) === phone);
+}
+
 const groupMetadataCache = new Map();
 const GROUP_METADATA_FILE = new URL("./group-metadata.json", import.meta.url);
 
@@ -1616,10 +1625,12 @@ async function handleIncomingMessage(sock, upsert, sessionContext) {
           const directPhoneMatch = text.trim().match(/^(?:05\d-?\d{7}|9725\d{8})$/);
           if (directPhoneMatch) {
             const num = cleanPhone(directPhoneMatch[0]);
-            // אסור למפות מספר שהוקלד למספר המנהל: כל אחד יכול להקליד אותו ולקבל הרשאות מנהל
-            if (num && isUserAdmin(num)) {
-              console.warn(`⚠️ [זיהוי LID]: ניסיון לזהות LID ${jid} כמספר המנהל לפי טקסט. נחסם.`);
-              recordEvent("system", `⚠️ נחסם ניסיון להתחזות למנהל דרך הקלדת מספר (LID ${String(jid).slice(-6)})`);
+            // אסור למפות מספר שהוקלד למספר שכבר רשום (מנהל, נהג או ממתין): כל אחד יכול להקליד אותו ולהתחזות
+            if (num && isRegisteredPhone(num)) {
+              console.warn(`⚠️ [זיהוי LID]: ניסיון לזהות LID כמספר רשום לפי טקסט. נחסם.`);
+              recordEvent("system", `⚠️ נחסם ניסיון להתחזות למספר רשום דרך הקלדה (LID ${String(jid).slice(-6)})`);
+              await sock.sendMessage(jid, { text: "המספר הזה כבר רשום במערכת. שלח את ההודעה מהוואטסאפ של המספר עצמו, או פנה למנהל." });
+              continue;
             } else if (num && num.length >= 9 && num.length <= 12) {
               detectedPhone = num;
               console.log(`📱 [זיהוי LID]: משתמש סיפק בעצמו מספר טלפון בהודעה: ${num}`);
@@ -1880,6 +1891,12 @@ async function handleIncomingMessage(sock, upsert, sessionContext) {
           if (isLid(senderPhone)) {
             if (!explicit || !/^9725\d{8}$/.test(explicit)) {
               await sendCard(sock, jid, ui.needPhoneCard());
+              continue;
+            }
+            // מספר רשום משויך רק כשוואטסאפ עצמו מוסר אותו, לא לפי מה שהוקלד
+            if (isRegisteredPhone(explicit)) {
+              recordEvent("system", `⚠️ נחסם ניסיון לחבר מספר רשום מ-LID לא מזוהה (${String(jid).slice(-6)})`);
+              await sock.sendMessage(jid, { text: "המספר הזה כבר רשום במערכת. שלח \"חבר אותי\" מהוואטסאפ של המספר עצמו, או פנה למנהל." });
               continue;
             }
             registerLidMapping(jid, explicit);

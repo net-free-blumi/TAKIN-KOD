@@ -1523,9 +1523,16 @@ export function startDashboard(runtime) {
       });
     }
 
-    // 2. אימות סוד Webhook אם הוגדר בשרת (GITHUB_WEBHOOK_SECRET / WEBHOOK_SECRET)
+    // 2. מנהל מחובר באתר (כפתור הסנכרון), או סוד Webhook שהוגדר בשרת. בלי אחד מהם: חסום,
+    //    אחרת כל אחד יכול להפעיל מחדש את הבוט שוב ושוב. השרת ממילא בודק את גיטהאב כל 2 דקות
     const configuredSecret = process.env.GITHUB_WEBHOOK_SECRET || process.env.WEBHOOK_SECRET;
-    if (configuredSecret) {
+    const adminToken = extractToken(req);
+    const isAdmin = Boolean(adminToken && isValidToken(adminToken));
+    if (!isAdmin && !configuredSecret) {
+      recordEvent("system", `⚠️ נחסמה בקשת סנכרון בלי הרשאה מ-IP: ${ip}`);
+      return res.status(403).json({ ok: false, error: "סנכרון מבחוץ כבוי. התחבר לאתר הניהול." });
+    }
+    if (!isAdmin && configuredSecret) {
       const querySecret = req.query?.secret || req.body?.secret;
       const signature = req.headers["x-hub-signature-256"];
       let valid = false;

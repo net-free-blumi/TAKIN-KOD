@@ -439,7 +439,10 @@ await test("index.js: הבדיקה של ה-AI נמצאת לפני זיהוי LID
   const ai = src.indexOf("adminAi.maybeHandle(");
   const lid = src.indexOf("// 1. זיהוי שקט של מספר אמיתי מתוך מזהה LID");
   assert.ok(ai > 0 && lid > 0 && ai < lid);
-  assert.match(src, /if \(num && isUserAdmin\(num\)\)/);
+  // מספר רשום (גם המנהל) לא משויך לפי הקלדה, וגם לא דרך "חבר אותי"
+  assert.match(src, /if \(num && isRegisteredPhone\(num\)\)/);
+  assert.match(src, /if \(isRegisteredPhone\(explicit\)\)/);
+  assert.match(src, /isUserAdmin\(phone\) \|\| isUserApproved\(phone\)/);
 });
 
 console.log(`\n${passed} עברו, ${failures.length} נכשלו`);
