@@ -363,17 +363,38 @@ export function connectionsCard({ linkState, telegram, botLink }) {
   };
 }
 
-export function telegramCard({ telegram }) {
+// מדריך טלגרם מסודר: שני חיבורים נפרדים, שלב אחרי שלב, עם המצב של הנהג
+export function telegramCard({ telegram, botLink }) {
   const tg = Boolean(telegram?.connected || telegram?.hasSavedSession);
-  return {
-    text:
-      `✈️ *טלגרם*\n\n` +
-      `*סריקה:* הבוט סורק את הקבוצות והערוצים שלך בטלגרם.\n` +
-      `שלח *חבר טלגרם*, ואז את הקוד שיגיע לאפליקציית טלגרם. אם יש סיסמה דו-שלבית: *סיסמת טלגרם* והסיסמה.\n\n` +
-      `*קבלה:* שלח *בוט טלגרם* כדי לקבל את הנסיעות גם בפרטי בטלגרם.\n\n` +
-      `נסיעה מטלגרם מסומנת ✈️ ותופסים אותה באותו כפתור ת.`,
-    buttons: [...(tg ? [] : [BTN.connectTelegram]), { id: CMD.telegramBot, text: "📨 נסיעות בטלגרם" }, BTN.menu],
-  };
+  const receiving = Boolean(botLink?.enabled && botLink.linked);
+  let text = `✈️ *מדריך טלגרם*\n\nיש שני חיבורים נפרדים. אפשר אחד מהם או את שניהם.\n\n`;
+
+  if (botLink?.enabled) {
+    text +=
+      `*1️⃣ לקבל את הנסיעות גם בטלגרם* ${receiving ? "🟢 פעיל" : "⚪ לא פעיל"}\n` +
+      `▪️ לחץ על הכפתור *📨 פתח את הבוט בטלגרם* שבהמשך.\n` +
+      `▪️ טלגרם ייפתח בצ'אט עם הבוט @${botLink.username}. לחץ *Start* (התחל) בתחתית המסך.\n` +
+      `▪️ לא רואים Start? שלח לבוט את ההודעה שכבר כתובה בתיבת הכתיבה, כמו שהיא.\n` +
+      `▪️ הבוט יענה שאתה מחובר, ומעכשיו הנסיעות יגיעו גם לשם.\n` +
+      `▪️ להפסקה: שלח לבוט */stop*.\n` +
+      `⚠️ הקישור אישי שלך. אל תעביר אותו לאחרים.\n\n`;
+  }
+
+  text +=
+    `*${botLink?.enabled ? "2️⃣" : "1️⃣"} לסרוק את הקבוצות והערוצים שלך בטלגרם* ${tg ? "🟢 מחובר" : "⚪ לא מחובר"}\n` +
+    `כך נסיעות מהקבוצות שלך בטלגרם מגיעות אליך כמו מוואטסאפ.\n` +
+    `▪️ שלח כאן *חבר טלגרם*.\n` +
+    `▪️ טלגרם ישלח קוד בהודעה מ-*Telegram* באפליקציית טלגרם שלך.\n` +
+    `▪️ שלח כאן את הקוד (5 ספרות).\n` +
+    `▪️ יש לך סיסמה דו-שלבית? שלח *סיסמת טלגרם* ואחריה את הסיסמה.\n` +
+    `▪️ אפשר גם באפליקציית הנהגים: הגדרות > טלגרם, וגם במספר טלגרם אחר מהוואטסאפ.\n\n` +
+    `נסיעה מטלגרם מסומנת ✈️ ותופסים אותה באותו כפתור ת.`;
+
+  const buttons = [];
+  if (botLink?.enabled && !receiving) buttons.push({ text: "📨 פתח את הבוט בטלגרם", url: botLink.link });
+  if (!tg) buttons.push(BTN.connectTelegram);
+  buttons.push(BTN.menu);
+  return { text, buttons };
 }
 
 export function telegramBotCard({ botLink }) {
@@ -387,8 +408,13 @@ export function telegramBotCard({ botLink }) {
     };
   }
   return {
-    text: "📨 *נסיעות גם בטלגרם*\nלחץ על הכפתור, ואז על *Start* בטלגרם.",
-    buttons: [{ text: "✈️ פתח את הבוט", url: botLink.link }, BTN.menu],
+    text:
+      "📨 *נסיעות גם בטלגרם*\n\n" +
+      "▪️ לחץ על *✈️ פתח את הבוט*.\n" +
+      "▪️ בטלגרם לחץ *Start* (התחל). לא רואים? שלח את ההודעה שכבר כתובה בתיבת הכתיבה.\n" +
+      "▪️ הבוט יאשר שאתה מחובר.\n\n" +
+      "⚠️ הקישור אישי שלך. אל תעביר אותו לאחרים.",
+    buttons: [{ text: "✈️ פתח את הבוט", url: botLink.link }, { id: CMD.telegram, text: "📖 מדריך טלגרם" }, BTN.menu],
   };
 }
 

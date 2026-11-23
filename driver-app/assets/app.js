@@ -533,7 +533,9 @@
     const folded = !opts.full && pref('density', 'compact') === 'compact' && actions.length > 0;
     const tools = rideTools(ride, tool, live, checked, folded);
 
-    const card = h('article', { className: opts.full ? 'ride full' : 'ride' },
+    const telegram = ride.source === 'telegram';
+    const card = h('article', { className: `ride${opts.full ? ' full' : ''}${telegram ? ' tg' : ''}` },
+      telegram ? h('div', { className: 'source-tag' }, '✈️ טלגרם') : null,
       h('div', { className: 'top' },
         button(ride.dispatcher ? `${ride.group} · ${ride.dispatcher}` : ride.group, () => groupSheet(ride), 'group group-link', `הקבוצה ${ride.group}`),
         h('span', { className: ride.status === 'new' && Date.now() - ride.at < 120000 ? 'age fresh' : 'age' }, at)),
@@ -829,8 +831,31 @@
       button('סיום', closeSheet, 'dark wide'));
   }
 
+  // צבעים שהנהג בחר: כפתור ראשי (ת), כפתורים משניים, כלים ונסיעות טלגרם
+  const COLOR_KEYS = { primary: '--btn-main', secondary: '--btn-second', tools: '--btn-tools', telegram: '--tg' };
+  function textOn(hex) {
+    const n = parseInt(hex.slice(1), 16);
+    const [r, g, b] = [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+    return (r * 299 + g * 587 + b * 114) / 1000 > 150 ? '#18222f' : '#ffffff';
+  }
+  function applyColors() {
+    const colors = pref('colors', {});
+    const style = document.documentElement.style;
+    for (const [key, variable] of Object.entries(COLOR_KEYS)) {
+      const value = /^#[0-9a-f]{6}$/i.test(colors[key] || '') ? colors[key] : '';
+      if (value) {
+        style.setProperty(variable, value);
+        style.setProperty(`${variable}-text`, textOn(value));
+      } else {
+        style.removeProperty(variable);
+        style.removeProperty(`${variable}-text`);
+      }
+    }
+  }
+
   // גודל טקסט וערכת צבעים. "אוטומטי" לפי מצב הלילה של הטלפון
   function applySize() {
+    applyColors();
     const size = pref('size', 'normal');
     const theme = pref('theme', 'light');
     const dark = theme === 'dark' || (theme === 'auto' && device().night);

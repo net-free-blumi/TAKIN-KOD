@@ -162,9 +162,10 @@ final class Speech {
         String mode = settings.speechMode();
         double price = checked && settings.speakPrice() ? ride.optDouble("price", 0) : 0;
         // Only where from and where to, as the server summarised it
-        String spoken = ride.optString("detail".equals(mode) ? "spokenDetail" : "spoken");
-        String text = !"full".equals(mode) && !spoken.isEmpty()
-                ? SpeechText.summary(spoken, price)
+        String spoken = ride.optString("detail".equals(mode) ? "spokenDetail" : "full".equals(mode) ? "spokenFull" : "spoken");
+        // "ההודעה" = רק שורות הנסיעה מהשרת, עד 15 מילים. השכונות עד 10
+        String text = !spoken.isEmpty()
+                ? SpeechText.summary(spoken, price, "full".equals(mode) ? 15 : 10)
                 : SpeechText.announcement(ride.optString("text"),
                         checked ? ride.optString("from") : "", checked ? ride.optString("to") : "",
                         price, !"full".equals(mode));

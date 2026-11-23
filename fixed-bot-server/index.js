@@ -2396,6 +2396,7 @@ const driverApp = createDriverApp({
       text,
       ...describeRoute(text),
       group: data.groupName || "",
+      source: data.isTelegram ? "telegram" : "whatsapp",
       groupJid: String(data.groupJid || "").endsWith("@g.us") ? data.groupJid : null,
       dispatcher: data.senderName || "",
       contact: contact || null,

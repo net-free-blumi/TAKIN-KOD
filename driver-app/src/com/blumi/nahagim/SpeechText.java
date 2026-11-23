@@ -60,9 +60,13 @@ final class SpeechText {
 
     /** The server's summary: "פנימי בית שמש", "בית שמש לירושלים". Never more than 8 words. */
     static String summary(String spoken, double price) {
+        return summary(spoken, price, 8);
+    }
+
+    static String summary(String spoken, double price, int maxWords) {
         String[] words = clean(spoken).split("\\s+");
         StringBuilder line = new StringBuilder();
-        for (int i = 0; i < words.length && i < 8; i++) {
+        for (int i = 0; i < words.length && i < maxWords; i++) {
             if (words[i].isEmpty()) continue;
             if (line.length() > 0) line.append(' ');
             line.append(words[i]);

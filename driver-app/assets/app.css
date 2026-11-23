@@ -276,6 +276,24 @@ html.density-roomy .actions > button { min-height: 56px; }
 .guide summary { padding: 10px 0; font-weight: bold; }
 .guide ol { margin: 0 0 10px; padding-inline-start: 22px; }
 .guide li { margin-bottom: 6px; }
+/* colours the driver can change */
+:root { --btn-main: var(--taxi); --btn-main-text: #18222f; --btn-second: var(--bg); --btn-second-text: var(--ink);
+  --btn-tools: var(--muted); --btn-tools-text: var(--muted); --tg: #229ed9; --tg-text: #ffffff; }
+button.primary { background: var(--btn-main); border-color: var(--btn-main); color: var(--btn-main-text); }
+.actions > button:not(.primary):not(.more) { background: var(--btn-second); color: var(--btn-second-text); }
+.tools button { color: var(--btn-tools); }
+.ride.tg { border: 2px solid var(--tg); background: color-mix(in srgb, var(--tg) 7%, var(--bg)); }
+.source-tag {
+  display: inline-block; margin-bottom: 6px; padding: 2px 10px; border-radius: 10px;
+  background: var(--tg); color: var(--tg-text); font-size: .82rem; font-weight: bold;
+}
+.color-preview { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 8px; }
+.color-preview button { min-height: 44px; }
+.color-preview .second { background: var(--btn-second); color: var(--btn-second-text); }
+.color-preview .tool-sample { border: 0; color: var(--btn-tools); }
+.swatches { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+.swatch { width: 40px; min-height: 40px; height: 40px; padding: 0; border-radius: 20px; border: 2px solid var(--line); }
+.swatch.selected { outline: 3px solid var(--ink); outline-offset: 2px; }
 input[type=range] { min-height: 40px; padding: 0; border: 0; accent-color: var(--taxi); }
 .call {
   display: flex; align-items: center; justify-content: center; max-width: 100%; margin-top: 8px;

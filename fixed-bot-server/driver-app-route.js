@@ -16,7 +16,13 @@ const NOISE_LINE = /(https?:\/\/|www\.|wa\.me|t\.me|☚|לבקשת הנסיעה|
 export function rideCore(text) {
   const lines = [];
   for (const raw of String(text || "").split("\n")) {
-    const line = raw.replace(/[‎‏‪-‮]/g, "").trim();
+    // בלי סימני כיוון, ניקוד והדגשות של טלגרם ("**שמש פנימי**")
+    const line = raw
+      .replace(/[​-‏‪-‮⁦-⁩﻿]/g, "")
+      .replace(/[֑-ׇ]/g, "")
+      .replace(/[*_~`]+/g, "")
+      .replace(/\s+/g, " ")
+      .trim();
     if (!line) continue;
     if (SEPARATOR.test(line)) {
       if (lines.length) break;
@@ -35,16 +41,42 @@ export function rideCore(text) {
 
 const words = (text, max) => text.split(/\s+/).filter(Boolean).slice(0, max).join(" ");
 
+// בבית שמש כותבים שכונות באות אחת: "ב ל ד'", "מ - ג ל - ב", "רמה ד> ה", "מב לד"
+const ZONE = "(?:רמה\\s+[א-ה]|רמ[א-ה]|[א-ה])(?:['׳]|[0-9])?";
+const ZONE_PAIR = new RegExp(`(?:^|\\s)מ?\\s*-?\\s*(${ZONE})\\s*(?:ל\\s*-?\\s*|-?>+\\s*|עד\\s+)(${ZONE})(?=$|[\\s,.!])`);
+const zoneName = (raw) => `רמה ${raw.replace(/^רמה\s+|^רמ/, "").replace(/['׳0-9]/g, "")}`;
+
+/** שתי שכונות בתוך העיר, או null */
+function internalSpots(core, city, places) {
+  if (city === "בית שמש") {
+    for (const line of core.split("\n")) {
+      const m = ZONE_PAIR.exec(line.replace(/[,]/g, " "));
+      if (m) {
+        const [a, b] = [zoneName(m[1]), zoneName(m[2])];
+        if (a !== b) return [a, b];
+      }
+    }
+  }
+  const spots = places.filter((p) => p.city === city && p.kind !== "alias").map((p) => p.phrase);
+  const distinct = [...new Set(spots)];
+  return distinct.length >= 2 ? distinct.slice(0, 2) : null;
+}
+
 // מה שמקריאים: רק מאיפה לאיפה, בכמה מילים. "פנימי בית שמש", "בית שמש לירושלים"
 function spokenRoute(core, from, to, detail) {
+  const places = findPlaces(core);
+  // "שמש פנימי" בלי שכונה מזוהה: עדיין פנימי, ובפירוט השכונות לפי האותיות
+  if (!from && !to) {
+    const cities = [...new Set(places.map((p) => p.city))];
+    if (cities.length === 1 && /(^|\s)(פנימי|פ)(\s|$)/.test(core)) from = places[0];
+  }
   const internal = (from && to && from.city === to.city) || (from && !to && /(^|\s)(פנימי|פ)(\s|$)/.test(core));
   const spot = (p) => (p.kind === "alias" ? "" : p.phrase);
   if (internal) {
     const city = from.city;
     if (!detail) return `פנימי ${city}`;
-    const a = spot(from);
-    const b = to && spot(to);
-    return words(a && b && a !== b ? `פנימי ${city}, ${a} ל${b}` : `פנימי ${city}`, MAX_SPOKEN_WORDS);
+    const pair = internalSpots(core, city, places);
+    return words(pair ? `פנימי ${city}, ${pair[0]} ל${pair[1]}` : `פנימי ${city}`, MAX_SPOKEN_WORDS + 2);
   }
   if (from && to) {
     if (!detail) return `${from.city} ל${to.city}`;
@@ -65,6 +97,12 @@ function spokenRoute(core, from, to, detail) {
     const a = cities.find((p) => p.role === "from") || cities.find((p) => p.role !== "to") || cities[0];
     const b = cities.find((p) => p !== a && p.city !== a.city && p.role !== "from") || cities.find((p) => p.city !== a.city);
     return `${a.city} ל${b.city}`;
+  }
+  // "מב לד", "רמה ב ל ד": קיצורי שכונות של בית שמש גם בלי שם העיר
+  const zones = core.split("\n").map((line) => ZONE_PAIR.exec(line.replace(/[,]/g, " "))).find(Boolean);
+  if (zones && /[א-ה]/.test(zones[1]) && (/^רמ|^מ/.test(zones[0].trim()) || /^רמ/.test(zones[1]))) {
+    const [a, b] = [zoneName(zones[1]), zoneName(zones[2])];
+    if (a !== b) return detail ? `פנימי בית שמש, ${a} ל${b}` : "פנימי בית שמש";
   }
   // בלי מקום מוכר: תחילת השורה הראשונה, בלי מספרים וסימנים
   const first = (core.split("\n")[0] || "").replace(/[0-9]+([:.,/-][0-9]+)*/g, " ").replace(/[^\p{L}\s'"״׳-]/gu, " ");
@@ -119,5 +157,21 @@ export function describeRoute(fullText) {
     // להקראה: קצר מאוד, ובפירוט גם השכונות
     spoken: spokenRoute(text, from, to, false),
     spokenDetail: spokenRoute(text, from, to, true),
+    spokenFull: spokenMessage(text),
   };
+}
+
+// "ההודעה": רק שורות הנסיעה, בלי מספרים, קישורים, סימנים וחתימות. עד 15 מילים
+function spokenMessage(core) {
+  const lines = core.split("\n")
+    .map((line) => line
+      .replace(/(https?:\/\/|www\.)\S+/gi, " ")
+      .replace(/[0-9]+([:.,/-][0-9]+)*/g, " ")
+      .replace(/(^|\s)(ש"?ח|ש|₪|שח)(?=\s|$)/g, " ")
+      .replace(/[^\p{L}\s'"״׳-]/gu, " ")
+      .replace(/(^|\s)-+(?=\s|$)/g, " ")
+      .replace(/\s+/g, " ")
+      .trim())
+    .filter((line) => line.length > 1);
+  return words(lines.join(", "), 15).replace(/[\s,]+$/, "");
 }

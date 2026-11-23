@@ -5,7 +5,7 @@ window.createSettings = function createSettings(ctx) {
   const { h, icon, button, toggle, segments, toast, sheet, closeSheet, native, api, local } = ctx;
   const TITLES = {
     filters: 'נסיעות וסינון', groups: 'קבוצות', claim: 'בקשת נסיעה', location: 'מיקום ומרחק',
-    speech: 'הקראה קולית', alerts: 'התראות', display: 'תצוגה', help: 'מדריכים', telegram: 'טלגרם', chatMute: 'התראות מצ\'אטים',
+    speech: 'הקראה קולית', alerts: 'התראות', display: 'תצוגה', help: 'מדריכים', telegram: 'טלגרם', colors: 'צבעים', chatMute: 'התראות מצ\'אטים',
   };
   const VEHICLES = [
     ['station', 'סטיישן'], ['van', 'מיניוואן, 6-7 מקומות'], ['eight', '8 מקומות'], ['minibus', 'מיניבוס, 10 ומעלה'],
@@ -488,6 +488,41 @@ window.createSettings = function createSettings(ctx) {
     telegram() {
       return [telegramScreen()];
     },
+
+    colors() {
+      const PALETTE = ['#f5c542', '#ff8a00', '#e53935', '#d81b60', '#8e24aa', '#3949ab', '#1e88e5', '#229ed9',
+        '#00897b', '#2e7d32', '#7cb342', '#6d4c41', '#546e7a', '#18222f', '#ffffff'];
+      const ITEMS = [
+        ['primary', 'כפתור ראשי', 'ת, קיבלתי, סיימתי'],
+        ['secondary', 'כפתורים משניים', 'לפרטי, לא קיבלתי, שעון'],
+        ['tools', 'כפתורי כלים', 'צ\'אט, Waze, הקרא, העתק'],
+        ['telegram', 'נסיעות מטלגרם', 'המסגרת והכותרת של נסיעה מטלגרם'],
+      ];
+      const colors = ctx.pref('colors', {});
+      const set = (key, value) => {
+        const next = { ...ctx.pref('colors', {}) };
+        if (value) next[key] = value;
+        else delete next[key];
+        ctx.setPref('colors', next);
+        ctx.applySize();
+        ctx.render();
+      };
+      return [
+        h('div', { className: 'color-preview' },
+          button('ת', () => {}, 'primary'), button('לפרטי', () => {}, 'second'),
+          button(icon('chat'), () => {}, 'tool-sample', 'דוגמה לכפתור כלים'),
+          h('span', { className: 'source-tag' }, '✈️ טלגרם')),
+        ITEMS.map(([key, title, note]) => section(
+          h('h2', null, title), h('p', { className: 'muted' }, note),
+          h('div', { className: 'swatches' },
+            PALETTE.map((color) => {
+              const el = button('', () => set(key, color), colors[key] === color ? 'swatch selected' : 'swatch', color);
+              el.style.backgroundColor = color;
+              return el;
+            }),
+            button('ברירת מחדל', () => set(key, ''), colors[key] ? 'chip' : 'chip selected')))),
+      ];
+    },
   };
 
   function home() {
@@ -509,6 +544,7 @@ window.createSettings = function createSettings(ctx) {
       link('speech', info.speech ? 'פועלת, רק כשהמסך דלוק' : 'כבויה'),
       link('alerts', info.alerts ? 'פועלות' : 'כבויות'),
       link('display', 'מצב כהה, גודל טקסט, מרחק וזמן'),
+      link('colors', 'צבע לכל כפתור ולנסיעות טלגרם'),
       link('telegram', 'חיבור, ניתוק ומספר אחר'),
       link('help', 'מדריך לכל נושא'),
       info.chatKey ? button('ניתוק הצ\'אטים מהטלפון הזה', ctx.chatsOff, 'wide') : null,

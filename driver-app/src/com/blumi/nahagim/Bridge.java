@@ -22,7 +22,7 @@ final class Bridge {
     private final ExecutorService network = Executors.newFixedThreadPool(5);
     private final ExecutorService chatNetwork = Executors.newFixedThreadPool(4);
     private final ChatLink chats;
-    private static final String PREFS = "saved|last|size|compact|theme|showKm|showEta|askBusy|logRange";
+    private static final String PREFS = "saved|last|size|compact|theme|showKm|showEta|askBusy|logRange|colors|density|lines";
 
     Bridge(MainActivity activity) {
         this.activity = activity;
