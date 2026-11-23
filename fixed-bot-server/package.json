@@ -9,7 +9,8 @@
     "test": "node test-all-user-bugs.mjs"
   },
   "dependencies": {
-    "@whiskeysockets/baileys": "^7.0.0-rc14",
+    "@anthropic-ai/sdk": "^1.12.0",
+    "@whiskeysockets/baileys": "7.0.0-rc14",
     "better-sqlite3": "^11.8.1",
     "dotenv": "^16.4.7",
     "express": "^4.21.2",
