@@ -49,6 +49,8 @@ async function call(method, body = {}) {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
+    // getUpdates מחכה עד 50 שניות; לשאר הבקשות 20 שניות, כדי שבקשה תקועה לא תעצור את הבוט
+    signal: AbortSignal.timeout(method === "getUpdates" ? 70000 : 20000),
   });
   const data = await res.json().catch(() => ({}));
   if (!data.ok) {
@@ -218,37 +220,72 @@ async function pollLoop() {
   }
 }
 
+// ניסיונות חוזרים בעלייה: בזמן העלייה השרת עמוס בשחזור חיבורי וואטסאפ, וה-fetch הראשון לטלגרם נכשל לפעמים.
+// בעבר ניסיון אחד שנכשל השאיר את הבוט כבוי עד ההפעלה הבאה של השרת.
+const START_RETRY_MS = [5000, 15000, 30000, 60000, 120000, 300000];
+let startRetryTimer = null;
+
+function describeFetchError(e) {
+  const cause = e?.cause?.code || e?.cause?.message;
+  return cause ? `${e.message} (${cause})` : e?.message || String(e);
+}
+
+async function tryStartOnce() {
+  const me = await call("getMe");
+  botUsername = me.username;
+  await call("deleteWebhook", { drop_pending_updates: false }).catch(() => {});
+  await call("setMyCommands", {
+    commands: [
+      { command: "start", description: "התחברות לקבלת נסיעות" },
+      { command: "status", description: "מצב החיבור והחיפוש" },
+      { command: "stop", description: "הפסקת קבלת נסיעות" },
+    ],
+  }).catch(() => {});
+  running = true;
+  console.log(`✈️ בוט הטלגרם הראשי פעיל: @${botUsername} (${Object.keys(links).length} נהגים מקושרים)`);
+  pollLoop();
+}
+
 export async function startTelegramBot(dependencies = {}) {
-  deps = { ...deps, ...dependencies };
+  const { retryDelaysMs, ...rest } = dependencies;
+  deps = { ...deps, ...rest };
+  const delays = Array.isArray(retryDelaysMs) && retryDelaysMs.length ? retryDelaysMs : START_RETRY_MS;
   token = String(process.env.TELEGRAM_BOT_TOKEN || "").trim();
   if (!token) {
     console.log("ℹ️ TELEGRAM_BOT_TOKEN לא הוגדר - בוט הטלגרם הראשי כבוי (נסיעות נשלחות בוואטסאפ).");
     return false;
   }
+  if (running) return true;
+  if (startRetryTimer) clearTimeout(startRetryTimer);
+  startRetryTimer = null;
   loadLinks();
-  try {
-    const me = await call("getMe");
-    botUsername = me.username;
-    await call("deleteWebhook", { drop_pending_updates: false }).catch(() => {});
-    await call("setMyCommands", {
-      commands: [
-        { command: "start", description: "התחברות לקבלת נסיעות" },
-        { command: "status", description: "מצב החיבור והחיפוש" },
-        { command: "stop", description: "הפסקת קבלת נסיעות" },
-      ],
-    }).catch(() => {});
-  } catch (e) {
-    console.error("❌ הפעלת בוט הטלגרם נכשלה:", e.message);
-    return false;
-  }
-  running = true;
-  console.log(`✈️ בוט הטלגרם הראשי פעיל: @${botUsername} (${Object.keys(links).length} נהגים מקושרים)`);
-  pollLoop();
-  return true;
+
+  let attempt = 0;
+  const attemptStart = async () => {
+    startRetryTimer = null;
+    try {
+      await tryStartOnce();
+      if (attempt > 0) deps.recordEvent("system", `✈️ בוט הטלגרם עלה אחרי ${attempt + 1} ניסיונות`);
+      return true;
+    } catch (e) {
+      if (e.code === 401) {
+        console.error("❌ TELEGRAM_BOT_TOKEN שגוי - בוט הטלגרם כבוי");
+        return false;
+      }
+      const wait = delays[Math.min(attempt, delays.length - 1)];
+      attempt += 1;
+      console.error(`❌ הפעלת בוט הטלגרם נכשלה (ניסיון ${attempt}): ${describeFetchError(e)}. מנסה שוב בעוד ${Math.round(wait / 1000)} שניות`);
+      startRetryTimer = setTimeout(attemptStart, wait);
+      return false;
+    }
+  };
+  return attemptStart();
 }
 
 export function stopTelegramBot() {
   running = false;
+  if (startRetryTimer) clearTimeout(startRetryTimer);
+  startRetryTimer = null;
 }
 
 // בניית הודעת נסיעה (HTML) עם סימון מקור ברור
