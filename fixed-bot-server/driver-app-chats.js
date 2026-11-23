@@ -88,7 +88,7 @@ export function describeMessage(message) {
   return text ? { text } : null;
 }
 
-export function createDriverChats({ dir, isActiveDevice, getSession, getBotPhone, getRide, quoteForRide, onIncoming = () => {}, onError, now = Date.now }) {
+export function createDriverChats({ dir, isActiveDevice, getSession, getBotPhone, getRide, quoteForRide, onIncoming = () => {}, extraOps = {}, onError, now = Date.now }) {
   const pairings = new Map(); // device id -> { phone, key, code, expiresAt }
   const drivers = new Map();
   const dirty = new Set();
@@ -498,8 +498,9 @@ export function createDriverChats({ dir, isActiveDevice, getSession, getBotPhone
     let result;
     try {
       const op = String(request.op);
-      if (!Object.hasOwn(operations, op)) throw new AppError(404, "לא נמצא");
-      result = { status: 200, body: await operations[op]({ device, args: request.args || {}, res }) };
+      const all = Object.hasOwn(operations, op) ? operations : Object.hasOwn(extraOps, op) ? extraOps : null;
+      if (!all) throw new AppError(404, "לא נמצא");
+      result = { status: 200, body: await all[op]({ device, args: request.args || {}, res }) };
     } catch (err) {
       if (!(err instanceof AppError)) throw err;
       result = { status: err.status, body: { error: err.message } };

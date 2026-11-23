@@ -15,6 +15,10 @@ const NOTIFY_MAX_AGE_MS = 10 * 60 * 1000;
 const MAX_WAIT_SEC = 55;
 const MAX_SEARCHES = 6;
 const OUTCOMES = new Set(["got", "done", "missed"]);
+const GROUP_MESSAGES = 20;
+const MAX_GROUPS_LOGGED = 400;
+const APPROVAL_WINDOW_MS = 45 * 60 * 1000;
+const APPROVAL_RE = /^(ק|קיבלת|קבלת|קיבלתה|שלך|סגור|סגרנו|אושר|מאושר|אוקי|אוקיי|ok|okay|לך|קח|תיקח|תקח|כן|יאללה|סע|👍)(?=[\s!.,👍🙏]|$)/iu;
 
 
 export function createDriverApp({
@@ -30,6 +34,7 @@ export function createDriverApp({
   getSession = () => null,
   getBotPhone = () => "",
   listGroups = async () => null,
+  telegram = null,
   quoteForRide = () => null,
   onError = console.error,
   now = Date.now,
@@ -38,6 +43,65 @@ export function createDriverApp({
   const auth = createDriverAuth({ store, canUseApp: isApproved, isBotOnline, sendCode, onError, now });
   const waiters = new Map(); // device id -> { phone, finish }
   const groupCache = new Map(); // phone -> { at, list }
+  // 20 ההודעות האחרונות בכל קבוצה, רק בזיכרון ורק לנהג עצמו
+  const groupLog = new Map(); // phone -> Map(jid -> { name, messages })
+  const hasDevice = (phone) => [...store.devices.values()].some((d) => d.phone === phone);
+
+  function groupMessage(rawPhone, jid, message) {
+    try {
+      const phone = normalizeMobile(rawPhone);
+      if (!phone || !String(jid).endsWith("@g.us") || !hasDevice(phone)) return;
+      const text = String(message.text || "").slice(0, 1500);
+      if (!text) return;
+      let groups = groupLog.get(phone);
+      if (!groups) groupLog.set(phone, (groups = new Map()));
+      const entry = groups.get(jid) || { name: "", messages: [] };
+      groups.delete(jid); // האחרונה בסוף, כדי לפנות את הישנות
+      groups.set(jid, entry);
+      if (message.groupName) entry.name = String(message.groupName).slice(0, 100);
+      entry.messages.push({ at: message.at || now(), me: Boolean(message.fromMe), name: String(message.sender || "").slice(0, 60), text });
+      entry.messages.splice(0, entry.messages.length - GROUP_MESSAGES);
+      if (groups.size > MAX_GROUPS_LOGGED) groups.delete(groups.keys().next().value);
+    } catch (err) {
+      onError(err);
+    }
+  }
+
+  const telegramOps = {
+    async telegramStatus({ device }) {
+      if (!telegram) return { available: false };
+      return { available: true, ...telegram.status(device.phone) };
+    },
+    async telegramRequest({ device, args }) {
+      if (!telegram) throw new AppError(501, "טלגרם לא זמין בשרת");
+      try {
+        return await telegram.request(device.phone, String(args.phone || ""));
+      } catch (err) {
+        throw new AppError(400, err.message);
+      }
+    },
+    async telegramVerify({ device, args }) {
+      if (!telegram) throw new AppError(501, "טלגרם לא זמין בשרת");
+      try {
+        return await telegram.verify(device.phone, String(args.code || ""), String(args.password || ""));
+      } catch (err) {
+        throw new AppError(400, err.message);
+      }
+    },
+    async telegramDisconnect({ device }) {
+      if (!telegram) throw new AppError(501, "טלגרם לא זמין בשרת");
+      groupCache.delete(device.phone);
+      return telegram.disconnect(device.phone);
+    },
+    // הקבוצה של נסיעה: ההודעות האחרונות שהבוט ראה מאז שעלה
+    async group({ device, args }) {
+      const jid = String(args.jid || "");
+      if (!/^[\d-]{5,40}@g\.us$/.test(jid)) throw new AppError(400, "קבוצה לא תקינה");
+      const entry = groupLog.get(device.phone)?.get(jid);
+      return { name: entry?.name || "", messages: entry ? [...entry.messages] : [] };
+    },
+  };
+
   const chats = createDriverChats({
     dir: chatsDir,
     isActiveDevice: (id, phone) => store.devices.get(id)?.phone === phone && isApproved(phone),
@@ -48,6 +112,7 @@ export function createDriverApp({
     onIncoming: (phone) => {
       for (const waiter of [...waiters.values()]) if (waiter.phone === phone) waiter.finish();
     },
+    extraOps: telegramOps,
     onError,
     now,
   });
@@ -139,6 +204,39 @@ export function createDriverApp({
     }
   }
 
+  // הסדרן אישר: "ק", "קיבלת", "שלך"... בפרטי, מהסדרן של נסיעה שהנהג ביקש. רק סימון, בלי לשמור תוכן
+  function detectApproval(upsert, rawPhone) {
+    try {
+      if (upsert?.type !== "notify") return;
+      const phone = normalizeMobile(rawPhone);
+      if (!phone || !isApproved(phone) || !hasDevice(phone)) return;
+      const data = store.driver(phone);
+      const waiting = data.rides.filter((r) => r.status === "requested" && now() - (r.requestedAt || r.at) < APPROVAL_WINDOW_MS);
+      if (!waiting.length) return;
+      for (const m of upsert.messages || []) {
+        if (m?.key?.fromMe || !m.message) continue;
+        const jid = String(m.key.remoteJid || "");
+        if (!/@(s\.whatsapp\.net|lid)$/.test(jid)) continue;
+        const body = m.message.conversation || m.message.extendedTextMessage?.text || "";
+        const text = String(body).trim();
+        if (!text || text.length > 40 || !APPROVAL_RE.test(text)) continue;
+        const ids = [jid, m.key.senderPn, m.key.remoteJidAlt, m.key.participantPn]
+          .filter(Boolean).map((j) => String(j).split("@")[0].split(":")[0]);
+        const ride = [...waiting].reverse().find((r) =>
+          (r.contact && ids.includes(String(r.contact))) || (r.chatJid && ids.includes(String(r.chatJid).split("@")[0])));
+        if (!ride) continue;
+        ride.status = "got";
+        ride.approvedAt = now();
+        data.approvalSeq = Math.max(now(), (data.approvalSeq || 0) + 1);
+        ride.approvalSeq = data.approvalSeq;
+        store.changed(phone);
+        for (const waiter of [...waiters.values()]) if (waiter.phone === phone) waiter.finish();
+      }
+    } catch (err) {
+      onError(err);
+    }
+  }
+
   function findRide(phone, id) {
     const ride = store.driver(phone).rides.find((r) => r.id === id);
     if (!ride) throw new AppError(404, "הנסיעה לא נמצאה");
@@ -150,6 +248,7 @@ export function createDriverApp({
     const after = Number(query.get("after")) || 0;
     // הודעה חדשה בצ'אט: רק מספר. התראה עליה רק כשיש חיפוש פעיל
     const chatAfter = Number(query.get("chat")) || 0;
+    const apprAfter = Number(query.get("appr")) || 0;
     const chatSignal = () => {
       const seq = chats.incomingSeq(device.id, device.phone);
       return seq ? { seq, notify: Boolean(getSearch().get(device.phone)?.active) } : null;
@@ -157,7 +256,7 @@ export function createDriverApp({
     // בלי חיפוש פעיל הטלפון עוצר את החיבור ברקע וחוסך סוללה
     const searching = () => Boolean(getSearch().get(device.phone)?.active);
     // חיבור ראשון מקבל רק סמן, בלי הצפה של נסיעות ישנות
-    if (!after) return { cursor: data.seq || now(), rides: [], chat: chatSignal(), searching: searching() };
+    if (!after) return { cursor: data.seq || now(), rides: [], chat: chatSignal(), searching: searching(), apprSeq: data.approvalSeq || 0, approvals: [] };
     const collect = () => {
       const fresh = data.rides.filter((r) => r.seq > after);
       return {
@@ -166,13 +265,18 @@ export function createDriverApp({
         rides: fresh.filter((r) => r.status === "new" && now() - r.at < NOTIFY_MAX_AGE_MS).slice(-40).map(publicRide),
         chat: chatSignal(),
         searching: searching(),
+        apprSeq: data.approvalSeq || 0,
+        approvals: data.rides
+          .filter((r) => r.approvalSeq > apprAfter && now() - r.approvedAt < NOTIFY_MAX_AGE_MS)
+          .map((r) => ({ id: r.id, from: r.from || "", to: r.to || "", spoken: r.spoken || "", dispatcher: r.dispatcher || "", group: r.group || "" })),
       };
     };
     const ready = collect();
     const requested = Number(query.get("wait"));
     const waitSec = Math.min(MAX_WAIT_SEC, Math.max(0, Number.isFinite(requested) ? requested : 0));
     const newChat = query.has("chat") && (ready.chat?.seq || 0) > chatAfter;
-    if (ready.cursor > after || newChat || !waitSec) return ready;
+    const newApproval = query.has("appr") && ready.apprSeq > apprAfter;
+    if (ready.cursor > after || newChat || newApproval || !waitSec) return ready;
 
     waiters.get(device.id)?.finish(); // בקשה ממתינה אחת לכל מכשיר
     return new Promise((resolve) => {
@@ -330,5 +434,10 @@ export function createDriverApp({
     store.flush();
   }
 
-  return { handle, addRide, linkAlert, markRequested, filterRide, ingestChats: chats.ingest, shutdown };
+  function ingestChats(sock, upsert, phone) {
+    chats.ingest(sock, upsert, phone);
+    detectApproval(upsert, phone);
+  }
+
+  return { handle, addRide, linkAlert, markRequested, filterRide, ingestChats, groupMessage, shutdown };
 }

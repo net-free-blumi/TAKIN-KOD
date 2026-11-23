@@ -2208,6 +2208,12 @@ async function handleIncomingMessage(sock, upsert, sessionContext) {
       // הבוט הראשי לא סורק קבוצות בכלל.
       if (sessionContext.isMainBot || !sessionContext.driverPhone) continue;
 
+      // לחלון הקבוצה באפליקציה: 20 ההודעות האחרונות, רק בזיכרון
+      driverApp.groupMessage(sessionContext.driverPhone, jid, {
+        text, at: Number(m.messageTimestamp) * 1000 || Date.now(), fromMe: m.key.fromMe,
+        sender: m.pushName || "", groupName: groupMetadataCache.get(jid)?.subject || "",
+      });
+
       const targetDrivers = [];
       const ownerPhone = cleanPhone(sessionContext.driverPhone);
       if (ownerPhone && getUserSearch(ownerPhone).active) targetDrivers.push(ownerPhone);
@@ -2337,6 +2343,12 @@ const driverApp = createDriverApp({
     // הקוד תמיד לבד ואחרון: להעתקה בלחיצה ארוכה, וגם כשכפתור ההעתקה לא מוצג במכשיר
     await sock.sendMessage(jid, { text: code });
   },
+  telegram: {
+    status: (phone) => getTelegramStatus(phone),
+    request: (phone, telegramPhone) => requestTelegramCode(phone, telegramPhone),
+    verify: (phone, code, password) => verifyTelegramCode(phone, code || null, password),
+    disconnect: (phone) => disconnectTelegram(phone),
+  },
   describeRide: (data) => {
     const text = data.cleanedText || data.rawText || "";
     const route = parseRideRoute(text, data.senderPhone);
@@ -2345,6 +2357,7 @@ const driverApp = createDriverApp({
       text,
       ...describeRoute(text),
       group: data.groupName || "",
+      groupJid: String(data.groupJid || "").endsWith("@g.us") ? data.groupJid : null,
       dispatcher: data.senderName || "",
       contact: contact || null,
       chatJid: data.senderJid && !String(data.senderJid).endsWith("@g.us") ? data.senderJid : null,

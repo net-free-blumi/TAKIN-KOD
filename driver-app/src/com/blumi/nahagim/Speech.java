@@ -159,10 +159,15 @@ final class Speech {
     void announce(JSONObject ride) {
         if (!settings.speech() || !power.isInteractive()) return;
         boolean checked = ride.optBoolean("checked");
-        String text = SpeechText.announcement(
-                ride.optString("text"), checked ? ride.optString("from") : "", checked ? ride.optString("to") : "",
-                checked ? ride.optDouble("price", 0) : 0,
-                "short".equals(settings.speechMode()));
+        String mode = settings.speechMode();
+        double price = checked && settings.speakPrice() ? ride.optDouble("price", 0) : 0;
+        // Only where from and where to, as the server summarised it
+        String spoken = ride.optString("detail".equals(mode) ? "spokenDetail" : "spoken");
+        String text = !"full".equals(mode) && !spoken.isEmpty()
+                ? SpeechText.summary(spoken, price)
+                : SpeechText.announcement(ride.optString("text"),
+                        checked ? ride.optString("from") : "", checked ? ride.optString("to") : "",
+                        price, !"full".equals(mode));
         Line line = new Line(text, false);
         main.post(() -> add(line));
     }

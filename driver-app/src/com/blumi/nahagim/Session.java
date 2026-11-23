@@ -62,6 +62,15 @@ final class Session {
         prefs.edit().putBoolean("searching", on).commit();
     }
 
+    /** The server's count of dispatcher approvals. */
+    long apprSeq() {
+        return prefs.getLong("apprSeq", 0);
+    }
+
+    void setApprSeq(long seq) {
+        prefs.edit().putLong("apprSeq", seq).apply();
+    }
+
     long cursor() {
         return prefs.getLong("cursor", 0);
     }

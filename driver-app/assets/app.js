@@ -466,7 +466,38 @@
     return max > 0 && ride.pickup ? native.distance(ride.pickup.lat, ride.pickup.lng) > max : false;
   }
 
-  function rideCard(ride) {
+  // הקבוצה של הנסיעה, כמו צ'אט: ההודעות האחרונות שהבוט ראה
+  async function groupSheet(ride) {
+    if (!ride.groupJid) throw new Error('אפשר לראות רק קבוצות וואטסאפ');
+    if (!chats.isPaired()) {
+      sheet(h('h2', null, ride.group || 'קבוצה'),
+        h('p', null, 'כדי לראות את הקבוצה, חבר קודם את הצ\'אטים בלשונית וואטסאפ. כך ההודעות עוברות מוצפנות.'),
+        button('לחיבור הצ\'אטים', () => { closeSheet(); state.tab = 'chats'; render(); }, 'primary wide'),
+        button('סגור', closeSheet, 'link wide'));
+      return;
+    }
+    const body = await secure('group', { jid: ride.groupJid });
+    const list = body.messages.length
+      ? body.messages.map((m) => h('div', { className: m.me ? 'bubble out' : 'bubble in' },
+        m.me ? null : h('div', { className: 'bubble-name' }, m.name || 'חבר בקבוצה'),
+        h('div', { className: 'bubble-text' }, m.text),
+        h('div', { className: 'bubble-meta' }, clock(m.at))))
+      : [h('p', { className: 'bubble-system' }, 'עוד אין הודעות. הן נאספות מהרגע שהבוט עלה, ונשמרות רק בזיכרון.')];
+    const thread = h('div', { className: 'thread group-thread' }, list);
+    sheet(h('h2', null, body.name || ride.group || 'קבוצה'),
+      h('p', { className: 'muted' }, `${body.messages.length} הודעות אחרונות`),
+      thread,
+      button('סגור', closeSheet, 'link wide'));
+    thread.scrollTop = thread.scrollHeight;
+  }
+
+  // לחיצה על נסיעה פותחת אותה בחלון צף, עם כל הפרטים והכפתורים
+  function openRide(ride) {
+    native.stopSpeaking();
+    sheet(rideCard(ride, { full: true }), button('סגור', closeSheet, 'link wide'));
+  }
+
+  function rideCard(ride, opts = {}) {
     const actions = [];
     if (ride.status === 'new' && ride.canClaim) {
       const text = state.me?.filters?.claimText;
@@ -499,12 +530,12 @@
     const customer = chats.customerFor(ride);
     const at = ride.status === 'new' ? age(ride.at) : clock(ride.doneAt || ride.requestedAt || ride.at);
     // במצב צפוף שורת הכלים נפתחת בכפתור, כדי שייכנסו יותר נסיעות
-    const folded = pref('density', 'compact') === 'compact' && actions.length > 0;
+    const folded = !opts.full && pref('density', 'compact') === 'compact' && actions.length > 0;
     const tools = rideTools(ride, tool, live, checked, folded);
 
-    return h('article', { className: 'ride' },
+    const card = h('article', { className: opts.full ? 'ride full' : 'ride' },
       h('div', { className: 'top' },
-        h('span', { className: 'group' }, ride.dispatcher ? `${ride.group} · ${ride.dispatcher}` : ride.group),
+        button(ride.dispatcher ? `${ride.group} · ${ride.dispatcher}` : ride.group, () => groupSheet(ride), 'group group-link', `הקבוצה ${ride.group}`),
         h('span', { className: ride.status === 'new' && Date.now() - ride.at < 120000 ? 'age fresh' : 'age' }, at)),
       route || price
         ? h('div', { className: 'headline' },
@@ -514,14 +545,21 @@
       distance || real ? h('div', { className: 'distance' }, icon('pin'), distance || 'מסלול',
         real ? h('span', { className: 'real' }, `בפועל: ${kmText(real.km)} · ${real.minutes} דק'`) : null) : null,
       real && !real.exact ? h('p', { className: 'distance-note' }, 'עד מרכז השכונה. הכתובת המדויקת לא נמצאה') : null,
-      ride.manual ? null : rideText(ride.text),
+      ride.manual ? null : opts.full ? h('p', { className: 'ride-text' }, ride.text) : rideText(ride.text),
       ride.note ? h('p', { className: 'note' }, ride.note) : null,
-      STATUS[ride.status] ? h('div', { className: `state ${ride.status}` }, STATUS[ride.status]) : null,
+      STATUS[ride.status] ? h('div', { className: `state ${ride.status}` }, ride.approvedAt && ride.status === 'got' ? '✅ הסדרן אישר לך' : STATUS[ride.status]) : null,
       customer ? button([icon('phone'), h('span', null, `חייג ללקוח ${customer}`)], () => native.dial(customer), 'call') : null,
       ride.status === 'new' && !ride.canClaim ? h('p', { className: 'muted' }, 'עבר הזמן לבקש את הנסיעה') : null,
       actions.length ? h('div', { className: 'actions' }, actions, folded
         ? button(icon('more'), (event) => tools.classList.toggle('show'), 'more', 'עוד פעולות') : null) : null,
       tools);
+    if (!opts.full) {
+      card.onclick = (event) => {
+        if (event.target.closest('button, a, input, .ride-text')) return;
+        openRide(ride);
+      };
+    }
+    return card;
   }
 
   function rideTools(ride, tool, live, checked, folded) {
@@ -602,12 +640,21 @@
 
   // לחיצה על התראה פותחת את הנסיעה, בלי לשלוח כלום
   function openFromNotification() {
+    // הסדרן אישר: ישר לצ'אט איתו
+    const approved = native.takeRideChat();
+    if (approved) {
+      const ride = state.mine.find((r) => r.id === approved) || state.rides.find((r) => r.id === approved);
+      if (!ride) return toast('הנסיעה כבר לא ברשימה');
+      if (chats.isPaired() && ride.canChat) return chats.openRide(ride);
+      if (ride.contact) return native.whatsapp(String(ride.contact));
+      return openRide(ride);
+    }
     const chat = native.takeChat();
     if (chat) return chats.openChat(chat);
     const id = native.takeRide();
     if (!id) return;
     const ride = state.rides.find((r) => r.id === id) || state.mine.find((r) => r.id === id);
-    if (ride) sheet(rideCard(ride), button('סגור', closeSheet, 'link wide'));
+    if (ride) openRide(ride);
     else toast('הנסיעה כבר לא ברשימה');
   }
 
@@ -952,6 +999,7 @@
     h, icon, button, toggle, segments, toast, sheet, closeSheet, native, api, secure, local, clock, device,
     pref, setPref, applySize, render, load, layout, toggleSpeech, voiceHelp, speak, rideCard,
     chatList: () => chats.list(),
+    secure: (op, args) => secure(op, args),
     chatsPaired: () => chats.isPaired(),
     me: () => state.me,
     // מונה וכפתור חיוג ללקוח במסכים שמחוץ לצ'אט

@@ -141,6 +141,7 @@ final class Bridge {
                 .put("battery", activity.batteryUnrestricted())
                 .put("speech", settings.speech())
                 .put("speechMode", settings.speechMode())
+                .put("speakPrice", settings.speakPrice())
                 .put("speechRate", settings.speechRate())
                 .put("voice", Speech.get(activity).voice())
                 .put("muted", Speech.get(activity).muted())
@@ -189,7 +190,7 @@ final class Bridge {
 
     @JavascriptInterface
     public void setSpeechMode(String mode) {
-        if ("full".equals(mode) || "short".equals(mode)) settings.setSpeechMode(mode);
+        if ("full".equals(mode) || "short".equals(mode) || "detail".equals(mode)) settings.setSpeechMode(mode);
     }
 
     @JavascriptInterface
@@ -244,6 +245,16 @@ final class Bridge {
     @JavascriptInterface
     public void setDark(boolean dark) {
         activity.runOnUiThread(() -> activity.setDark(dark));
+    }
+
+    @JavascriptInterface
+    public void setSpeakPrice(boolean on) {
+        settings.setSpeakPrice(on);
+    }
+
+    @JavascriptInterface
+    public String takeRideChat() {
+        return activity.takeRideChat();
     }
 
     @JavascriptInterface

@@ -68,6 +68,15 @@ final class Settings {
         prefs.edit().putString("speechRate", rate).commit();
     }
 
+    /** The price is read only when the driver asks for it. */
+    boolean speakPrice() {
+        return prefs.getBoolean("speakPrice", false);
+    }
+
+    void setSpeakPrice(boolean on) {
+        prefs.edit().putBoolean("speakPrice", on).commit();
+    }
+
     /** Percent of the media volume, 10 to 100. */
     int speechVolume() {
         return prefs.getInt("speechVolume", 100);

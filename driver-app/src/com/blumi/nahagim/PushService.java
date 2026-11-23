@@ -133,7 +133,7 @@ public final class PushService extends Service {
             try {
                 // Renewed on every request, so it cannot leak if the loop dies
                 wakeLock.acquire(READ_TIMEOUT_MS + MAX_RETRY_MS);
-                String chat = session.chatKey().isEmpty() ? "" : "&chat=" + session.chatSeq();
+                String chat = (session.chatKey().isEmpty() ? "" : "&chat=" + session.chatSeq()) + "&appr=" + session.apprSeq();
                 current = Api.open("GET", "/api/app/events?wait=" + WAIT_SECONDS + "&after=" + cursor + chat, token,
                         READ_TIMEOUT_MS);
                 Api.Response response = Api.exchange(current, null);
@@ -157,6 +157,7 @@ public final class PushService extends Service {
                 showRides(response.body.optJSONArray("rides"));
                 session.setCursor(response.body.getLong("cursor"));
                 newChatMessages(session, response.body.optJSONObject("chat"));
+                approvals(session, response.body);
                 if (!response.body.optBoolean("searching", true)) {
                     // Busy, or the nightly stop: sleep until the driver searches again in the app
                     session.setSearching(false);
@@ -199,6 +200,23 @@ public final class PushService extends Service {
             speech.announce(ride);
         }
         if (rides.length() > 0) MainActivity.refreshIfOpen();
+    }
+
+    private void approvals(Session session, JSONObject body) {
+        long seq = body.optLong("apprSeq");
+        long saved = session.apprSeq();
+        if (seq <= saved) return;
+        session.setApprSeq(seq);
+        if (saved == 0) return; // a starting point, not news
+        JSONArray list = body.optJSONArray("approvals");
+        for (int i = 0; list != null && i < list.length(); i++) {
+            JSONObject ride = list.optJSONObject(i);
+            if (ride == null) continue;
+            String route = ride.optString("spoken");
+            if (route.isEmpty() && !ride.optString("from").isEmpty()) route = ride.optString("from") + " ← " + ride.optString("to");
+            Notifications.approved(this, ride.optString("id"), route, ride.optString("dispatcher"));
+        }
+        MainActivity.refreshIfOpen();
     }
 
     /** The server sends only a counter. The messages come over the encrypted channel. */

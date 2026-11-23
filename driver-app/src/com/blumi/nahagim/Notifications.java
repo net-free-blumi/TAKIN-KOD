@@ -20,6 +20,7 @@ final class Notifications {
     private static final int CHAT_ID = 20;
     static final String EXTRA_RIDE = "ride";
     static final String EXTRA_CHAT = "chat";
+    static final String EXTRA_RIDE_CHAT = "rideChat";
 
     private Notifications() {}
 
@@ -146,6 +147,26 @@ final class Notifications {
                 .setTimeoutAfter(60 * 60 * 1000L)
                 .build();
         context.getSystemService(NotificationManager.class).notify("chat:" + chatId, CHAT_ID, notification);
+    }
+
+    /** The dispatcher wrote "ק" or similar: one tap to the chat with them. */
+    static void approved(Context context, String rideId, String route, String dispatcher) {
+        Intent open = new Intent(context, MainActivity.class)
+                .addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP | Intent.FLAG_ACTIVITY_CLEAR_TOP)
+                .setAction("com.blumi.nahagim.APPROVED." + rideId)
+                .putExtra(EXTRA_RIDE_CHAT, rideId);
+        PendingIntent tap = PendingIntent.getActivity(context, 0, open,
+                PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
+        String text = (route.isEmpty() ? "הנסיעה שביקשת" : route) + (dispatcher.isEmpty() ? "" : " · " + dispatcher);
+        Notification notification = base(context, RIDES, "✅ הסדרן אישר לך את הנסיעה", text)
+                .setContentIntent(tap)
+                .addAction(new Notification.Action.Builder(
+                        Icon.createWithResource(context, R.drawable.ic_notify), "💬 לצ'אט עם הסדרן", tap).build())
+                .setCategory(Notification.CATEGORY_MESSAGE)
+                .setAutoCancel(true)
+                .setTimeoutAfter(60 * 60 * 1000L)
+                .build();
+        context.getSystemService(NotificationManager.class).notify("ok:" + rideId, 30, notification);
     }
 
     static void cancelChats(Context context) {

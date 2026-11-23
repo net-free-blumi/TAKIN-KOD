@@ -58,6 +58,19 @@ final class SpeechText {
         return text.substring(0, cut > 0 ? cut : max).replaceAll("[\\s,.:-]+$", "");
     }
 
+    /** The server's summary: "פנימי בית שמש", "בית שמש לירושלים". Never more than 8 words. */
+    static String summary(String spoken, double price) {
+        String[] words = clean(spoken).split("\\s+");
+        StringBuilder line = new StringBuilder();
+        for (int i = 0; i < words.length && i < 8; i++) {
+            if (words[i].isEmpty()) continue;
+            if (line.length() > 0) line.append(' ');
+            line.append(words[i]);
+        }
+        if (price > 0) line.append(line.length() > 0 ? ". " : "").append(Math.round(price)).append(" שקלים");
+        return line.toString();
+    }
+
     /** No numbers at all: phone numbers, codes, times and house numbers are noise. */
     static String withoutNumbers(String text) {
         return NUMBER.matcher(text).replaceAll(" ")

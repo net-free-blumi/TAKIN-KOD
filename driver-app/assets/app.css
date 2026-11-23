@@ -261,6 +261,21 @@ html.density-compact .call { min-height: 40px; margin-top: 5px; }
 html.density-roomy .ride { padding: 18px; margin-bottom: 18px; }
 html.density-roomy .ride-text { font-size: 1.2rem; }
 html.density-roomy .actions > button { min-height: 56px; }
+.ride { cursor: pointer; }
+.ride.full { margin-bottom: 4px; border: 0; padding: 0; cursor: auto; }
+.ride.full .route { font-size: 1.35rem; }
+.ride.full .ride-text { font-size: 1.15rem; }
+.top .group-link {
+  min-width: 0; min-height: 28px; padding: 0; border: 0; background: transparent; color: var(--muted);
+  font: inherit; text-align: start; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-decoration: underline dotted;
+}
+.group-thread { max-height: 55vh; border-radius: 12px; margin-top: 8px; }
+.bubble-name { color: #1f9d5b; font-size: .8rem; font-weight: bold; }
+.bubble-text { white-space: pre-line; overflow-wrap: anywhere; }
+.bubble-meta { color: var(--muted); font-size: .72rem; text-align: end; }
+.guide summary { padding: 10px 0; font-weight: bold; }
+.guide ol { margin: 0 0 10px; padding-inline-start: 22px; }
+.guide li { margin-bottom: 6px; }
 input[type=range] { min-height: 40px; padding: 0; border: 0; accent-color: var(--taxi); }
 .call {
   display: flex; align-items: center; justify-content: center; max-width: 100%; margin-top: 8px;

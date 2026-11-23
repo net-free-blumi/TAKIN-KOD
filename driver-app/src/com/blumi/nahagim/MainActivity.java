@@ -35,6 +35,7 @@ public final class MainActivity extends Activity {
     private Bridge bridge;
     private volatile String rideToOpen = "";
     private volatile String chatToOpen = "";
+    private volatile String rideChatToOpen = "";
     private FrameLayout root;
 
     @SuppressLint("SetJavaScriptEnabled")
@@ -119,6 +120,12 @@ public final class MainActivity extends Activity {
         }
     }
 
+    String takeRideChat() {
+        String id = rideChatToOpen;
+        rideChatToOpen = "";
+        return id;
+    }
+
     String takeChat() {
         String id = chatToOpen;
         chatToOpen = "";
@@ -133,6 +140,12 @@ public final class MainActivity extends Activity {
 
     private void readRide(Intent intent) {
         if (intent == null || (intent.getFlags() & Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY) != 0) return;
+        String rideChat = intent.getStringExtra(Notifications.EXTRA_RIDE_CHAT);
+        if (rideChat != null && !rideChat.isEmpty()) {
+            rideChatToOpen = rideChat;
+            run("window.onNativeRide && window.onNativeRide()");
+            return;
+        }
         String chat = intent.getStringExtra(Notifications.EXTRA_CHAT);
         if (chat != null && !chat.isEmpty()) {
             chatToOpen = chat;

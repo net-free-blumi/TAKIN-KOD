@@ -117,10 +117,15 @@ export function getAllTelegramStatuses() {
 // ==========================================
 // 1. שלב ראשון: בקשת קוד אימות לטלגרם
 // ==========================================
-export async function requestTelegramCode(phone) {
+export async function requestTelegramCode(phone, telegramPhone = "") {
   const p = cleanPhone(phone);
   if (!p || p.length < 9) {
     throw new Error("מספר טלפון לא תקין עבור טלגרם");
+  }
+  // הטלגרם יכול להיות על מספר אחר מהוואטסאפ. החשבון נשמר תמיד לפי הנהג
+  const target = telegramPhone ? cleanPhone(telegramPhone) : p;
+  if (!/^\d{9,15}$/.test(target)) {
+    throw new Error("מספר הטלגרם לא תקין");
   }
 
   if (!TELEGRAM_API_ID || !TELEGRAM_API_HASH) {
@@ -143,7 +148,7 @@ export async function requestTelegramCode(phone) {
     };
   }
 
-  const formatted = formatE164(p);
+  const formatted = formatE164(target);
   console.log(`✈️ [טלגרם נהג ${p}] יוצר חיבור ושולח קוד אימות ל-${formatted}...`);
 
   const { TelegramClient, StringSession } = await getTelegramModules();
@@ -289,7 +294,7 @@ export async function verifyTelegramCode(phone, code, password = "") {
       const userObj = approved.find((u) => cleanPhone(u.phone) === p);
       if (userObj) {
         userObj.telegramConnected = true;
-        userObj.telegramPhone = p;
+        userObj.telegramPhone = cleanPhone(formattedPhone) || p;
         userObj.telegramUsername = telegramUsername;
         userObj.telegramConnectedAt = new Date().toISOString();
         systemCallbacks.saveUsersData?.(usersData);

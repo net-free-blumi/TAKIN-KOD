@@ -5,7 +5,7 @@ window.createSettings = function createSettings(ctx) {
   const { h, icon, button, toggle, segments, toast, sheet, closeSheet, native, api, local } = ctx;
   const TITLES = {
     filters: 'נסיעות וסינון', groups: 'קבוצות', claim: 'בקשת נסיעה', location: 'מיקום ומרחק',
-    speech: 'הקראה קולית', alerts: 'התראות', display: 'תצוגה', help: 'עזרה', chatMute: 'התראות מצ\'אטים',
+    speech: 'הקראה קולית', alerts: 'התראות', display: 'תצוגה', help: 'מדריכים', telegram: 'טלגרם', chatMute: 'התראות מצ\'אטים',
   };
   const VEHICLES = [
     ['station', 'סטיישן'], ['van', 'מיניוואן, 6-7 מקומות'], ['eight', '8 מקומות'], ['minibus', 'מיניבוס, 10 ומעלה'],
@@ -44,6 +44,7 @@ window.createSettings = function createSettings(ctx) {
   }
 
   function go(name) {
+    if (name === 'telegram') tg.loaded = false;
     page = name;
     groupFilter = '';
     if (name === 'groups') loadGroups();
@@ -100,6 +101,83 @@ window.createSettings = function createSettings(ctx) {
       ctx.speak('בב ים 180 ש"ח');
     };
     return slider;
+  }
+
+  // טלגרם: כל השלבים בערוץ המוצפן, כי יש בהם קוד כניסה וסיסמה
+  let tg = { loaded: false, status: null, error: '', stage: 'idle', number: '' };
+  async function loadTelegram() {
+    tg.error = '';
+    try {
+      tg.status = await ctx.secure('telegramStatus', {});
+    } catch (err) {
+      tg.error = err.status === 410 || err.status === 425
+        ? 'כדי לחבר טלגרם מהאפליקציה, חבר קודם את הצ\'אטים בלשונית וואטסאפ. כך הקוד והסיסמה עוברים מוצפנים.'
+        : err.message;
+    }
+    tg.loaded = true;
+    if (page === 'telegram') ctx.render();
+  }
+
+  function telegramScreen() {
+    if (!tg.loaded) {
+      loadTelegram();
+      return h('p', { className: 'muted' }, 'בודק את חיבור הטלגרם...');
+    }
+    if (tg.error && !tg.status) {
+      return section(h('p', { className: 'banner' }, tg.error), button('נסה שוב', () => { tg.loaded = false; ctx.render(); }, 'wide'));
+    }
+    const s = tg.status || {};
+    if (!s.available) return section(h('p', { className: 'notice' }, 'טלגרם לא מוגדר בשרת. פנה למנהל.'));
+    if (s.connected) {
+      return section(
+        h('p', { className: 'ok' }, '✅ הטלגרם מחובר'),
+        h('p', { className: 'muted' }, 'נסיעות מהקבוצות והערוצים שלך בטלגרם מגיעות כמו מוואטסאפ.'),
+        button('קבוצות וערוצים לחיפוש', () => go('groups'), 'wide'),
+        button('נתק את הטלגרם', () => sheet(
+          h('h2', null, 'לנתק את הטלגרם?'),
+          h('p', { className: 'muted' }, 'לא יגיעו יותר נסיעות מטלגרם עד שתחבר שוב.'),
+          button('נתק', async () => {
+            await ctx.secure('telegramDisconnect', {});
+            closeSheet();
+            tg = { loaded: false, status: null, error: '', stage: 'idle', number: '' };
+            toast('הטלגרם נותק');
+            ctx.render();
+          }, 'dark wide'),
+          button('ביטול', closeSheet, 'link wide')), 'danger wide'));
+    }
+    const me = ctx.me();
+    if (tg.stage === 'idle') {
+      const number = h('input', { id: 'tg-phone', className: 'number', type: 'tel', inputMode: 'tel', value: tg.number || (me ? local(me.phone) : ''), placeholder: '05X-XXXXXXX' });
+      number.setAttribute('aria-label', 'מספר הטלגרם');
+      return section(
+        h('p', null, 'מספר הטלגרם שלך. אפשר גם מספר אחר מהוואטסאפ.'),
+        number,
+        button('שלח לי קוד בטלגרם', async () => {
+          tg.number = number.value.trim();
+          const r = await ctx.secure('telegramRequest', { phone: tg.number });
+          if (r.alreadyConnected) { tg.loaded = false; ctx.render(); return; }
+          tg.stage = 'code';
+          toast('הקוד נשלח לאפליקציית טלגרם');
+          ctx.render();
+        }, 'primary wide'));
+    }
+    const code = h('input', { id: 'tg-code', className: 'number', type: 'tel', inputMode: 'numeric', autocomplete: 'one-time-code', placeholder: '12345' });
+    code.setAttribute('aria-label', 'קוד מטלגרם');
+    const pass = h('input', { id: 'tg-pass', type: 'password', autocomplete: 'current-password', placeholder: 'סיסמה דו-שלבית' });
+    pass.setAttribute('aria-label', 'סיסמה דו-שלבית');
+    return section(
+      tg.stage === 'code'
+        ? [h('p', null, `הקלד את הקוד שהגיע לטלגרם של ${tg.number}.`), code]
+        : [h('p', null, 'בחשבון מוגדרת סיסמה דו-שלבית. הקלד אותה. היא עוברת מוצפנת ולא נשמרת.'), pass],
+      button('חבר', async () => {
+        const r = await ctx.secure('telegramVerify', tg.stage === 'code' ? { code: code.value } : { password: pass.value });
+        pass.value = '';
+        if (r.need2FA) { tg.stage = 'password'; ctx.render(); return; }
+        toast('הטלגרם חובר');
+        tg = { loaded: false, status: null, error: '', stage: 'idle', number: '' };
+        ctx.render();
+      }, 'primary wide'),
+      button('התחל מחדש', () => { tg.stage = 'idle'; ctx.render(); }, 'link wide'));
   }
 
   const pages = {
@@ -238,11 +316,14 @@ window.createSettings = function createSettings(ctx) {
         item('לכבד מצב שקט', 'כבוי = מקריא גם בשקט ובנא לא להפריע. בשיחה מחכה לסיומה',
           toggle(info.respectQuiet, () => { native.setRespectQuiet(!info.respectQuiet); ctx.render(); }, 'לכבד מצב שקט')),
         h('p', { className: 'sub' }, 'מה להקריא'),
-        segments([['short', 'מסלול ומחיר'], ['full', 'ההודעה, עד 10 שניות']], info.speechMode,
+        segments([['short', 'רק מאיפה לאיפה'], ['detail', 'עם שכונות'], ['full', 'ההודעה']], info.speechMode,
           (value) => { native.setSpeechMode(value); ctx.render(); }),
-        h('p', { className: 'muted' }, info.speechMode === 'short'
-          ? 'מאיפה, לאן ומחיר. כשהמסלול לא ברור: תחילת ההודעה, בלי מספרים וקישורים.'
-          : 'ההודעה עצמה בלי קישורים ומספרי טלפון, עד כ-10 שניות.'),
+        h('p', { className: 'muted' }, {
+          short: 'הכי קצר: "פנימי בית שמש", "בית שמש לירושלים". בלי תחנה, קישורים ומספרים.',
+          detail: 'גם השכונות: "פנימי בית שמש, רמה ב לרמה ד". עד 8 מילים.',
+          full: 'ההודעה עצמה עד הפס הראשון, בלי קישורים וטלפונים, עד כ-10 שניות.',
+        }[info.speechMode] || ''),
+        item('להקריא גם מחיר', '', toggle(info.speakPrice, () => { native.setSpeakPrice(!info.speakPrice); ctx.render(); }, 'להקריא גם מחיר')),
         h('p', { className: 'sub' }, `עוצמה: ${info.speechVolume}%`),
         volumeSlider(info.speechVolume),
         h('p', { className: 'sub' }, 'מהירות'),
@@ -337,21 +418,75 @@ window.createSettings = function createSettings(ctx) {
     },
 
     help() {
-      const help = (title, ...lines) => h('details', null, h('summary', null, title), lines.map((line) => h('p', null, line)));
-      return [section(
-        help('איך מחפשים',
-          'מהעיר ובתוכה: נסיעות פנימיות וגם נסיעות שיוצאות ממנה.',
-          'רק פנימי: נסיעות בתוך העיר בלבד.',
-          'מעיר לעיר: רק ממקום אחד לשני.'),
-        help('איך מבקשים נסיעה',
-          '"ת" שולח בשמך בקבוצה ולסדרן. "לפרטי" שולח בלי הודעה בקבוצה. השעון מוסיף זמן הגעה.',
-          'כשהסדרן עונה, סמן ב"הנסיעות שלי" אם קיבלת. רק נסיעה שסיימת נספרת בהכנסות.'),
-        help('איך מדברים עם הסדרן',
-          '"צ\'אט" בנסיעה פותח שיחה איתו. מספר שהוא שולח מקבל כפתור חיוג ללקוח.'),
-        help('לא מגיעות נסיעות',
-          'ודא שאתה פנוי, שהוואטסאפ מקושר ושבהתראה הקבועה כתוב "מחובר".',
-          'בדוק ב"נסיעות וסינון" שלא כיבית קבוצות או סיננת יותר מדי.',
-          'בסמסונג הוסף את האפליקציה ל"אפליקציות שלעולם לא במצב שינה".'))];
+      const guide = (title, ...lines) => h('details', { className: 'guide' }, h('summary', null, title),
+        h('ol', null, lines.map((line) => h('li', null, line))));
+      const group = (title, ...guides) => section(h('h2', null, title), guides);
+      return [
+        h('p', { className: 'notice' }, 'לחץ על נושא כדי לפתוח את המדריך.'),
+        group('מתחילים',
+          guide('התחלה מהירה',
+            'בלשונית "חיפוש" בחר עיר או מסלול ולחץ "התחל לחפש".',
+            'נסיעות מתאימות יופיעו ב"נסיעות", עם התראה וצפצוף.',
+            'לחץ "ת" כדי לבקש. "לפרטי" שולח רק לסדרן.',
+            'סיימת לעבוד? לחץ על המתג והאפליקציה עוברת לתפוס ולמצב שינה.'),
+          guide('איך מחפשים',
+            'מהעיר ובתוכה: נסיעות פנימיות וגם כאלה שיוצאות ממנה.',
+            'רק פנימי: נסיעות בתוך העיר בלבד.',
+            'מעיר לעיר: רק ממקום אחד לשני. אפשר כמה חיפושים ביחד.',
+            'חיפוש בהקלדה: כמו בבוט, לדוגמה "פ שמש ים".',
+            'כל לילה ב-02:00 החיפושים נעצרים.')),
+        group('נסיעות',
+          guide('בקשת נסיעה',
+            '"ת" שולח בשמך בקבוצה ולסדרן, בנוסח שבחרת ב"בקשת נסיעה".',
+            'השעון מוסיף זמן הגעה, או טקסט חופשי.',
+            'כשהסדרן עונה "ק" או "שלך", תקבל התראה עם כפתור לצ\'אט איתו.'),
+          guide('חלון נסיעה וקבוצה',
+            'לחיצה על נסיעה פותחת אותה בחלון צף עם כל הפרטים והכפתורים.',
+            'לחיצה על שם הקבוצה מראה את ההודעות האחרונות בה (צריך צ\'אטים מחוברים).',
+            'לחיצה על טקסט ההודעה פותחת את כולו.'),
+          guide('הנסיעות שלי והכנסות',
+            'כל נסיעה שביקשת נשמרת ביומן. סמן "קיבלתי" ואחר כך "סיימתי" עם המחיר.',
+            'אפשר להוסיף נסיעה ידנית, לערוך ולמחוק.',
+            'תאריך התחלה קובע מאיזה יום נספרות ההכנסות.',
+            'הכול נשמר בשרת, ולא נמחק בעדכון של האפליקציה.'),
+          guide('מיקום ומרחק',
+            'הפעל מיקום כדי לראות מרחק וזמן נסיעה משוער לכל נסיעה.',
+            '"מרחק אמיתי" (בכפתור ⋯) מחשב מסלול נסיעה אמיתי.',
+            'אפשר להגדיר מרחק מקסימלי, ונסיעות רחוקות לא יוצגו.')),
+        group('התראות וקול',
+          guide('הקראה קולית',
+            'צפצוף ואז רק מאיפה לאיפה, למשל "פנימי בית שמש".',
+            'רק כשהמסך דלוק. מסך כבוי = שקט.',
+            'אפשר לבחור פירוט, מחיר, מהירות ועוצמה ב"הקראה קולית".'),
+          guide('התראות וסוללה',
+            'בחר כמה שניות הנסיעה קופצת וכמה זמן היא נשארת ברשימה.',
+            'כשאתה תפוס, החיבור ברקע ישן ולא צורך סוללה.',
+            'בסמסונג: הגדרות > סוללה > אפליקציות שלעולם לא במצב שינה > הוסף את האפליקציה.')),
+        group('חיבורים',
+          guide('וואטסאפ וצ\'אטים',
+            'בלשונית וואטסאפ לחץ "חבר את הצ\'אטים" ושלח את הודעת האישור מהוואטסאפ שלך.',
+            'רואים 10 צ\'אטים אחרונים, בלי קבוצות. אפשר לענות ולשלוח.',
+            'התראות על הודעות מגיעות בלי צליל, רק כשאתה מחפש. אפשר להשתיק צ\'אטים.'),
+          guide('טלגרם',
+            'ב"טלגרם" שבהגדרות הקלד את מספר הטלגרם (גם אם שונה מהוואטסאפ) ולחץ "שלח קוד".',
+            'הקוד מגיע באפליקציית טלגרם. אם יש סיסמה דו-שלבית, תתבקש גם אותה.',
+            'הקבוצות והערוצים של טלגרם מופיעים ב"קבוצות", ואפשר לכבות כל אחד.'),
+          guide('קבוצות וסינון',
+            'ב"נסיעות וסינון" אפשר לכבות קבוצות, להגדיר מחיר מינימום, משלוחים וסוג רכב.',
+            'הסינון חל גם על מה שהבוט שולח לך בוואטסאפ.')),
+        group('עזרה',
+          guide('לא מגיעות נסיעות',
+            'ודא שאתה פנוי ושבהתראה הקבועה כתוב "מחובר".',
+            'בדוק ב"נסיעות וסינון" שלא כיבית קבוצות או סיננת יותר מדי.',
+            'ודא שהוואטסאפ מקושר לבוט (כתוב בראש ההגדרות).'),
+          guide('פרטיות',
+            'המיקום נשאר בטלפון. "מרחק אמיתי" שולח אותו לשירות מפות רק כשלוחצים.',
+            'הצ\'אטים עוברים מוצפנים. הודעות הקבוצות נשמרות רק בזיכרון של השרת.')),
+      ];
+    },
+
+    telegram() {
+      return [telegramScreen()];
     },
   };
 
@@ -374,7 +509,8 @@ window.createSettings = function createSettings(ctx) {
       link('speech', info.speech ? 'פועלת, רק כשהמסך דלוק' : 'כבויה'),
       link('alerts', info.alerts ? 'פועלות' : 'כבויות'),
       link('display', 'מצב כהה, גודל טקסט, מרחק וזמן'),
-      link('help', 'הסברים קצרים'),
+      link('telegram', 'חיבור, ניתוק ומספר אחר'),
+      link('help', 'מדריך לכל נושא'),
       info.chatKey ? button('ניתוק הצ\'אטים מהטלפון הזה', ctx.chatsOff, 'wide') : null,
       button('התנתק', ctx.logout, 'danger wide'),
       h('p', { className: 'muted version' }, `גרסה ${info.version}`),
@@ -389,12 +525,14 @@ window.createSettings = function createSettings(ctx) {
     back() {
       if (!page) return false;
       page = page === 'groups' ? 'filters' : page === 'chatMute' ? 'alerts' : null;
+      if (page === null) tg.stage = 'idle';
       ctx.render();
       return true;
     },
     reset() {
       page = null;
       groups = null;
+      tg = { loaded: false, status: null, error: '', stage: 'idle', number: '' };
     },
     // רענון מהשרת לא דורס שינוי שעוד נשמר
     merge(next, previous) {
