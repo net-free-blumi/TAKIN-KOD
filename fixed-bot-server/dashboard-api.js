@@ -256,6 +256,11 @@ export function recordError(category, err, extra = {}) {
   console.error(`🔴 [ErrorTracker] [${category}]:`, message, extra);
 }
 
+// יומן הפעילות (לקריאה בלבד, עבור ה-AI של המנהל)
+export function getRecentEvents() {
+  return logs;
+}
+
 export function getErrorReports() {
   return errorReports;
 }

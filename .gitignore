@@ -22,3 +22,4 @@ driver-app-chats
 *.keystore
 signing.properties
 driver-app/build
+admin-ai-state.json

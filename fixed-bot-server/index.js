@@ -4,7 +4,9 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { normalizeText, isSearchCommand, isStopCommand, hasStopWord, extractRequestPhone, parseDriverCommand, processDriverCommand, rideMatches, matchesAnySearch, findPlaces, extractDispatcherContact, buildQuotedRideMessage } from "./matcher.js";
 import { createDeduper } from "./dedupe.js";
-import { startDashboard, recordEvent, recordError } from "./dashboard-api.js";
+import { startDashboard, recordEvent, recordError, getRecentEvents, getErrorReports } from "./dashboard-api.js";
+import { createAdminAiFromEnv } from "./admin-ai.js";
+import { createReadOnlyTools } from "./admin-ai-tools.js";
 
 import "dotenv/config";
 
@@ -124,6 +126,18 @@ const DEDUPE_MINUTES = 15;
 const NOTIFY_ON_RESET = false;
 
 // קבוצת וואטסאפ ייעודית לתיקוני באגים ונסיעות לא רלוונטיות
+// צ'אט AI למנהל (שלב 1: קריאה בלבד). כבוי כל עוד אין ANTHROPIC_API_KEY ו-ADMIN_AI_JIDS ב-.env
+const adminAi = createAdminAiFromEnv({
+  statePath: path.join(__dirname, "admin-ai-state.json"),
+  tools: createReadOnlyTools({
+    getSessionsSummary: () => getAllSessionsSummary(),
+    getConnectionHealth: () => getConnectionHealth(),
+    getEvents: () => getRecentEvents(),
+    getErrors: () => getErrorReports(),
+    loadUsers: () => loadUsersData(),
+  }),
+});
+
 export const BUG_REPORT_GROUP_JID = "120363402521442927@g.us";
 
 const groupMetadataCache = new Map();
@@ -1541,6 +1555,10 @@ async function handleIncomingMessage(sock, upsert, sessionContext) {
 
     const text = extractMessageText(m);
     if (!text) continue;
+    // צ'אט AI של המנהל: זיהוי לפי jid מדויק בלבד, לפני כל מיפוי LID. העבודה רצה ברקע
+    if (!isGroup && sessionContext.isMainBot && !m.key.fromMe) {
+      if (adminAi.maybeHandle({ key: m.key, text, send: (t) => (getMainBotSock() || sock).sendMessage(jid, { text: t }) })) continue;
+    }
     // אישור הצ'אטים של האפליקציה מטופל בסשן של הנהג. הבוט לא עונה עליו
     if (!isGroup && sessionContext.isMainBot && CONFIRM_RE.test(text.trim())) continue;
 
@@ -1598,7 +1616,11 @@ async function handleIncomingMessage(sock, upsert, sessionContext) {
           const directPhoneMatch = text.trim().match(/^(?:05\d-?\d{7}|9725\d{8})$/);
           if (directPhoneMatch) {
             const num = cleanPhone(directPhoneMatch[0]);
-            if (num && num.length >= 9 && num.length <= 12) {
+            // אסור למפות מספר שהוקלד למספר המנהל: כל אחד יכול להקליד אותו ולקבל הרשאות מנהל
+            if (num && isUserAdmin(num)) {
+              console.warn(`⚠️ [זיהוי LID]: ניסיון לזהות LID ${jid} כמספר המנהל לפי טקסט. נחסם.`);
+              recordEvent("system", `⚠️ נחסם ניסיון להתחזות למנהל דרך הקלדת מספר (LID ${String(jid).slice(-6)})`);
+            } else if (num && num.length >= 9 && num.length <= 12) {
               detectedPhone = num;
               console.log(`📱 [זיהוי LID]: משתמש סיפק בעצמו מספר טלפון בהודעה: ${num}`);
             }
