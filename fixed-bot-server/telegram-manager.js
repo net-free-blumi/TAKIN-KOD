@@ -38,9 +38,12 @@ if (!fs.existsSync(TELEGRAM_AUTH_DIR)) {
   fs.mkdirSync(TELEGRAM_AUTH_DIR, { recursive: true });
 }
 
-// מפתחות Telegram API הרשמיים (ניתן לדריסה ע"י משתני סביבה)
-const TELEGRAM_API_ID = Number(process.env.TELEGRAM_API_ID || 31336167);
-const TELEGRAM_API_HASH = process.env.TELEGRAM_API_HASH || "465c772d7f2e13a2b27f316dec8f5111";
+// מפתחות Telegram API מגיעים רק מ-.env של השרת (הריפו ציבורי)
+const TELEGRAM_API_ID = Number(process.env.TELEGRAM_API_ID || 0);
+const TELEGRAM_API_HASH = String(process.env.TELEGRAM_API_HASH || "");
+if (!TELEGRAM_API_ID || !TELEGRAM_API_HASH) {
+  console.warn("⚠️ TELEGRAM_API_ID / TELEGRAM_API_HASH לא הוגדרו ב-.env - חיבור חשבונות טלגרם של נהגים לא יעבוד");
+}
 
 // לקוחות טלגרם פעילים: phone -> TelegramClient
 const activeTelegramClients = new Map();
@@ -337,6 +340,7 @@ export function hasPendingTelegramVerification(phone) {
 export async function disconnectTelegram(phone) {
   const p = cleanPhone(phone);
   const client = activeTelegramClients.get(p);
+  stopTelegramPolling(p);
   if (client) {
     try { await client.disconnect(); } catch (e) {}
     activeTelegramClients.delete(p);
@@ -461,11 +465,41 @@ const processedTgMsgKeys = new Set();
 function markTgMsgProcessed(key) {
   if (processedTgMsgKeys.has(key)) return false;
   processedTgMsgKeys.add(key);
-  if (processedTgMsgKeys.size > 3000) {
+  if (processedTgMsgKeys.size > 20000) {
     const first = processedTgMsgKeys.values().next().value;
     processedTgMsgKeys.delete(first);
   }
   return true;
+}
+
+// מונים לכל נהג: כמה הודעות טלגרם הגיעו ולמה לא נשלחו. מודפס ללוג כל 10 דקות
+const tgStats = new Map();
+function bumpTgStat(phone, field) {
+  const p = cleanPhone(phone);
+  let s = tgStats.get(p);
+  if (!s) {
+    s = {};
+    tgStats.set(p, s);
+  }
+  s[field] = (s[field] || 0) + 1;
+}
+export function getTelegramReadStats(phone) {
+  return { ...(tgStats.get(cleanPhone(phone)) || {}) };
+}
+const TG_STAT_LABELS = {
+  push: "push", poll: "סריקה", short: "קצרות", out: "שלו", old: "ישנות", noSearch: "אין חיפוש פעיל",
+  notGroup: "פרטי", ownAlerts: "קבוצת ההתראות", junk: "לא נסיעה", noMatch: "לא תאם לחיפוש",
+  filtered: "הגדרות נסיעות", duplicate: "כפול", matched: "✅ נשלחו",
+};
+function flushTgStats(phone) {
+  const p = cleanPhone(phone);
+  const s = tgStats.get(p) || {};
+  tgStats.delete(p);
+  const total = (s.push || 0) + (s.poll || 0);
+  const parts = Object.entries(TG_STAT_LABELS)
+    .filter(([k]) => s[k])
+    .map(([k, label]) => `${label}: ${s[k]}`);
+  console.log(`📊 [טלגרם נהג ${p}] 10 דקות אחרונות: ${total} הודעות${parts.length ? " (" + parts.join(", ") + ")" : ""}`);
 }
 
 async function handleIncomingTelegramMessage(client, driverPhone, message, sourceEvent = "new_message") {
@@ -473,27 +507,30 @@ async function handleIncomingTelegramMessage(client, driverPhone, message, sourc
     if (!message) return;
     const rawContent = message.text || message.message || "";
     const text = String(rawContent).trim();
-    if (text.length < 5) return;
 
     // חילוץ מזהה צ'אט/ערוץ והודעה
     const peer = message.peerId;
     const rawChatId = message.chatId || peer?.channelId || peer?.chatId || peer?.userId;
     const msgId = message.id;
-    const dedupKey = `${rawChatId}_${msgId}`;
+    // המפתח כולל את הנהג: אותה הודעה בקבוצה משותפת צריכה להגיע לכל נהג לפי החיפוש שלו.
+    // מזהה הקבוצה מנורמל (777 ו--100777 הם אותו ערוץ), כדי שה-push והסריקה לא יעבדו פעמיים
+    const dedupKey = `${cleanPhone(driverPhone)}:${telegramGroupKey(rawChatId) || rawChatId}_${msgId}`;
 
     if (!markTgMsgProcessed(dedupKey)) {
-      return; // כבר עובד במאזין המקביל
+      return; // כבר עובד במאזין המקביל או בסריקה
     }
+    bumpTgStat(driverPhone, sourceEvent === "poll" ? "poll" : "push");
+    if (text.length < 5) return bumpTgStat(driverPhone, "short");
 
     // בדיקה האם לנהג זה יש חיפוש פעיל
     // הודעות שהנהג עצמו שלח / הודעות ישנות שמגיעות בהשלמת עדכונים אחרי ניתוק - לא נסיעות חדשות
-    if (message.out) return;
+    if (message.out) return bumpTgStat(driverPhone, "out");
     const msgDateSec = Number(message.date) || 0;
-    if (msgDateSec && Date.now() / 1000 - msgDateSec > 10 * 60) return;
+    if (msgDateSec && Date.now() / 1000 - msgDateSec > 10 * 60) return bumpTgStat(driverPhone, "old");
 
     const driverSearch = systemCallbacks.getUserSearch(driverPhone);
     if (!driverSearch || !driverSearch.active) {
-      return;
+      return bumpTgStat(driverPhone, "noSearch");
     }
 
     // חילוץ פרטי הקבוצה/ערוץ עם גיבוי ל-getEntity
@@ -517,17 +554,14 @@ async function handleIncomingTelegramMessage(client, driverPhone, message, sourc
       peer?.chatId
     );
 
-    if (!isChannelOrGroup) return;
+    if (!isChannelOrGroup) return bumpTgStat(driverPhone, "notGroup");
 
     const groupName = (chat?.title || chat?.name || (peer?.channelId ? `ערוץ טלגרם (${peer.channelId})` : "קבוצת טלגרם")).trim();
 
-    // סינון קבוצת היעד של ההתראות כדי למנוע לולאת סריקה עצמית
-    if (
-      groupName.includes("נסיעות זמינות מהבוט") ||
-      groupName.includes("נסיעות זמינות") ||
-      String(rawChatId).includes("5442068385")
-    ) {
-      return;
+    // סינון קבוצת היעד של ההתראות כדי למנוע לולאת סריקה עצמית.
+    // רק הקבוצה של הבוט עצמו: קבוצת סדרנים אמיתית שנקראת למשל "נסיעות זמינות בית שמש" חייבת להיקרא
+    if (isBotAlertGroupTitle(groupName) || String(rawChatId).includes("5442068385")) {
+      return bumpTgStat(driverPhone, "ownAlerts");
     }
 
     let senderName = "סדרן בטלגרם";
@@ -553,27 +587,27 @@ async function handleIncomingTelegramMessage(client, driverPhone, message, sourc
     const junk = systemCallbacks.detectNonRide(cleanedText);
     if (junk) {
       console.log(`ℹ️ [טלגרם נהג ${driverPhone}] נפסל כספאם/לא נסיעה (${junk}) מקבוצה "${groupName}": "${cleanedText.slice(0, 40)}"`);
-      return;
+      return bumpTgStat(driverPhone, "junk");
     }
 
     // בדיקת התאמה לחיפוש הפעיל של הנהג
     const verdict = systemCallbacks.matchesAnySearch(cleanedText, driverSearch, groupName);
     if (!verdict.ok) {
-      return;
+      return bumpTgStat(driverPhone, "noMatch");
     }
 
     // הגדרות הנסיעות של הנהג, לפני הכפילות כמו בוואטסאפ
     const skip = systemCallbacks.filterRide(driverPhone, { text: cleanedText, groupJid: telegramGroupKey(rawChatId) });
     if (skip) {
       systemCallbacks.recordEvent?.("filter_reject", `נהג ${driverPhone}: ${skip}`);
-      return;
+      return bumpTgStat(driverPhone, "filtered");
     }
 
     // בדיקת כפילות ייעודית לטלגרם (וואטסאפ לא חוסם טלגרם)
     const dup = systemCallbacks.deduper.check(cleanedText, `tg_${driverPhone}`);
     if (dup.duplicate) {
       console.log(`ℹ️ [טלגרם נהג ${driverPhone}] נסיעה כפולה (נשלחה כבר לאחרונה) מקבוצה "${groupName}"`);
-      return;
+      return bumpTgStat(driverPhone, "duplicate");
     }
 
     // יצירת קישור ישיר מדויק להודעה בטלגרם (פותח את ההודעה ישירות ומדגיש אותה!)
@@ -628,6 +662,7 @@ async function handleIncomingTelegramMessage(client, driverPhone, message, sourc
       buttonsList,
     };
 
+    bumpTgStat(driverPhone, "matched");
     console.log(`✈️ [טלגרם -> נהג ${driverPhone}] נסיעה מתאימה מ-${groupName}! "${cleanedText.slice(0, 50)}..."`);
     systemCallbacks.recordEvent?.("sent", `טלגרם (${groupName}) ⬅️ ${driverPhone}`, {
       text: cleanedText.slice(0, 80),
@@ -683,6 +718,86 @@ async function attachTelegramMessageListener(client, driverPhone) {
       }
     } catch (e) {}
   });
+
+  // מאזין 3: סריקה תקופתית. ספריית GramJS מפספסת עדכונים מערוצים וקבוצות גדולות
+  // (במיוחד אחרי ניתוק וחיבור מחדש), ואז שום נסיעה לא מגיעה. הסריקה משלימה את מה שה-push פספס
+  startTelegramPolling(client, driverPhone);
+}
+
+// ==========================================
+// 5.5. סריקה תקופתית של קבוצות וערוצים (גיבוי ל-push)
+// ==========================================
+const TG_POLL_MS = Math.max(15000, Number(process.env.TELEGRAM_POLL_MS) || 30000);
+const TG_POLL_MAX_FETCH = 15; // כמה קבוצות עם הודעות חדשות נקראות בכל סבב
+const TG_STATS_EVERY_MS = 10 * 60 * 1000;
+const tgPollers = new Map(); // phone -> { timer, client, lastTop: Map, statsAt }
+
+export function stopTelegramPolling(phone) {
+  const p = cleanPhone(phone);
+  const st = tgPollers.get(p);
+  if (st?.timer) clearTimeout(st.timer);
+  tgPollers.delete(p);
+}
+
+export function startTelegramPolling(client, driverPhone, { intervalMs = TG_POLL_MS, now = Date.now } = {}) {
+  const p = cleanPhone(driverPhone);
+  stopTelegramPolling(p);
+  const st = { timer: null, client, lastTop: new Map(), statsAt: now(), intervalMs, now };
+  tgPollers.set(p, st);
+  const schedule = (ms) => {
+    if (tgPollers.get(p) !== st) return;
+    st.timer = setTimeout(tick, ms);
+    st.timer.unref?.();
+  };
+  const tick = async () => {
+    if (tgPollers.get(p) !== st) return;
+    let wait = st.intervalMs;
+    try {
+      // הלקוח הוחלף או נותק: הסריקה של הלקוח הזה נגמרת
+      if (activeTelegramClients.get(p) !== client) return stopTelegramPolling(p);
+      if (client.connected !== false) await pollTelegramOnce(client, p, st);
+    } catch (e) {
+      const sec = Number(e?.seconds) || 0;
+      wait = Math.max(st.intervalMs, sec ? (sec + 5) * 1000 : 60000);
+      console.error(`⚠️ [טלגרם נהג ${p}] סריקה נכשלה: ${e?.message || e}. מנסה שוב בעוד ${Math.round(wait / 1000)} שניות`);
+    }
+    if (st.now() - st.statsAt >= TG_STATS_EVERY_MS) {
+      st.statsAt = st.now();
+      flushTgStats(p);
+    }
+    schedule(wait);
+  };
+  schedule(st.intervalMs);
+  return st;
+}
+
+// קריאה אחת: getDialogs מחזיר את ההודעה האחרונה בכל קבוצה. רק קבוצות שיש בהן הודעה חדשה נקראות
+export async function pollTelegramOnce(client, driverPhone, st) {
+  const p = cleanPhone(driverPhone);
+  const dialogs = await client.getDialogs({ limit: 100 });
+  let fetched = 0;
+  for (const d of dialogs || []) {
+    if (!(d?.isGroup || d?.isChannel)) continue;
+    const key = telegramGroupKey(d.id);
+    const top = Number(d.message?.id) || 0;
+    if (!key || !top) continue;
+    const prev = st.lastTop.get(key);
+    st.lastTop.set(key, top);
+    // פעם ראשונה שרואים את הקבוצה: רק נקודת התחלה, בלי לשלוח הודעות ישנות
+    if (prev === undefined || top <= prev) continue;
+    if (isBotAlertGroupTitle(d.title || d.name)) continue;
+    if (fetched >= TG_POLL_MAX_FETCH) {
+      st.lastTop.set(key, prev); // ייקרא בסבב הבא
+      continue;
+    }
+    fetched++;
+    const msgs = await client.getMessages(d.inputEntity || d.entity || d.id, { minId: prev, limit: 20 });
+    const list = Array.from(msgs || []).sort((a, b) => (a.id || 0) - (b.id || 0));
+    for (const m of list) {
+      if ((m?.id || 0) > prev) await handleIncomingTelegramMessage(client, p, m, "poll");
+    }
+  }
+  return fetched;
 }
 
 // ==========================================
@@ -730,19 +845,24 @@ async function deliverTelegramRideAlert(driverPhone, rideData, originalTelegramM
 
 const driverTargetGroupCache = new Map();
 
+// הקבוצה שהבוט שולח אליה התראות ("נסיעות זמינות מהבוט"). לא כל קבוצה שבשמה "נסיעות זמינות"
+export function isBotAlertGroupTitle(title) {
+  const t = String(title || "").trim();
+  const targetName = (process.env.TELEGRAM_GROUP_NAME || "נסיעות זמינות מהבוט").trim();
+  return t === targetName || t.includes("נסיעות זמינות מהבוט");
+}
+
 // מציאת קבוצת היעד של הנהג בטלגרם
 export async function findDriverAlertGroup(client, phone) {
   const p = cleanPhone(phone);
   const cached = driverTargetGroupCache.get(p);
   if (cached) return cached;
 
-  const targetName = process.env.TELEGRAM_GROUP_NAME || "נסיעות זמינות מהבוט";
-
   try {
     const dialogs = await client.getDialogs({ limit: 200 });
     for (const d of dialogs) {
       const title = (d.title || d.name || "").trim();
-      if (title.includes(targetName) || title.includes("נסיעות זמינות")) {
+      if (isBotAlertGroupTitle(title)) {
         console.log(`✈️ [טלגרם נהג ${p}] נמצאה קבוצת היעד: "${title}" (ID: ${d.id})`);
         const targetEntity = d.inputEntity || d.entity || d.id;
         driverTargetGroupCache.set(p, targetEntity);
