@@ -387,7 +387,14 @@ window.createChats = function createChats(ctx) {
 
   return {
     screen, update, setActive, refresh, openRide, back, reset, confirmOff, customerFor,
+    // מהתראה על הודעה חדשה
+    openChat(id) {
+      ctx.goChats();
+      if (id && paired() && s.ready) show(id);
+    },
     isOpen: () => Boolean(s.open && s.ready),
     unread: () => s.list.filter((c) => c.unread).length,
+    list: () => s.list,
+    isPaired: () => paired(),
   };
 };

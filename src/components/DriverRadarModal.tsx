@@ -559,15 +559,17 @@ export function DriverRadarModal({
     return rides.map((ride) => {
       const rawText = ride.cleanedText || ride.rawText || '';
       const parsed = parseRideRoute(rawText, ride.senderPhone);
+      // שרת חדש שולח מסלול בדוק. לא ממציאים מוצא כשהוא לא כתוב
+      const checked = ride.routeChecked === true;
 
       // נקודת האיסוף וקואורדינטות איסוף
-      const originNeighborhood = parsed.originNeighborhood;
-      const originCoords = parsed.originCoords;
-      const originText = parsed.originText;
+      const originNeighborhood = checked ? ride.originNeighborhood || 'מוצא לא ברור' : parsed.originNeighborhood;
+      const originCoords = checked ? ride.originCoords || null : parsed.originCoords;
+      const originText = checked ? ride.originText || '' : parsed.originText;
 
       // יעד הנסיעה
-      const destNeighborhood = parsed.destNeighborhood;
-      const destinationText = parsed.destinationText;
+      const destNeighborhood = checked ? ride.destNeighborhood || 'יעד לא צוין' : parsed.destNeighborhood;
+      const destinationText = checked ? ride.destinationText || '' : parsed.destinationText;
 
       // חישוב מרחק מדויק ממיקום הנהג הנוכחי עד לנקודת האיסוף (כדי שהנהג ידע כמה זמן ייקח לו להגיע ללקוח!)
       let distanceKm: number | null = null;
@@ -585,7 +587,7 @@ export function DriverRadarModal({
       }
 
       // קישור ניווט Waze ייקח את הנהג ישירות לנקודת האיסוף של הלקוח
-      const wazeUrl = generateWazeUrl(originText || originNeighborhood, 'בית שמש', originCoords);
+      const wazeUrl = checked ? ride.wazeUrl || undefined : generateWazeUrl(originText || originNeighborhood, 'בית שמש', parsed.originCoords);
 
       // חילוץ סדרן מדויק (אם היה 0 או לא צוין, מנקים ומחלצים מההודעה)
       let cleanDispatcher = parsed.dispatcherPhone || ride.senderPhone;
@@ -593,7 +595,7 @@ export function DriverRadarModal({
         cleanDispatcher = extractDispatcherPhone(rawText) || '';
       }
 
-      const price = parsed.price || ride.price || null;
+      const price = checked ? ride.price || null : parsed.price || ride.price || null;
       const isInternal = parsed.isInternal || ride.isInternal || false;
 
       // שעת שליחת ההודעה המדויקת בוואטסאפ (שעה ודקה)
@@ -1179,7 +1181,7 @@ export function DriverRadarModal({
                     isCockpitMode ? 'py-2.5' : 'py-2'
                   }`}>
                     {/* Waze Quick Navigation Button */}
-                    <a
+                    {ride.wazeUrl ? <a
                       href={ride.wazeUrl}
                       target="_blank"
                       rel="noopener noreferrer"
@@ -1188,7 +1190,7 @@ export function DriverRadarModal({
                     >
                       <Navigation className="w-3.5 h-3.5 text-blue-400" />
                       <span>Waze</span>
-                    </a>
+                    </a> : null}
 
                     {/* Action Button: Telegram vs WhatsApp */}
                     {ride.isTelegram ? (

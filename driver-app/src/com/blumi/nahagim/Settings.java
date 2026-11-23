@@ -28,7 +28,8 @@ final class Settings {
     }
 
     String speechMode() {
-        return prefs.getString("speechMode", "full");
+        // Route and price by default: the driver asked not to hear whole messages
+        return prefs.getString("speechMode", "short");
     }
 
     void setSpeechMode(String mode) {
@@ -65,5 +66,60 @@ final class Settings {
 
     void setSpeechRate(String rate) {
         prefs.edit().putString("speechRate", rate).commit();
+    }
+
+    /** Percent of the media volume, 10 to 100. */
+    int speechVolume() {
+        return prefs.getInt("speechVolume", 100);
+    }
+
+    void setSpeechVolume(int percent) {
+        prefs.edit().putInt("speechVolume", percent).commit();
+    }
+
+    /** How long a ride stays in the notification shade. */
+    int alertMinutes() {
+        return prefs.getInt("alertMinutes", 25);
+    }
+
+    void setAlertMinutes(int minutes) {
+        prefs.edit().putInt("alertMinutes", minutes).commit();
+    }
+
+    /** Seconds the ride pops up on the screen. 0 = the phone decides. */
+    int popupSeconds() {
+        return prefs.getInt("popupSeconds", 0);
+    }
+
+    void setPopupSeconds(int seconds) {
+        prefs.edit().putInt("popupSeconds", seconds).commit();
+    }
+
+    /** Chats the driver muted, as a JSON array of chat ids. */
+    String mutedChats() {
+        return prefs.getString("mutedChats", "[]");
+    }
+
+    void setMutedChats(String json) {
+        prefs.edit().putString("mutedChats", json).commit();
+    }
+
+    boolean chatMuted(String id) {
+        try {
+            org.json.JSONArray list = new org.json.JSONArray(mutedChats());
+            for (int i = 0; i < list.length(); i++) if (id.equals(list.optString(i))) return true;
+        } catch (org.json.JSONException e) {
+            return false;
+        }
+        return false;
+    }
+
+    /** Silent notifications for new WhatsApp chat messages, only while searching. */
+    boolean chatAlerts() {
+        return prefs.getBoolean("chatAlerts", true);
+    }
+
+    void setChatAlerts(boolean on) {
+        prefs.edit().putBoolean("chatAlerts", on).commit();
     }
 }

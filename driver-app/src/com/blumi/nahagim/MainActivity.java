@@ -34,6 +34,8 @@ public final class MainActivity extends Activity {
     private WebView web;
     private Bridge bridge;
     private volatile String rideToOpen = "";
+    private volatile String chatToOpen = "";
+    private FrameLayout root;
 
     @SuppressLint("SetJavaScriptEnabled")
     @Override
@@ -59,7 +61,7 @@ public final class MainActivity extends Activity {
         web.addJavascriptInterface(bridge, "Native");
 
         // Android 15 draws edge to edge, so keep clear of system bars and the keyboard
-        FrameLayout root = new FrameLayout(this);
+        root = new FrameLayout(this);
         root.setBackgroundColor(Color.WHITE);
         root.addView(web);
         if (Build.VERSION.SDK_INT >= 30) {
@@ -85,7 +87,42 @@ public final class MainActivity extends Activity {
         Locator.get(this).use("screen", true);
         PushService.sync(this);
         Speech.get(this).check();
+        Notifications.cancelChats(this);
         run("window.onNativeResume && window.onNativeResume()");
+    }
+
+    static boolean isVisible() {
+        return visible.get() != null;
+    }
+
+    boolean isNight() {
+        return (getResources().getConfiguration().uiMode & android.content.res.Configuration.UI_MODE_NIGHT_MASK)
+                == android.content.res.Configuration.UI_MODE_NIGHT_YES;
+    }
+
+    @Override
+    public void onConfigurationChanged(android.content.res.Configuration config) {
+        super.onConfigurationChanged(config);
+        run("window.onNativeTheme && window.onNativeTheme()");
+    }
+
+    /** Dark or light behind the page and under the system bars. */
+    void setDark(boolean dark) {
+        if (web == null) return;
+        int color = dark ? 0xFF10151C : Color.WHITE;
+        root.setBackgroundColor(color);
+        web.setBackgroundColor(color);
+        if (Build.VERSION.SDK_INT >= 30 && getWindow().getInsetsController() != null) {
+            int light = android.view.WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS
+                    | android.view.WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS;
+            getWindow().getInsetsController().setSystemBarsAppearance(dark ? 0 : light, light);
+        }
+    }
+
+    String takeChat() {
+        String id = chatToOpen;
+        chatToOpen = "";
+        return id;
     }
 
     @Override
@@ -96,6 +133,12 @@ public final class MainActivity extends Activity {
 
     private void readRide(Intent intent) {
         if (intent == null || (intent.getFlags() & Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY) != 0) return;
+        String chat = intent.getStringExtra(Notifications.EXTRA_CHAT);
+        if (chat != null && !chat.isEmpty()) {
+            chatToOpen = chat;
+            run("window.onNativeRide && window.onNativeRide()");
+            return;
+        }
         String id = intent.getStringExtra(Notifications.EXTRA_RIDE);
         if (id == null || id.isEmpty()) return;
         rideToOpen = id;

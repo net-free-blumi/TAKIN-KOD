@@ -12,6 +12,8 @@ import android.os.PowerManager;
 import android.util.Log;
 
 import java.net.HttpURLConnection;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -27,6 +29,7 @@ public final class PushService extends Service {
     private static final int MAX_RETRY_MS = 60000;
 
     private final Object retrySignal = new Object();
+    private final ExecutorService chatWorker = Executors.newSingleThreadExecutor();
     private volatile boolean running;
     private volatile HttpURLConnection current;
     private volatile boolean connected;
@@ -38,7 +41,8 @@ public final class PushService extends Service {
     static void sync(Context context) {
         Session session = new Session(context);
         Intent intent = new Intent(context, PushService.class);
-        if (!session.loggedIn() || !session.alertsEnabled()) {
+        // Busy = asleep: no background connection, no location, no battery
+        if (!session.loggedIn() || !session.alertsEnabled() || !session.searching()) {
             context.stopService(intent);
             return;
         }
@@ -81,7 +85,7 @@ public final class PushService extends Service {
     public int onStartCommand(Intent intent, int flags, int startId) {
         showForeground(); // required after every startForegroundService call
         Session session = new Session(this);
-        if (!session.loggedIn() || !session.alertsEnabled()) {
+        if (!session.loggedIn() || !session.alertsEnabled() || !session.searching()) {
             stopSelf();
             return START_NOT_STICKY;
         }
@@ -129,7 +133,8 @@ public final class PushService extends Service {
             try {
                 // Renewed on every request, so it cannot leak if the loop dies
                 wakeLock.acquire(READ_TIMEOUT_MS + MAX_RETRY_MS);
-                current = Api.open("GET", "/api/app/events?wait=" + WAIT_SECONDS + "&after=" + cursor, token,
+                String chat = session.chatKey().isEmpty() ? "" : "&chat=" + session.chatSeq();
+                current = Api.open("GET", "/api/app/events?wait=" + WAIT_SECONDS + "&after=" + cursor + chat, token,
                         READ_TIMEOUT_MS);
                 Api.Response response = Api.exchange(current, null);
                 if (!running) break;
@@ -151,6 +156,13 @@ public final class PushService extends Service {
                 retryMs = 2000;
                 showRides(response.body.optJSONArray("rides"));
                 session.setCursor(response.body.getLong("cursor"));
+                newChatMessages(session, response.body.optJSONObject("chat"));
+                if (!response.body.optBoolean("searching", true)) {
+                    // Busy, or the nightly stop: sleep until the driver searches again in the app
+                    session.setSearching(false);
+                    stopSelf();
+                    break;
+                }
             } catch (Exception e) {
                 if (!running) break;
                 Log.w(TAG, "connection failed: " + e);
@@ -189,6 +201,44 @@ public final class PushService extends Service {
         if (rides.length() > 0) MainActivity.refreshIfOpen();
     }
 
+    /** The server sends only a counter. The messages come over the encrypted channel. */
+    private void newChatMessages(Session session, JSONObject signal) {
+        if (signal == null || session.chatKey().isEmpty()) return;
+        long seq = signal.optLong("seq");
+        long saved = session.chatSeq();
+        if (seq <= saved) return;
+        session.setChatSeq(seq);
+        // The first count is a starting point, not news. And only while searching
+        if (saved == 0 || !signal.optBoolean("notify") || !new Settings(this).chatAlerts()) return;
+        if (MainActivity.isVisible() || chatWorker.isShutdown()) return;
+        chatWorker.execute(() -> {
+            try {
+                JSONObject answer = new ChatLink(session).call("sync", "{}");
+                if (answer.optInt("status") != 200) return;
+                JSONArray chats = answer.getJSONObject("body").optJSONArray("chats");
+                Settings settings = new Settings(this);
+                long since = session.chatNotifiedAt();
+                long newest = since;
+                for (int i = 0; chats != null && i < chats.length(); i++) {
+                    JSONObject chat = chats.getJSONObject(i);
+                    long at = chat.optLong("at");
+                    JSONObject last = chat.optJSONObject("last");
+                    if (chat.optInt("unread") <= 0 || at <= since || last == null || last.optBoolean("me")) continue;
+                    newest = Math.max(newest, at);
+                    if (settings.chatMuted(chat.optString("id"))) continue;
+                    String name = chat.optString("name");
+                    if (name.isEmpty()) name = chat.optString("phone").replaceFirst("^972", "0");
+                    Notifications.chat(this, chat.optString("id"), name.isEmpty() ? "הודעה חדשה" : name,
+                            last.optString("text"), chat.optInt("unread"));
+                    newest = Math.max(newest, at);
+                }
+                session.setChatNotifiedAt(newest);
+            } catch (Exception e) {
+                Log.w(TAG, "chat notification failed: " + e.getClass().getSimpleName());
+            }
+        });
+    }
+
     private void abortRequest() {
         HttpURLConnection connection = current;
         if (connection != null) new Thread(connection::disconnect).start();
@@ -197,6 +247,7 @@ public final class PushService extends Service {
     @Override
     public void onDestroy() {
         running = false;
+        chatWorker.shutdownNow();
         Locator.get(this).use("service", false);
         abortRequest();
         worker.interrupt();

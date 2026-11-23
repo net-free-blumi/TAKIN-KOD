@@ -13,8 +13,13 @@ final class Notifications {
     private static final int LOGIN_ID = 2;
     private static final String RIDES = "rides";
     private static final String RIDES_SPOKEN = "rides_spoken";
+    private static final String RIDES_QUIET = "rides_quiet";
+    private static final android.os.Handler MAIN = new android.os.Handler(android.os.Looper.getMainLooper());
     private static final String STATUS = "status";
+    private static final String CHATS = "chats";
+    private static final int CHAT_ID = 20;
     static final String EXTRA_RIDE = "ride";
+    static final String EXTRA_CHAT = "chat";
 
     private Notifications() {}
 
@@ -33,6 +38,19 @@ final class Notifications {
         spoken.enableVibration(true);
         spoken.setLockscreenVisibility(Notification.VISIBILITY_PRIVATE);
         manager.createNotificationChannel(spoken);
+
+        NotificationChannel chats = new NotificationChannel(CHATS, "הודעות בצ'אטים", NotificationManager.IMPORTANCE_DEFAULT);
+        chats.setSound(null, null); // silent, as the driver asked
+        chats.enableVibration(false);
+        chats.setLockscreenVisibility(Notification.VISIBILITY_PRIVATE);
+        manager.createNotificationChannel(chats);
+
+        // Same ride after its pop-up time: stays in the list without popping up again
+        NotificationChannel quiet = new NotificationChannel(RIDES_QUIET, "נסיעות ברשימה", NotificationManager.IMPORTANCE_DEFAULT);
+        quiet.setSound(null, null);
+        quiet.enableVibration(false);
+        quiet.setLockscreenVisibility(Notification.VISIBILITY_PRIVATE);
+        manager.createNotificationChannel(quiet);
 
         NotificationChannel status = new NotificationChannel(STATUS, "חיבור להתראות", NotificationManager.IMPORTANCE_LOW);
         status.setShowBadge(false);
@@ -77,7 +95,26 @@ final class Notifications {
     }
 
     static void ride(Context context, String id, String title, String text, boolean spoken) {
-        Notification.Builder builder = base(context, spoken ? RIDES_SPOKEN : RIDES, title, text);
+        post(context, id, title, text, spoken ? RIDES_SPOKEN : RIDES);
+        int seconds = new Settings(context).popupSeconds();
+        if (seconds <= 0 || id.isEmpty()) return;
+        Context app = context.getApplicationContext();
+        // Android has no pop-up length, so the ride is posted again quietly. Already dismissed = nothing
+        MAIN.postDelayed(() -> {
+            if (showing(app, id)) post(app, id, title, text, RIDES_QUIET);
+        }, seconds * 1000L);
+    }
+
+    private static boolean showing(Context context, String id) {
+        for (android.service.notification.StatusBarNotification shown
+                : context.getSystemService(NotificationManager.class).getActiveNotifications()) {
+            if (shown.getId() == 10 && id.equals(shown.getTag())) return true;
+        }
+        return false;
+    }
+
+    private static void post(Context context, String id, String title, String text, String channel) {
+        Notification.Builder builder = base(context, channel, title, text);
         if (!id.isEmpty()) {
             PendingIntent open = openApp(context, id);
             // Opens the ride for a deliberate tap on "ת". Never sends by itself
@@ -88,9 +125,34 @@ final class Notifications {
                 .setStyle(new Notification.BigTextStyle().bigText(text))
                 .setCategory(Notification.CATEGORY_MESSAGE)
                 .setAutoCancel(true)
-                .setTimeoutAfter(25 * 60 * 1000L)
+                .setTimeoutAfter(new Settings(context).alertMinutes() * 60 * 1000L)
                 .build();
         context.getSystemService(NotificationManager.class).notify(id, 10, notification);
+    }
+
+    static void chat(Context context, String chatId, String title, String text, int unread) {
+        Intent open = new Intent(context, MainActivity.class)
+                .addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP | Intent.FLAG_ACTIVITY_CLEAR_TOP)
+                .setAction("com.blumi.nahagim.CHAT." + chatId)
+                .putExtra(EXTRA_CHAT, chatId);
+        PendingIntent tap = PendingIntent.getActivity(context, 0, open,
+                PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
+        Notification notification = base(context, CHATS, title, text)
+                .setContentIntent(tap)
+                .setStyle(new Notification.BigTextStyle().bigText(text))
+                .setCategory(Notification.CATEGORY_MESSAGE)
+                .setNumber(unread)
+                .setAutoCancel(true)
+                .setTimeoutAfter(60 * 60 * 1000L)
+                .build();
+        context.getSystemService(NotificationManager.class).notify("chat:" + chatId, CHAT_ID, notification);
+    }
+
+    static void cancelChats(Context context) {
+        NotificationManager manager = context.getSystemService(NotificationManager.class);
+        for (android.service.notification.StatusBarNotification shown : manager.getActiveNotifications()) {
+            if (shown.getId() == CHAT_ID) manager.cancel(shown.getTag(), CHAT_ID);
+        }
     }
 
     static void dismiss(Context context, String id) {

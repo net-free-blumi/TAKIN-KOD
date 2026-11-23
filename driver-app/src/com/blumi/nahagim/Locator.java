@@ -123,6 +123,11 @@ final class Locator {
         return location;
     }
 
+    /** The current location, or null when unknown or too old. */
+    Location here() {
+        return current();
+    }
+
     /** Estimated road distance, or -1 when the location or pickup is unknown. */
     double km(double lat, double lng) {
         Location here = current();

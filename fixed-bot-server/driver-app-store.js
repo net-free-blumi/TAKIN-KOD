@@ -1,10 +1,13 @@
 // אחסון אפליקציית הנהגים: מכשירים מחוברים וקובץ נסיעות נפרד לכל נהג.
 // קובץ לכל נהג + שמירה מושהית, כדי לא להציף את הדיסק בכל התראה.
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
 const SAVE_DELAY_MS = 5000;
 export const MAX_RIDES_PER_DRIVER = 500;
+// היסטוריה אישית (נסיעות שהנהג ביקש, ביצע או רשם) לא נמחקת בגלל התראות
+export const MAX_HISTORY_PER_DRIVER = 20000;
+const BACKUP_DAYS = 14;
 
 export function createDriverAppStore(dir, { onError = console.error } = {}) {
   const drivers = new Map();
@@ -24,9 +27,29 @@ export function createDriverAppStore(dir, { onError = console.error } = {}) {
     }
   }
 
+  // עותק יומי של קובץ הנהג לפני שדורסים אותו, 14 יום אחורה
+  function backup(file) {
+    const full = path.join(dir, file);
+    if (!file.startsWith("rides-") || !existsSync(full)) return;
+    const day = new Date(statSync(full).mtimeMs).toISOString().slice(0, 10);
+    const folder = path.join(dir, "backup");
+    const prefix = `${file.slice(0, -".json".length)}.`;
+    const target = path.join(folder, `${prefix}${day}.json`);
+    if (existsSync(target)) return;
+    mkdirSync(folder, { recursive: true, mode: 0o700 });
+    copyFileSync(full, target);
+    const old = readdirSync(folder).filter((f) => f.startsWith(prefix)).sort().slice(0, -BACKUP_DAYS);
+    for (const f of old) rmSync(path.join(folder, f), { force: true });
+  }
+
   function write(file, data) {
     mkdirSync(dir, { recursive: true, mode: 0o700 });
     const full = path.join(dir, file);
+    try {
+      backup(file);
+    } catch (err) {
+      onError(err);
+    }
     const tmp = `${full}.tmp`;
     writeFileSync(tmp, JSON.stringify(data), { encoding: "utf8", mode: 0o600 });
     renameSync(tmp, full);
@@ -67,10 +90,12 @@ export function createDriverAppStore(dir, { onError = console.error } = {}) {
     data.seq = Math.max(Date.now(), data.seq + 1);
     const saved = { ...ride, seq: data.seq };
     data.rides.push(saved);
-    if (data.rides.length > MAX_RIDES_PER_DRIVER) {
-      // קודם מפנים התראות שהנהג לא נגע בהן. היסטוריה אישית נשמרת אחרונה.
-      const idx = data.rides.findIndex((r) => r.status === "new");
-      data.rides.splice(idx < 0 ? 0 : idx, 1);
+    // רק התראות שהנהג לא נגע בהן מתפנות. היסטוריה אישית נשמרת
+    const alerts = data.rides.filter((r) => r.status === "new").length;
+    if (alerts > MAX_RIDES_PER_DRIVER) {
+      data.rides.splice(data.rides.findIndex((r) => r.status === "new"), 1);
+    } else if (data.rides.length > MAX_HISTORY_PER_DRIVER + MAX_RIDES_PER_DRIVER) {
+      data.rides.splice(0, 1);
     }
     changed(phone);
     return saved;

@@ -273,6 +273,8 @@ export function getLiveRides(driverPhone = null) {
 
     const text = info.rideData?.cleanedText || info.rawText || "";
     const parsed = parseRideRoute(text, info.senderPhone);
+    // מסלול, מחיר וניווט מאותו זיהוי מקומות של ההתאמה. parseRideRoute ממציא מוצא וקורא שעה כמחיר
+    const checkedRoute = describeRoute(text);
 
     // חילוץ סדרן מדויק (אם היה 0 או לא תקין, נחלץ מהטקסט)
     let dispatcherPhone = parsed.dispatcherPhone || info.senderPhone;
@@ -292,22 +294,23 @@ export function getLiveRides(driverPhone = null) {
       }),
       rawText: info.rawText || text,
       cleanedText: text,
-      origin: "בית שמש",
-      originText: parsed.originText,
-      originNeighborhood: parsed.originNeighborhood,
-      originCoords: parsed.originCoords,
-      destination: parsed.destinationText,
-      destinationText: parsed.destinationText,
-      destNeighborhood: parsed.destNeighborhood,
-      destinationNeighborhood: parsed.destNeighborhood,
-      destinationCoords: parsed.destCoords,
+      origin: checkedRoute.pickupCity,
+      originText: checkedRoute.pickupPhrase,
+      originNeighborhood: checkedRoute.pickupCity,
+      originCoords: checkedRoute.pickup,
+      destination: checkedRoute.dropPhrase,
+      destinationText: checkedRoute.dropPhrase,
+      destNeighborhood: checkedRoute.dropCity,
+      destinationNeighborhood: checkedRoute.dropCity,
+      destinationCoords: null,
       isInternal: parsed.isInternal,
-      price: parsed.price,
+      price: checkedRoute.price,
+      routeChecked: true,
       groupName: info.groupName || "קבוצת נסיעות",
       groupJid: info.groupJid || null,
       dispatcherName: info.senderName || "סדרן",
       dispatcherPhone: dispatcherPhone || "",
-      wazeUrl: generateWazeUrl(parsed.originText || parsed.originNeighborhood, "בית שמש", parsed.originCoords),
+      wazeUrl: checkedRoute.waze,
       isDriveBot: Boolean(parsed.isDriveBot),
       drivebotUrl: parsed.drivebotUrl || null,
       drivebotCommand: parsed.drivebotCommand || null,

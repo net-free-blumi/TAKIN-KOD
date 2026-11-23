@@ -5,7 +5,7 @@ window.createSettings = function createSettings(ctx) {
   const { h, icon, button, toggle, segments, toast, sheet, closeSheet, native, api, local } = ctx;
   const TITLES = {
     filters: 'נסיעות וסינון', groups: 'קבוצות', claim: 'בקשת נסיעה', location: 'מיקום ומרחק',
-    speech: 'הקראה קולית', alerts: 'התראות', display: 'תצוגה', help: 'עזרה',
+    speech: 'הקראה קולית', alerts: 'התראות', display: 'תצוגה', help: 'עזרה', chatMute: 'התראות מצ\'אטים',
   };
   const VEHICLES = [
     ['station', 'סטיישן'], ['van', 'מיניוואן, 6-7 מקומות'], ['eight', '8 מקומות'], ['minibus', 'מיניבוס, 10 ומעלה'],
@@ -86,6 +86,20 @@ window.createSettings = function createSettings(ctx) {
       groupsError = err.message;
     }
     if (page === 'groups') ctx.render();
+  }
+
+  // נשמר כשמשחררים, ומשמיע דוגמה בעוצמה החדשה
+  function volumeSlider(value) {
+    const slider = h('input', { id: 'volume', type: 'range', min: 10, max: 100, step: 10, value });
+    slider.setAttribute('aria-label', 'עוצמת ההקראה');
+    slider.oninput = () => {
+      slider.previousElementSibling.textContent = `עוצמה: ${slider.value}%`;
+    };
+    slider.onchange = () => {
+      native.setSpeechVolume(Number(slider.value));
+      ctx.speak('בב ים 180 ש"ח');
+    };
+    return slider;
   }
 
   const pages = {
@@ -224,12 +238,18 @@ window.createSettings = function createSettings(ctx) {
         item('לכבד מצב שקט', 'כבוי = מקריא גם בשקט ובנא לא להפריע. בשיחה מחכה לסיומה',
           toggle(info.respectQuiet, () => { native.setRespectQuiet(!info.respectQuiet); ctx.render(); }, 'לכבד מצב שקט')),
         h('p', { className: 'sub' }, 'מה להקריא'),
-        segments([['full', 'ההודעה, בקצרה'], ['short', 'מסלול ומחיר']], info.speechMode,
+        segments([['short', 'מסלול ומחיר'], ['full', 'ההודעה, עד 10 שניות']], info.speechMode,
           (value) => { native.setSpeechMode(value); ctx.render(); }),
+        h('p', { className: 'muted' }, info.speechMode === 'short'
+          ? 'מאיפה, לאן ומחיר. כשהמסלול לא ברור: תחילת ההודעה, בלי מספרים וקישורים.'
+          : 'ההודעה עצמה בלי קישורים ומספרי טלפון, עד כ-10 שניות.'),
+        h('p', { className: 'sub' }, `עוצמה: ${info.speechVolume}%`),
+        volumeSlider(info.speechVolume),
         h('p', { className: 'sub' }, 'מהירות'),
         segments([['slow', 'איטי'], ['normal', 'רגיל'], ['fast', 'מהיר']], info.speechRate,
           (value) => { native.setSpeechRate(value); ctx.render(); }),
-        button('השמע דוגמה', () => ctx.speak('בב ים 180 ש"ח'), 'wide'))];
+        button('השמע דוגמה', () => ctx.speak('בב ים 180 ש"ח'), 'wide'),
+        h('p', { className: 'muted' }, 'העוצמה היא חלק מעוצמת המדיה של הטלפון.'))];
     },
 
     alerts() {
@@ -237,21 +257,83 @@ window.createSettings = function createSettings(ctx) {
       return [section(
         item('התראות על נסיעות', 'בלעדיהן אין גם הקראה',
           toggle(info.alerts, () => { native.setAlerts(!info.alerts); ctx.render(); }, 'התראות על נסיעות')),
+        h('p', { className: 'sub' }, 'כמה זמן הנסיעה קופצת על המסך'),
+        segments([[0, 'כמו בטלפון'], [2, '2 שנ\''], [3, '3 שנ\''], [5, '5 שנ\''], [10, '10 שנ\''], [30, '30 שנ\'']],
+          info.popupSeconds, (value) => { native.setPopupSeconds(value); ctx.render(); }),
+        h('p', { className: 'muted' }, 'אחרי הזמן הזה היא יורדת מהמסך ונשארת ברשימת ההתראות.'),
+        h('p', { className: 'sub' }, 'כמה זמן היא נשארת ברשימת ההתראות'),
+        segments([[1, 'דקה'], [3, '3 דק\''], [5, '5 דק\''], [10, '10 דק\''], [25, '25 דק\''], [60, 'שעה']],
+          info.alertMinutes, (value) => { native.setAlertMinutes(value); ctx.render(); }),
+        item('התראה על הודעות בצ\'אטים', 'בלי צליל, ורק כשיש חיפוש פעיל. צריך צ\'אטים מחוברים',
+          toggle(info.chatAlerts, () => { native.setChatAlerts(!info.chatAlerts); ctx.render(); }, 'התראה על הודעות בצ\'אטים')),
+        info.chatAlerts ? valueRow('ממי לא לקבל התראות', 'למשל צ\'אט שכבר מתריע בוואטסאפ',
+          info.mutedChats.length ? `${info.mutedChats.length} מושתקים` : 'מכולם', () => go('chatMute')) : null,
         button('שלח התראת בדיקה', () => native.testNotification(), 'wide'),
         button('צליל והרשאות', () => native.fixNotifications(), 'wide'),
         info.battery ? null : button('ביטול הגבלת סוללה', () => native.fixBattery(), 'wide'))];
     },
 
     display() {
+      const flag = (key, fallback, title, note) => item(title, note,
+        toggle(ctx.pref(key, fallback), () => { ctx.setPref(key, !ctx.pref(key, fallback)); ctx.render(); }, title));
       return [section(
-        h('h2', null, 'גודל טקסט'),
-        segments([['normal', 'רגיל'], ['large', 'גדול'], ['huge', 'ענק']], ctx.pref('size', 'normal'), (value) => {
-          ctx.setPref('size', value);
+        h('h2', null, 'מצב תצוגה'),
+        segments([['light', 'בהיר'], ['dark', 'כהה'], ['auto', 'אוטומטי']], ctx.pref('theme', 'light'), (value) => {
+          ctx.setPref('theme', value);
           ctx.applySize();
           ctx.render();
         }),
+        h('p', { className: 'muted' }, 'אוטומטי = לפי מצב הלילה של הטלפון.')),
+      section(
+        h('h2', null, 'גודל טקסט'),
+        segments([['xs', 'קטן מאוד'], ['small', 'קטן'], ['normal', 'רגיל'], ['large', 'גדול'], ['huge', 'ענק'], ['giant', 'ענק מאוד']],
+          ctx.pref('size', 'normal'), (value) => {
+            ctx.setPref('size', value);
+            ctx.applySize();
+            ctx.render();
+          })),
+      section(
+        h('h2', null, 'צפיפות המסך'),
+        segments([['compact', 'צפוף'], ['normal', 'רגיל'], ['roomy', 'מרווח']], ctx.pref('density', 'compact'), (value) => {
+          ctx.setPref('density', value);
+          ctx.applySize();
+          ctx.render();
+        }),
+        h('p', { className: 'muted' }, 'צפוף = יותר נסיעות במסך, כפתורים קטנים יותר.'),
+        h('p', { className: 'sub' }, 'כמה שורות מההודעה להציג'),
+        segments([[2, '2'], [3, '3'], [5, '5'], [0, 'הכול']], ctx.pref('lines', 3), (value) => {
+          ctx.setPref('lines', value);
+          ctx.applySize();
+          ctx.render();
+        }),
+        h('p', { className: 'muted' }, 'לחיצה על ההודעה בנסיעה פותחת את כולה.')),
+      section(
+        h('h2', null, 'בכל נסיעה'),
+        flag('showKm', true, 'מרחק ממך', 'צריך מיקום פעיל'),
+        flag('showEta', true, 'זמן נסיעה משוער', 'הערכה לפי המרחק. "מרחק אמיתי" בנסיעה מחשב מסלול'),
+        flag('askBusy', false, 'לשאול לפני מעבר לתפוס', 'כבוי = המתג עובר לתפוס מיד')),
+      section(
         item('תיבת פנוי מוקטנת', 'החץ בתיבה פותח וסוגר',
           toggle(ctx.pref('compact', true), () => { ctx.setPref('compact', !ctx.pref('compact', true)); ctx.render(); }, 'תיבת פנוי מוקטנת')))];
+    },
+
+    chatMute() {
+      const info = ctx.device();
+      const muted = new Set(info.mutedChats);
+      if (!ctx.chatsPaired()) return [h('p', { className: 'notice' }, 'קודם חבר את הצ\'אטים בלשונית וואטסאפ.')];
+      const list = ctx.chatList();
+      const names = (c) => c.name || (c.phone ? ctx.local(c.phone) : 'צ\'אט');
+      const set = (next) => { native.setMutedChats(JSON.stringify([...next])); ctx.render(); };
+      return [
+        h('p', { className: 'notice' }, 'כבוי = לא תקבל התראה מהצ\'אט הזה. ההודעות עדיין יופיעו בלשונית וואטסאפ.'),
+        list.length ? list.map((c) => item(names(c), '', toggle(!muted.has(c.id), () => {
+          const next = new Set(muted);
+          if (next.has(c.id)) next.delete(c.id);
+          else next.add(c.id);
+          set(next);
+        }, names(c)))) : h('p', { className: 'muted' }, 'עוד אין צ\'אטים. הם יופיעו כאן כשיגיעו הודעות.'),
+        info.mutedChats.length ? button('הדלק את כולם', () => set(new Set()), 'wide') : null,
+      ];
     },
 
     help() {
@@ -291,7 +373,7 @@ window.createSettings = function createSettings(ctx) {
       link('location', info.location && info.locationAllowed ? 'פועל' : 'כבוי'),
       link('speech', info.speech ? 'פועלת, רק כשהמסך דלוק' : 'כבויה'),
       link('alerts', info.alerts ? 'פועלות' : 'כבויות'),
-      link('display', 'גודל טקסט ותיבת פנוי'),
+      link('display', 'מצב כהה, גודל טקסט, מרחק וזמן'),
       link('help', 'הסברים קצרים'),
       info.chatKey ? button('ניתוק הצ\'אטים מהטלפון הזה', ctx.chatsOff, 'wide') : null,
       button('התנתק', ctx.logout, 'danger wide'),
@@ -306,7 +388,7 @@ window.createSettings = function createSettings(ctx) {
     go,
     back() {
       if (!page) return false;
-      page = page === 'groups' ? 'filters' : null;
+      page = page === 'groups' ? 'filters' : page === 'chatMute' ? 'alerts' : null;
       ctx.render();
       return true;
     },

@@ -69,6 +69,7 @@ final class Speech {
     private final Runnable retryNext = this::next;
     private TextToSpeech engine;
     private ToneGenerator tone;
+    private int toneVolume = -1;
     private boolean ready;
     private Line speaking;
     private String speakingId;
@@ -159,9 +160,9 @@ final class Speech {
         if (!settings.speech() || !power.isInteractive()) return;
         boolean checked = ride.optBoolean("checked");
         String text = SpeechText.announcement(
-                ride.optString("text"), ride.optString("from"), ride.optString("to"),
+                ride.optString("text"), checked ? ride.optString("from") : "", checked ? ride.optString("to") : "",
                 checked ? ride.optDouble("price", 0) : 0,
-                checked && "short".equals(settings.speechMode()));
+                "short".equals(settings.speechMode()));
         Line line = new Line(text, false);
         main.post(() -> add(line));
     }
@@ -227,7 +228,12 @@ final class Speech {
 
     private void beep() {
         try {
-            if (tone == null) tone = new ToneGenerator(AudioManager.STREAM_MUSIC, 80);
+            int volume = Math.max(5, 80 * settings.speechVolume() / 100);
+            if (tone == null || toneVolume != volume) {
+                if (tone != null) tone.release();
+                tone = new ToneGenerator(AudioManager.STREAM_MUSIC, volume);
+                toneVolume = volume;
+            }
             tone.startTone(ToneGenerator.TONE_PROP_BEEP, BEEP_MS);
         } catch (RuntimeException e) {
             // No tone available: the ride is still read
@@ -246,7 +252,9 @@ final class Speech {
         speakingId = id;
         String rate = settings.speechRate();
         engine.setSpeechRate("slow".equals(rate) ? 0.8f : "fast".equals(rate) ? 1.3f : 1f);
-        if (engine.speak(line.text, TextToSpeech.QUEUE_FLUSH, new Bundle(), id) != TextToSpeech.SUCCESS) {
+        Bundle params = new Bundle();
+        params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, settings.speechVolume() / 100f);
+        if (engine.speak(line.text, TextToSpeech.QUEUE_FLUSH, params, id) != TextToSpeech.SUCCESS) {
             speaking = null;
             speakingId = null;
             // The phone can kill the voice engine in the background

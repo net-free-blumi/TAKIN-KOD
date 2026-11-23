@@ -36,6 +36,32 @@ final class Session {
         prefs.edit().putString("chatKey", key).commit();
     }
 
+    /** The server's count of incoming chat messages. Only a number, never content. */
+    long chatSeq() {
+        return prefs.getLong("chatSeq", 0);
+    }
+
+    void setChatSeq(long seq) {
+        prefs.edit().putLong("chatSeq", seq).apply();
+    }
+
+    long chatNotifiedAt() {
+        return prefs.getLong("chatNotifiedAt", 0);
+    }
+
+    void setChatNotifiedAt(long at) {
+        prefs.edit().putLong("chatNotifiedAt", at).apply();
+    }
+
+    /** False while the driver is busy: the background connection sleeps to save battery. */
+    boolean searching() {
+        return prefs.getBoolean("searching", true);
+    }
+
+    void setSearching(boolean on) {
+        prefs.edit().putBoolean("searching", on).commit();
+    }
+
     long cursor() {
         return prefs.getLong("cursor", 0);
     }

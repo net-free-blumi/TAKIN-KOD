@@ -52,6 +52,9 @@
     copy: 'M9 9h11v11H9zM15 9V4H4v11h5',
     pin: 'M12 21s-7-6.2-7-11a7 7 0 0 1 14 0c0 4.8-7 11-7 11zM12 7.5a2.5 2.5 0 1 0 0 5a2.5 2.5 0 1 0 0-5',
     close: 'M7 7l10 10M17 7L7 17',
+    route: 'M6 20a2 2 0 1 0 0-4a2 2 0 1 0 0 4M18 8a2 2 0 1 0 0-4a2 2 0 1 0 0 4M8 18h7a3 3 0 0 0 0-6H9a3 3 0 0 1 0-6h7',
+    more: 'M5 12h1M11.5 12h1M18 12h1',
+    edit: 'M4 20h4L19 9l-4-4L4 16zM13.5 6.5l4 4',
   };
 
   const state = {
@@ -61,6 +64,9 @@
   };
   const root = document.getElementById('app');
   const busyRides = new Set();
+  // מרחק וזמן אמיתיים שהנהג ביקש, לפי נסיעה
+  const realRoutes = new Map();
+  let reportedSearching = null;
   let toastTimer;
   let loadSeq = 0;
 
@@ -180,7 +186,10 @@
     loadSeq++;
     closeSheet();
     busyRides.clear();
+    realRoutes.clear();
+    reportedSearching = null;
     chats.reset();
+    log.reset();
     settings.reset();
     Object.assign(state, {
       tab: 'rides', view: 'new', me: null, rides: [], mine: [], loaded: false, challenge: null,
@@ -324,18 +333,24 @@
       button('ביטול', closeSheet, 'link wide'));
   }
 
+  // תפוס בלחיצה אחת. החיפוש נשמר, ולחיצה על המתג מחזירה אותו
+  async function goBusy() {
+    const list = currentSearches();
+    if (list.length) setPref('last', searchCommand(list[0]));
+    const result = await api('POST', '/search/stop');
+    state.me.search = result.search;
+    closeSheet();
+    native.stopSpeaking();
+    toast('אתה תפוס. לחיצה על המתג מחזירה את החיפוש.');
+    render();
+  }
+
   function confirmStop() {
+    if (!pref('askBusy', false)) return goBusy();
     sheet(
       h('h2', null, 'לעבור לתפוס?'),
       h('p', { className: 'muted' }, 'כל החיפושים ייעצרו ולא יגיעו נסיעות חדשות.'),
-      button('כן, אני תפוס', async () => {
-        const list = currentSearches();
-        if (list.length) setPref('last', searchCommand(list[0]));
-        const result = await api('POST', '/search/stop');
-        state.me.search = result.search;
-        closeSheet();
-        render();
-      }, 'dark wide'),
+      button('כן, אני תפוס', goBusy, 'dark wide'),
       button('ביטול', closeSheet, 'link wide'));
   }
 
@@ -408,11 +423,42 @@
   }
   const local = (phone) => phone.replace(/^972/, '0');
 
+  // הערכה: קו ישר כפול 1.3, ומהירות ממוצעת לפי המרחק
+  const etaMinutes = (km) => Math.max(1, Math.round((km / (km < 8 ? 28 : km < 30 ? 50 : 72)) * 60));
+  const kmText = (km) => (km < 1 ? 'פחות מק"מ' : `${km < 10 ? km.toFixed(1) : Math.round(km)} ק"מ`);
+
   function distanceLabel(ride) {
     if (!ride.pickup) return '';
     const km = native.distance(ride.pickup.lat, ride.pickup.lng);
     if (km < 0) return '';
-    return km < 1 ? 'פחות מק"מ ממך' : `כ-${km < 10 ? km.toFixed(1) : Math.round(km)} ק"מ ממך`;
+    const parts = [];
+    if (pref('showKm', true)) parts.push(`${km < 1 ? kmText(km) : `כ-${kmText(km)}`} ממך`);
+    if (pref('showEta', true)) parts.push(`כ-${etaMinutes(km)} דק' נסיעה`);
+    return parts.join(' · ');
+  }
+
+  async function realRoute(ride) {
+    const info = device();
+    if (!info.location || !info.locationAllowed) {
+      native.setLocation(true);
+      throw new Error('צריך לאשר מיקום, ואז ללחוץ שוב');
+    }
+    let query = '';
+    try {
+      query = ride.waze ? new URL(ride.waze).searchParams.get('q') || '' : '';
+    } catch (err) {
+      query = '';
+    }
+    toast('מחשב מסלול...');
+    const result = await new Promise((resolve) => {
+      const id = ++nextId;
+      pending.set(id, resolve);
+      native.route(id, ride.pickup.lat, ride.pickup.lng, query);
+    });
+    if (result.status !== 200) throw new Error(result.status === 0 ? 'אין חיבור' : result.body?.error || 'לא הצלחתי לחשב מסלול');
+    realRoutes.set(ride.id, result.body);
+    document.getElementById('toast').classList.remove('show');
+    render();
   }
 
   function tooFar(ride) {
@@ -439,7 +485,7 @@
         button('סיימתי', () => finishDialog(ride), 'primary main'),
         button('התבטלה', () => outcome(ride, 'missed')));
     }
-    if (ride.status === 'done') actions.push(button('תיקון מחיר', () => finishDialog(ride)));
+    if (ride.status === 'done') actions.push(button([icon('edit'), ' עריכה'], () => log.editSheet(ride)));
     if (ride.status === 'missed') actions.push(button('בכל זאת קיבלתי', () => outcome(ride, 'got')));
 
     const tool = (name, label, action) => button([icon(name), label], action);
@@ -447,37 +493,59 @@
     const checked = ride.checked === true;
     const route = checked && ride.from && ride.to && ride.from !== ride.to ? `${ride.from} ← ${ride.to}` : '';
     const price = checked || ride.status === 'done' ? ride.price : null;
-    const distance = ride.status === 'done' ? '' : distanceLabel(ride);
+    const live = ride.status === 'new' || ride.status === 'requested';
+    const distance = live ? distanceLabel(ride) : '';
+    const real = live ? realRoutes.get(ride.id) : null;
     const customer = chats.customerFor(ride);
+    const at = ride.status === 'new' ? age(ride.at) : clock(ride.doneAt || ride.requestedAt || ride.at);
+    // במצב צפוף שורת הכלים נפתחת בכפתור, כדי שייכנסו יותר נסיעות
+    const folded = pref('density', 'compact') === 'compact' && actions.length > 0;
+    const tools = rideTools(ride, tool, live, checked, folded);
 
     return h('article', { className: 'ride' },
       h('div', { className: 'top' },
-        h('span', { className: 'group' }, ride.group),
-        h('span', { className: Date.now() - ride.at < 120000 ? 'age fresh' : 'age' }, age(ride.at))),
+        h('span', { className: 'group' }, ride.dispatcher ? `${ride.group} · ${ride.dispatcher}` : ride.group),
+        h('span', { className: ride.status === 'new' && Date.now() - ride.at < 120000 ? 'age fresh' : 'age' }, at)),
       route || price
         ? h('div', { className: 'headline' },
           h('div', { className: 'route' }, route),
           price ? h('div', { className: 'price' }, `₪${price}`) : null)
         : null,
-      distance ? h('div', { className: 'distance' }, icon('pin'), distance) : null,
-      h('p', { className: 'ride-text' }, ride.text),
-      ride.dispatcher ? h('p', { className: 'dispatcher' }, `סדרן: ${ride.dispatcher}`) : null,
+      distance || real ? h('div', { className: 'distance' }, icon('pin'), distance || 'מסלול',
+        real ? h('span', { className: 'real' }, `בפועל: ${kmText(real.km)} · ${real.minutes} דק'`) : null) : null,
+      real && !real.exact ? h('p', { className: 'distance-note' }, 'עד מרכז השכונה. הכתובת המדויקת לא נמצאה') : null,
+      ride.manual ? null : rideText(ride.text),
+      ride.note ? h('p', { className: 'note' }, ride.note) : null,
       STATUS[ride.status] ? h('div', { className: `state ${ride.status}` }, STATUS[ride.status]) : null,
       customer ? button([icon('phone'), h('span', null, `חייג ללקוח ${customer}`)], () => native.dial(customer), 'call') : null,
       ride.status === 'new' && !ride.canClaim ? h('p', { className: 'muted' }, 'עבר הזמן לבקש את הנסיעה') : null,
-      actions.length ? h('div', { className: 'actions' }, actions) : null,
-      h('div', { className: 'tools' },
+      actions.length ? h('div', { className: 'actions' }, actions, folded
+        ? button(icon('more'), (event) => tools.classList.toggle('show'), 'more', 'עוד פעולות') : null) : null,
+      tools);
+  }
+
+  function rideTools(ride, tool, live, checked, folded) {
+    return h('div', { className: folded ? 'tools folded' : 'tools' },
         ride.canChat ? tool('chat', 'צ\'אט', () => {
           closeSheet();
           native.stopSpeaking();
           return chats.openRide(ride);
         }) : null,
+        live && ride.pickup ? tool('route', 'מרחק אמיתי', () => realRoute(ride)) : null,
         checked && ride.waze ? tool('nav', 'Waze', () => native.navigate(ride.waze)) : null,
-        tool('speak', 'הקרא', () => speak(ride.text)),
-        tool('copy', 'העתק', () => {
+        ride.status !== 'new' && ride.status !== 'done' ? tool('edit', 'עריכה', () => log.editSheet(ride)) : null,
+        ride.manual ? null : tool('speak', 'הקרא', () => speak(ride.text)),
+        ride.manual ? null : tool('copy', 'העתק', () => {
           native.copy(ride.text);
           toast('הנסיעה הועתקה');
-        })));
+        }));
+  }
+
+  // טקסט מקוצר לפי ההגדרות. לחיצה פותחת את כולו
+  function rideText(text) {
+    const el = h('p', { className: 'ride-text clamp' }, text);
+    el.onclick = () => el.classList.toggle('open');
+    return el;
   }
 
   async function claim(ride, options = {}) {
@@ -534,6 +602,8 @@
 
   // לחיצה על התראה פותחת את הנסיעה, בלי לשלוח כלום
   function openFromNotification() {
+    const chat = native.takeChat();
+    if (chat) return chats.openChat(chat);
     const id = native.takeRide();
     if (!id) return;
     const ride = state.rides.find((r) => r.id === id) || state.mine.find((r) => r.id === id);
@@ -584,7 +654,9 @@
       if (last) return applySearch(last);
       openSearch();
     }, 'פנוי');
-    const summary = free ? list.map(searchLabel).join(', ') : 'בחר חיפוש';
+    const last = pref('last', '');
+    const summary = free ? list.map(searchLabel).join(', ')
+      : last ? `במצב שינה · המתג מחזיר: ${last.replace(/^פנוי /, '')}` : 'במצב שינה · בחר חיפוש';
     const label = h('button', { type: 'button', className: 'status-label', onclick: fold },
       h('strong', null, free ? 'פנוי' : 'תפוס'), h('span', null, summary));
 
@@ -623,22 +695,14 @@
     ];
   }
 
-  function mineView() {
-    const stats = state.me?.stats;
-    const box = (title, value) => h('div', null,
-      title, h('strong', null, `₪${value.income}`),
-      h('span', { className: 'muted' }, value.count === 1 ? 'נסיעה אחת' : `${value.count} נסיעות`));
-    return [
-      stats ? h('div', { className: 'stats' }, box('היום', stats.today), box('החודש', stats.month)) : null,
-      state.mine.length ? state.mine.map(rideCard) : empty('עוד אין נסיעות', 'נסיעות שתבקש יופיעו כאן.'),
-    ];
-  }
+  const mineView = () => log.screen();
 
   const screens = {
     rides() {
       const tabs = segments([['new', 'נסיעות חדשות'], ['mine', 'הנסיעות שלי']], state.view, (view) => {
         state.view = view;
         render();
+        if (view === 'mine') log.load();
       });
       tabs.classList.add('views');
       return [tabs, state.view === 'mine' ? mineView() : newView()];
@@ -718,9 +782,17 @@
       button('סיום', closeSheet, 'dark wide'));
   }
 
+  // גודל טקסט וערכת צבעים. "אוטומטי" לפי מצב הלילה של הטלפון
   function applySize() {
     const size = pref('size', 'normal');
-    document.documentElement.className = size === 'normal' ? '' : `size-${size}`;
+    const theme = pref('theme', 'light');
+    const dark = theme === 'dark' || (theme === 'auto' && device().night);
+    const density = pref('density', 'compact');
+    const lines = pref('lines', 3);
+    document.documentElement.className = [
+      size === 'normal' ? '' : `size-${size}`, dark ? 'dark' : '', `density-${density}`, `lines-${lines}`,
+    ].filter(Boolean).join(' ');
+    native.setDark(dark);
   }
 
   function navButtons() {
@@ -747,7 +819,18 @@
     shell.classList.toggle('in-chat', state.tab === 'chats' && chats.isOpen());
   }
 
+  // בלי חיפוש פעיל ההתראות ברקע נכנסות לשינה. נדלקות מחדש כשמחפשים
+  function reportSearching() {
+    if (!state.me) return;
+    const active = currentSearches().length > 0;
+    if (active !== reportedSearching) {
+      reportedSearching = active;
+      native.setSearching(active);
+    }
+  }
+
   function render() {
+    reportSearching();
     if (!device().loggedIn) {
       chats.setActive(false);
       return renderLogin();
@@ -796,6 +879,7 @@
       if (seq !== loadSeq) return;
       Object.assign(state, { me: settings.merge(me, state.me), rides: rides.rides, mine: mine.rides, loaded: true, offline: false });
       chats.refresh();
+      if (state.tab === 'rides' && state.view === 'mine') log.load();
     } catch (err) {
       if (seq !== loadSeq || err.status === 401) return;
       state.offline = true;
@@ -814,6 +898,9 @@
   }
 
   window.onNativeRide = load;
+  window.onNativeTheme = () => {
+    applySize();
+  };
   // הקול בעברית נבדק ברקע, ומעדכן את המסך כשהתשובה מגיעה
   window.onNativeVoice = () => {
     if (device().loggedIn && !typing() && root.querySelector('.shell')) render();
@@ -824,6 +911,7 @@
   };
   window.onNativeResume = () => {
     state.hidden = false;
+    applySize();
     if (device().loggedIn) {
       chats.setActive(state.tab === 'chats' && Boolean(root.querySelector('.shell')));
       load();
@@ -862,7 +950,9 @@
 
   const shared = {
     h, icon, button, toggle, segments, toast, sheet, closeSheet, native, api, secure, local, clock, device,
-    pref, setPref, applySize, render, load, layout, toggleSpeech, voiceHelp, speak,
+    pref, setPref, applySize, render, load, layout, toggleSpeech, voiceHelp, speak, rideCard,
+    chatList: () => chats.list(),
+    chatsPaired: () => chats.isPaired(),
     me: () => state.me,
     // מונה וכפתור חיוג ללקוח במסכים שמחוץ לצ'אט
     changed() {
@@ -884,6 +974,7 @@
   };
   const chats = window.createChats(shared);
   const settings = window.createSettings(shared);
+  const log = window.createLog(shared);
 
   start();
 })();

@@ -44,5 +44,10 @@ export function describeRoute(text) {
     price: extractPrice(text),
     pickup: pickupPoint(from),
     waze,
+    // לרדאר באתר: גם כשרק המוצא ידוע
+    pickupCity: from?.city || "",
+    pickupPhrase: from?.phrase || "",
+    dropCity: to?.city || "",
+    dropPhrase: to?.phrase || "",
   };
 }

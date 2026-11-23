@@ -211,6 +211,9 @@ export interface LiveRideItem {
   claimUrl?: string | null;
   claimed?: boolean;
   claimedAt?: number;
+  // מסלול בדוק מהשרת (describeRoute), בלי מוצא מומצא
+  routeChecked?: boolean;
+  originCoords?: { lat: number; lng: number } | null;
 }
 
 export interface DriverGeoLocation {

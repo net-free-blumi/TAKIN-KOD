@@ -88,7 +88,7 @@ export function describeMessage(message) {
   return text ? { text } : null;
 }
 
-export function createDriverChats({ dir, isActiveDevice, getSession, getBotPhone, getRide, quoteForRide, onError, now = Date.now }) {
+export function createDriverChats({ dir, isActiveDevice, getSession, getBotPhone, getRide, quoteForRide, onIncoming = () => {}, onError, now = Date.now }) {
   const pairings = new Map(); // device id -> { phone, key, code, expiresAt }
   const drivers = new Map();
   const dirty = new Set();
@@ -266,8 +266,11 @@ export function createDriverChats({ dir, isActiveDevice, getSession, getBotPhone
     chat.at = Math.max(chat.messages.at(-1)?.at || 0, at);
     if (me && live) chat.unread = 0;
     else if (!me) chat.unread += 1;
+    // סימן בלבד, בלי תוכן: הטלפון מושך את ההודעה בערוץ המוצפן
+    if (!me && live) d.inSeq = Math.max(now(), (d.inSeq || 0) + 1);
     trim(d);
     changed(phone);
+    if (!me && live) onIncoming(phone);
   }
 
   function watchStatus(sock, phone) {
@@ -509,5 +512,8 @@ export function createDriverChats({ dir, isActiveDevice, getSession, getBotPhone
     flush();
   }
 
-  return { ingest, start, handle, forget, isReady: (id) => keys.has(id), shutdown };
+  // רק למכשיר שאישר צ'אטים. מספר, לא תוכן
+  const incomingSeq = (deviceId, phone) => (keys.get(deviceId)?.phone === phone ? data(phone).inSeq || 0 : 0);
+
+  return { ingest, start, handle, forget, isReady: (id) => keys.has(id), incomingSeq, shutdown };
 }

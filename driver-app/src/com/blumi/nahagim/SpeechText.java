@@ -6,6 +6,9 @@ import java.util.regex.Pattern;
 final class SpeechText {
     /** About ten seconds of speech. */
     static final int MAX_SPOKEN = 120;
+    /** About five seconds, when the route is not known. */
+    static final int MAX_BRIEF = 70;
+    private static final Pattern NUMBER = Pattern.compile("[0-9]+([:.,/-][0-9]+)*");
     private static final String START = "(?<![א-ת0-9])";
     private static final String END = "(?![א-ת0-9])";
 
@@ -46,16 +49,33 @@ final class SpeechText {
 
     /** Cuts at a word, so a long message never becomes a lecture. */
     static String shorten(String text) {
-        if (text.length() <= MAX_SPOKEN) return text;
-        int cut = text.lastIndexOf(' ', MAX_SPOKEN);
-        return text.substring(0, cut > 0 ? cut : MAX_SPOKEN).replaceAll("[\\s,.:-]+$", "");
+        return shorten(text, MAX_SPOKEN);
+    }
+
+    static String shorten(String text, int max) {
+        if (text.length() <= max) return text;
+        int cut = text.lastIndexOf(' ', max);
+        return text.substring(0, cut > 0 ? cut : max).replaceAll("[\\s,.:-]+$", "");
+    }
+
+    /** No numbers at all: phone numbers, codes, times and house numbers are noise. */
+    static String withoutNumbers(String text) {
+        return NUMBER.matcher(text).replaceAll(" ")
+                .replaceAll("שקלים", " ")
+                .replaceAll("[ \\t]+", " ")
+                .replaceAll("\\s+([,.:])", "$1")
+                .replaceAll("([,.:/-]\\s*){2,}", ", ")
+                .replaceAll("^[\\s,.:/-]+|[\\s,.:/-]+$", "");
     }
 
     /** The short form is used only when both ends are known, so a ride is never read with half a route. */
     static String announcement(String text, String from, String to, double price, boolean brief) {
-        if (brief && !from.isEmpty() && !to.isEmpty() && !from.equals(to)) {
-            String line = shorten(clean(from) + ", אל " + clean(to));
-            return price > 0 ? line + ". " + Math.round(price) + " שקלים" : line;
+        if (brief) {
+            String line = !from.isEmpty() && !to.isEmpty() && !from.equals(to)
+                    ? shorten(clean(from) + ", אל " + clean(to))
+                    : shorten(withoutNumbers(clean(text)), MAX_BRIEF);
+            if (price <= 0) return line;
+            return (line.isEmpty() ? "" : line + ". ") + Math.round(price) + " שקלים";
         }
         String full = clean(text);
         String line = shorten(full);

@@ -22,6 +22,7 @@ final class Bridge {
     private final ExecutorService network = Executors.newFixedThreadPool(5);
     private final ExecutorService chatNetwork = Executors.newFixedThreadPool(4);
     private final ChatLink chats;
+    private static final String PREFS = "saved|last|size|compact|theme|showKm|showEta|askBusy|logRange";
 
     Bridge(MainActivity activity) {
         this.activity = activity;
@@ -148,18 +149,25 @@ final class Bridge {
                 .put("location", settings.location())
                 .put("locationAllowed", Locator.allowed(activity))
                 .put("maxKm", settings.maxKm())
+                .put("speechVolume", settings.speechVolume())
+                .put("alertMinutes", settings.alertMinutes())
+                .put("chatAlerts", settings.chatAlerts())
+                .put("night", activity.isNight())
+                .put("popupSeconds", settings.popupSeconds())
+                .put("mutedChats", new org.json.JSONArray(settings.mutedChats()))
+                .put("sleeping", !session.searching())
                 .put("version", BuildInfo.VERSION)
                 .toString();
     }
 
     @JavascriptInterface
     public String getPref(String key) {
-        return key != null && key.matches("saved|last|size|compact") ? settings.page(key) : "";
+        return key != null && key.matches(PREFS) ? settings.page(key) : "";
     }
 
     @JavascriptInterface
     public void setPref(String key, String json) {
-        if (key != null && json != null && key.matches("saved|last|size|compact") && json.length() < 10000) {
+        if (key != null && json != null && key.matches(PREFS) && json.length() < 10000) {
             settings.setPage(key, json);
         }
     }
@@ -187,6 +195,73 @@ final class Bridge {
     @JavascriptInterface
     public void setSpeechRate(String rate) {
         if (rate != null && rate.matches("slow|normal|fast")) settings.setSpeechRate(rate);
+    }
+
+    @JavascriptInterface
+    public void setSpeechVolume(int percent) {
+        if (percent >= 10 && percent <= 100) settings.setSpeechVolume(percent);
+    }
+
+    @JavascriptInterface
+    public void setAlertMinutes(int minutes) {
+        if (minutes >= 1 && minutes <= 120) settings.setAlertMinutes(minutes);
+    }
+
+    @JavascriptInterface
+    public void setChatAlerts(boolean on) {
+        settings.setChatAlerts(on);
+    }
+
+    @JavascriptInterface
+    public void setPopupSeconds(int seconds) {
+        if (seconds >= 0 && seconds <= 60) settings.setPopupSeconds(seconds);
+    }
+
+    @JavascriptInterface
+    public void setMutedChats(String json) {
+        if (json == null || json.length() > 20000) return;
+        try {
+            org.json.JSONArray list = new org.json.JSONArray(json);
+            org.json.JSONArray clean = new org.json.JSONArray();
+            for (int i = 0; i < list.length() && i < 200; i++) {
+                String id = list.optString(i);
+                if (id.matches("[0-9]{5,20}@(s\\.whatsapp\\.net|lid|bot)")) clean.put(id);
+            }
+            settings.setMutedChats(clean.toString());
+        } catch (JSONException e) {
+            // ignored: the old list stays
+        }
+    }
+
+    /** The page reports the search state. Busy = the background connection sleeps. */
+    @JavascriptInterface
+    public void setSearching(boolean on) {
+        if (on == session.searching()) return;
+        session.setSearching(on);
+        activity.runOnUiThread(() -> PushService.sync(activity));
+    }
+
+    @JavascriptInterface
+    public void setDark(boolean dark) {
+        activity.runOnUiThread(() -> activity.setDark(dark));
+    }
+
+    @JavascriptInterface
+    public String takeChat() {
+        return activity.takeChat();
+    }
+
+    /** Real driving distance, only on the driver's tap. */
+    @JavascriptInterface
+    public void route(int id, double lat, double lng, String query) {
+        if (network.isShutdown()) return;
+        network.execute(() -> {
+            try {
+                activity.reply(id, RoutePlanner.plan(Locator.get(activity), lat, lng, query).toString());
+            } catch (JSONException e) {
+                activity.reply(id, "{\"status\":0}");
+            }
+        });
     }
 
     @JavascriptInterface

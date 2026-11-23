@@ -6,6 +6,9 @@ import { createDriverChats } from "./driver-app-chats.js";
 import { FilterError, cleanClaimText, parseFilters, readFilters, rejectReason } from "./driver-app-filters.js";
 import { createDriverAppStore } from "./driver-app-store.js";
 import { AppError, createDriverAuth, normalizeMobile } from "./driver-app-auth.js";
+import { createDriverLog, summarize } from "./driver-app-log.js";
+
+export { summarize };
 
 export const CLAIM_WINDOW_MS = 25 * 60 * 1000;
 const NOTIFY_MAX_AGE_MS = 10 * 60 * 1000;
@@ -13,25 +16,6 @@ const MAX_WAIT_SEC = 55;
 const MAX_SEARCHES = 6;
 const OUTCOMES = new Set(["got", "done", "missed"]);
 
-const israelDate = (ms) => new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Jerusalem" }).format(new Date(ms));
-
-export function summarize(rides, nowMs) {
-  const today = israelDate(nowMs);
-  const month = today.slice(0, 7);
-  const result = { today: { count: 0, income: 0 }, month: { count: 0, income: 0 } };
-  for (const ride of rides) {
-    if (ride.status !== "done") continue;
-    const day = israelDate(ride.doneAt || ride.at);
-    const buckets = [];
-    if (day === today) buckets.push(result.today);
-    if (day.startsWith(month)) buckets.push(result.month);
-    for (const bucket of buckets) {
-      bucket.count += 1;
-      bucket.income += Number(ride.price) || 0;
-    }
-  }
-  return result;
-}
 
 export function createDriverApp({
   dir,
@@ -61,9 +45,18 @@ export function createDriverApp({
     getBotPhone,
     getRide: (phone, id) => store.driver(phone).rides.find((r) => r.id === id),
     quoteForRide,
+    onIncoming: (phone) => {
+      for (const waiter of [...waiters.values()]) if (waiter.phone === phone) waiter.finish();
+    },
     onError,
     now,
   });
+
+  const log = createDriverLog({ store, publicRide: (ride) => publicRide(ride), now });
+  const statsFor = (phone) => {
+    const data = store.driver(phone);
+    return summarize(data.rides.filter((r) => !r.removed), now(), data.statsSince || "");
+  };
 
   // נקרא מהסריקה לפני בדיקת הכפילות. תקלה לא מסתירה נסיעה
   function filterRide(phone, ride) {
@@ -97,7 +90,7 @@ export function createDriverApp({
   }
 
   function publicRide(ride) {
-    const { alertId, chatJid, contactIsSender, ...rest } = ride;
+    const { alertId, chatJid, contactIsSender, pickupCity, pickupPhrase, dropCity, dropPhrase, ...rest } = ride;
     rest.canChat = Boolean(ride.contact || chatJid);
     return { ...rest, canClaim: ride.status === "new" && now() - ride.at < CLAIM_WINDOW_MS };
   }
@@ -155,20 +148,31 @@ export function createDriverApp({
   function events({ req, res, device, query }) {
     const data = store.driver(device.phone);
     const after = Number(query.get("after")) || 0;
+    // הודעה חדשה בצ'אט: רק מספר. התראה עליה רק כשיש חיפוש פעיל
+    const chatAfter = Number(query.get("chat")) || 0;
+    const chatSignal = () => {
+      const seq = chats.incomingSeq(device.id, device.phone);
+      return seq ? { seq, notify: Boolean(getSearch().get(device.phone)?.active) } : null;
+    };
+    // בלי חיפוש פעיל הטלפון עוצר את החיבור ברקע וחוסך סוללה
+    const searching = () => Boolean(getSearch().get(device.phone)?.active);
     // חיבור ראשון מקבל רק סמן, בלי הצפה של נסיעות ישנות
-    if (!after) return { cursor: data.seq || now(), rides: [] };
-
+    if (!after) return { cursor: data.seq || now(), rides: [], chat: chatSignal(), searching: searching() };
     const collect = () => {
       const fresh = data.rides.filter((r) => r.seq > after);
       return {
         cursor: fresh.reduce((max, r) => Math.max(max, r.seq), after),
-        rides: fresh.filter((r) => now() - r.at < NOTIFY_MAX_AGE_MS).slice(-40).map(publicRide),
+        // נסיעה שנרשמה ידנית לא מקפיצה התראה
+        rides: fresh.filter((r) => r.status === "new" && now() - r.at < NOTIFY_MAX_AGE_MS).slice(-40).map(publicRide),
+        chat: chatSignal(),
+        searching: searching(),
       };
     };
     const ready = collect();
     const requested = Number(query.get("wait"));
     const waitSec = Math.min(MAX_WAIT_SEC, Math.max(0, Number.isFinite(requested) ? requested : 0));
-    if (ready.cursor > after || !waitSec) return ready;
+    const newChat = query.has("chat") && (ready.chat?.seq || 0) > chatAfter;
+    if (ready.cursor > after || newChat || !waitSec) return ready;
 
     waiters.get(device.id)?.finish(); // בקשה ממתינה אחת לכל מכשיר
     return new Promise((resolve) => {
@@ -198,14 +202,19 @@ export function createDriverApp({
       features: { multiSearch: true, filters: true, chats: true },
       filters: readFilters(store.driver(device.phone).filters),
       chatsReady: chats.isReady(device.id),
-      stats: summarize(store.driver(device.phone).rides, now()),
+      stats: statsFor(device.phone),
     }),
     "GET /rides": ({ device, query }) => {
       let rides = store.driver(device.phone).rides;
-      if (query.get("view") === "mine") rides = rides.filter((r) => r.status !== "new");
+      if (query.get("view") === "mine") rides = rides.filter((r) => r.status !== "new" && !r.removed);
       return { rides: rides.slice(-100).reverse().map(publicRide) };
     },
     "GET /events": events,
+    "GET /log": (args) => log.list(args),
+    "POST /log/add": (args) => log.add(args),
+    "POST /log/edit": (args) => log.edit(args),
+    "POST /log/remove": (args) => log.remove(args),
+    "POST /log/since": (args) => log.since(args),
     "GET /groups": groups,
     "POST /filters": ({ device, body }) => {
       const data = store.driver(device.phone);
