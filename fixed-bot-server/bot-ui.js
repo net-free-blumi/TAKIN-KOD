@@ -149,6 +149,12 @@ export function approvedCard({ name, needsPhone = false }) {
   return { text: head, buttons: [BTN.connect], menu: UNLINKED_MENU };
 }
 
+// עותק בטקסט רגיל, בלי כפתורים, למספר הטלפון עצמו. מגיע גם כשהודעת הכפתורים
+// נתקעת אצל הנהג ב"ממתין להודעה" (הצפנה מול המספר המוסתר שהתחלפה)
+export function approvedPlainText({ name }) {
+  return `🎉 שלום ${name}, אושרת במערכת הנסיעות!\n\nכדי להתחיל, שלח כאן: *חבר אותי*\nלתפריט שלח: *תפריט*`;
+}
+
 export function needPhoneCard() {
   return {
     text: "📱 *לחיבור נדרש מספר הסלולר שלך.*\n\nשלח כך, עם המספר שלך:\n*חבר אותי 0521234567*",

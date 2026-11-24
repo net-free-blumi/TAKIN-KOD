@@ -751,3 +751,11 @@ export function deleteApprovedUser(identifier) {
   saveUsersData(data);
   return { success: true, removed: beforeLen !== data.approvedUsers.length };
 }
+
+/** מספר סלולר ישראלי אמיתי בלבד (לא LID), לעותק הטקסט של הודעת האישור */
+export function plainApprovalJid(targetPhone) {
+  const raw = String(targetPhone || "");
+  if (isLid(raw) || raw.endsWith("@lid")) return null;
+  const phone = cleanPhone(raw);
+  return /^9725\d{8}$/.test(phone) ? `${phone}@s.whatsapp.net` : null;
+}

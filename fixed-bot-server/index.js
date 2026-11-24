@@ -57,6 +57,7 @@ import {
   registerLidMapping,
   isLid,
   cleanPhone,
+  plainApprovalJid,
   getDestinationJid,
   getUserSearch,
   setUserSearch,
@@ -1168,6 +1169,18 @@ export async function sendApprovalAndOnboarding(targetPhone, targetName = "נה�
   } catch (err) {
     console.error(`שגיאה בשליחת הודעת אישור ל-${recipientJid}:`, err.message);
     recordError("send_approval", err, { recipientJid, targetPhone, targetName });
+  }
+
+  // גם בטקסט רגיל למספר הטלפון האמיתי: הודעת כפתורים למספר המוסתר (LID) נתקעה אצל נהגים ב"ממתין להודעה"
+  const phoneJid = plainApprovalJid(targetPhone);
+  if (phoneJid) {
+    try {
+      await sock.sendMessage(phoneJid, { text: ui.approvedPlainText({ name: targetName }) });
+      console.log(`✅ [אישור נהג] נשלח גם טקסט רגיל ל-${phoneJid}`);
+    } catch (err) {
+      console.error(`שגיאה בשליחת טקסט האישור ל-${phoneJid}:`, err.message);
+      recordError("send_approval_plain", err, { phoneJid, targetName });
+    }
   }
 }
 

@@ -10,6 +10,8 @@ import { createDriverApp } from "./driver-app.js";
 import { buildReport, cleanDeviceInfo } from "./driver-app-report.js";
 import { readFilters } from "./driver-app-filters.js";
 import { BEIT_SHEMESH_ZONES, calculateDistanceKm } from "./geo-helper.js";
+import { plainApprovalJid } from "./users-manager.js";
+import { approvedPlainText } from "./bot-ui.js";
 
 let passed = 0;
 const tests = [];
@@ -268,6 +270,15 @@ test("buildReport בלי נסיעה ובלי חיפוש", () => {
   assert.ok(text.includes("אין נסיעה אחרונה"));
   assert.ok(text.includes("אין חיפוש פעיל"));
   assert.ok(text.includes("לא התקבלו הגדרות מהטלפון"));
+});
+
+test("הודעת אישור: עותק בטקסט רגיל רק למספר סלולר אמיתי", () => {
+  assert.equal(plainApprovalJid("972552779261"), "972552779261@s.whatsapp.net");
+  assert.equal(plainApprovalJid("0552779261"), "972552779261@s.whatsapp.net");
+  assert.equal(plainApprovalJid("24606119334130"), null);
+  assert.equal(plainApprovalJid("24606119334130@lid"), null);
+  const text = approvedPlainText({ name: "עזריאל" });
+  assert.ok(text.includes("אושרת") && text.includes("חבר אותי"));
 });
 
 for (const [name, fn] of tests) {
