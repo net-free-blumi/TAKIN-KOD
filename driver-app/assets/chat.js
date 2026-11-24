@@ -114,6 +114,37 @@ window.createChats = function createChats(ctx) {
   }
 
   const current = () => s.list.find((c) => c.id === s.open);
+
+  // צ'אט שנמחק מהרשימה: רק באפליקציה, בוואטסאפ לא נמחק כלום. חוזר כשמגיעה הודעה חדשה
+  const hiddenMap = () => {
+    const saved = ctx.pref('hiddenChats', {});
+    return saved && typeof saved === 'object' && !Array.isArray(saved) ? saved : {};
+  };
+  const isHidden = (chat, hidden) => Number(hidden[chat.id]) >= Number(chat.at || 0);
+  const visible = () => {
+    const hidden = hiddenMap();
+    return s.list.filter((c) => !isHidden(c, hidden));
+  };
+
+  function hideSheet(chat) {
+    sheet(
+      h('h2', null, `למחוק את ${title(chat)} מהרשימה?`),
+      h('p', { className: 'muted' }, 'רק מהאפליקציה. בוואטסאפ עצמו לא נמחק כלום. כשתגיע הודעה חדשה הצ\'אט יחזור.'),
+      button('מחק מהרשימה', () => {
+        const hidden = hiddenMap();
+        hidden[chat.id] = Math.max(Number(chat.at) || 0, Date.now());
+        // רק צ'אטים שעדיין ברשימה, כדי שההעדפה לא תגדל בלי סוף
+        const ids = new Set(s.list.map((c) => c.id));
+        for (const id of Object.keys(hidden)) if (!ids.has(id)) delete hidden[id];
+        ctx.setPref('hiddenChats', hidden);
+        closeSheet();
+        if (s.open === chat.id) show(null);
+        else update();
+        ctx.changed();
+        toast('הצ\'אט נמחק מהרשימה');
+      }, 'dark wide'),
+      button('ביטול', closeSheet, 'link wide'));
+  }
   const title = (chat) => chat?.name || (chat?.phone ? local(chat.phone) : 'מספר מוסתר');
 
   async function markRead() {
@@ -221,12 +252,13 @@ window.createChats = function createChats(ctx) {
 
   function listRows() {
     const query = s.filter.trim();
-    const found = s.list.filter((c) => !query || title(c).includes(query) || (c.phone && local(c.phone).includes(query)));
+    const found = visible().filter((c) => !query || title(c).includes(query) || (c.phone && local(c.phone).includes(query)));
     if (!found.length) {
       return [h('p', { className: 'chat-empty' },
         query ? 'לא נמצא צ\'אט' : 'עוד אין הודעות. הודעות פרטיות חדשות יופיעו כאן, ואפשר לפתוח צ\'אט מכל נסיעה.')];
     }
-    return found.map((chat) => button([
+    const rows = found.map((chat) => {
+      const row = button([
       h('div', { className: 'avatar' }, title(chat).replace(/[^א-תA-Za-z]/g, '').slice(0, 1) || icon('person')),
       h('div', { className: 'chat-body' },
         h('div', { className: 'chat-line' },
@@ -237,7 +269,15 @@ window.createChats = function createChats(ctx) {
             chat.last?.me ? ticks(chat.last.status) : null,
             chat.last?.text.replace(/\n/g, ' ') || ''),
           chat.unread ? h('span', { className: 'chat-count' }, chat.unread) : null)),
-    ], () => show(chat.id), 'chat-row'));
+      ], () => show(chat.id), 'chat-row');
+      // לחיצה ארוכה: מחיקה מהרשימה
+      row.oncontextmenu = (event) => {
+        event.preventDefault();
+        hideSheet(chat);
+      };
+      return row;
+    });
+    return [...rows, h('p', { className: 'chat-hint' }, 'לחיצה ארוכה על צ\'אט, או 🗑 בתוך הצ\'אט, מוחקת אותו מהרשימה. רק באפליקציה.')];
   }
 
   function listPage() {
@@ -297,7 +337,11 @@ window.createChats = function createChats(ctx) {
           const phone = current()?.phone;
           if (phone) native.whatsapp(phone);
           else toast('המספר מוסתר, אי אפשר לפתוח בוואטסאפ');
-        }, 'plain', 'פתח בוואטסאפ')),
+        }, 'plain', 'פתח בוואטסאפ'),
+        button(icon('trash'), () => {
+          const chat = current();
+          if (chat) hideSheet(chat);
+        }, 'plain', 'מחק מהרשימה')),
       parts.note, parts.customer, parts.thread, parts.quote,
       h('div', { className: 'composer' }, input, send));
   }
@@ -393,8 +437,8 @@ window.createChats = function createChats(ctx) {
       if (id && paired() && s.ready) show(id);
     },
     isOpen: () => Boolean(s.open && s.ready),
-    unread: () => s.list.filter((c) => c.unread).length,
-    list: () => s.list,
+    unread: () => visible().filter((c) => c.unread).length,
+    list: () => visible(),
     isPaired: () => paired(),
   };
 };

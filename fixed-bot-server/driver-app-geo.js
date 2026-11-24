@@ -38,12 +38,15 @@ export const CITY_POINTS = {
   // "שומרון" הוא אזור שלם, ולכן אין לו נקודה
 };
 
-export function pickupPoint(place) {
+// spot: נקודה שנמצאה בכתובת או בשכונה שבנסיעה ("ריש לקיש" = רמה ד).
+// בלעדיה זה מרכז העיר, ואז approx: האפליקציה לא מציגה זמן נסיעה שנראה מדויק
+export function pickupPoint(place, spot = null) {
   if (!place) return null;
+  if (spot && Number.isFinite(spot.lat) && Number.isFinite(spot.lng)) return { lat: spot.lat, lng: spot.lng };
   if (place.city === "בית שמש" && place.kind !== "alias") {
     const coords = detectNeighborhood(place.phrase)?.coords;
     if (coords) return { lat: coords.lat, lng: coords.lng };
   }
   const point = CITY_POINTS[place.city];
-  return point ? { lat: point[0], lng: point[1] } : null;
+  return point ? { lat: point[0], lng: point[1], approx: true } : null;
 }

@@ -422,3 +422,9 @@ button.send, button.send:active {
 .actions > button.more { flex: 0 0 44px; padding: 0; display: flex; align-items: center; justify-content: center; }
 .tools.folded { display: none; }
 .tools.folded.show { display: flex; }
+#report-text {
+  width: 100%; max-height: none; min-height: 140px; border: 1px solid var(--line); border-radius: 14px;
+  padding: 10px 14px; line-height: 1.5;
+}
+#report-text:focus { outline: 2px solid var(--taxi); }
+.chat-hint { margin: 14px 16px; color: var(--muted); font-size: .8rem; text-align: center; }

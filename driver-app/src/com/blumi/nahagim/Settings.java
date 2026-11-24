@@ -28,8 +28,8 @@ final class Settings {
     }
 
     String speechMode() {
-        // Route and price by default: the driver asked not to hear whole messages
-        return prefs.getString("speechMode", "short");
+        // Address, neighbourhood and destination by default: the drivers asked not to hear whole messages
+        return prefs.getString("speechMode", "detail");
     }
 
     void setSpeechMode(String mode) {

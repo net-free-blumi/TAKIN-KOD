@@ -343,6 +343,14 @@ final class Bridge {
         }
     }
 
+    /** Only the Telegram bot link, so a page can never open anything else. */
+    @JavascriptInterface
+    public void openTelegram(String url) {
+        if (url != null && url.matches("https://t\\.me/[A-Za-z0-9_]{3,64}(\\?start=[A-Za-z0-9_-]{1,64})?")) {
+            activity.runOnUiThread(() -> activity.openExternal(url));
+        }
+    }
+
     @JavascriptInterface
     public void navigate(String url) {
         if (url != null && url.startsWith("https://waze.com/")) {

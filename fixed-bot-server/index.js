@@ -114,6 +114,7 @@ import {
   sendRideAlertToTelegram,
   getTelegramDialogs,
   telegramGroupKey,
+  isBotAlertGroupTitle,
 } from "./telegram-manager.js";
 import { startTelegramBot, getBotLinkStatus, getTelegramBotInfo } from "./telegram-bot.js";
 import { describeRoute } from "./driver-app-route.js";
@@ -2387,7 +2388,29 @@ const driverApp = createDriverApp({
     request: (phone, telegramPhone) => requestTelegramCode(phone, telegramPhone),
     verify: (phone, code, password) => verifyTelegramCode(phone, code || null, password),
     disconnect: (phone) => disconnectTelegram(phone),
+    botLink: (phone) => getBotLinkStatus(phone),
   },
+  // מדריך הטלגרם עם הקישור האישי לבוט, ישירות למספר של הנהג
+  sendTelegramGuide: async (phone) => {
+    const sock = getMainBotSock();
+    if (!sock || !getMainBotStatus().connected) return false;
+    await sendDriverScreen(sock, `${phone}@s.whatsapp.net`, phone, "telegram");
+    return true;
+  },
+  // דיווח מהאפליקציה: לקבוצת התיקונים, ואם לא הצליח, למנהל
+  sendReport: async (phone, text) => {
+    if (await sendBugReportToGroup(null, text)) {
+      recordEvent("system", `דיווח מהאפליקציה מהנהג ${phone} נשלח לקבוצת התיקונים`);
+      return true;
+    }
+    const sock = getMainBotSock();
+    if (!sock || !getMainBotStatus().connected) return false;
+    const admin = cleanPhone(loadUsersData().adminPhone || "972515157166");
+    await sock.sendMessage(`${admin}@s.whatsapp.net`, { text });
+    recordEvent("system", `דיווח מהאפליקציה מהנהג ${phone} נשלח למנהל`);
+    return true;
+  },
+  describeSearch: (s) => describeMode(s),
   describeRide: (data) => {
     const text = data.cleanedText || data.rawText || "";
     const route = parseRideRoute(text, data.senderPhone);
@@ -2426,19 +2449,33 @@ const driverApp = createDriverApp({
         .filter((g) => String(g?.id).endsWith("@g.us") && !g.isCommunity)
         .map((g) => ({ id: g.id, name: g.subject || "קבוצה ללא שם", size: g.size || g.participants?.length || 0 }))
         .sort((a, b) => a.name.localeCompare(b.name, "he", { numeric: true }));
-      // גם הסינון חל על טלגרם, ולכן גם הרשימה
-      let telegramTimer;
-      const dialogs = await Promise.race([
-        getTelegramDialogs(phone),
-        new Promise((resolve) => { telegramTimer = setTimeout(() => resolve([]), 4000); }),
-      ]).catch(() => []);
-      clearTimeout(telegramTimer);
-      const telegram = dialogs
-        .filter((d) => (d.isGroup || d.isChannel) && !d.title.includes("נסיעות זמינות") && telegramGroupKey(d.id))
-        .map((d) => ({ id: telegramGroupKey(d.id), name: `טלגרם · ${d.title || "ללא שם"}`, size: 0 }));
-      return [...whatsapp, ...telegram];
+      // טלגרם ברשימה נפרדת (listTelegramGroups)
+      return whatsapp;
     } catch (err) {
       recordError("driver_app_groups", err);
+      return null;
+    } finally {
+      clearTimeout(timer);
+    }
+  },
+  // הקבוצות והערוצים של הנהג בטלגרם, לסינון. רק שמות ומזהים, בלי הודעות. null = טלגרם לא מחובר
+  listTelegramGroups: async (phone) => {
+    if (!getTelegramStatus(phone).connected) return null;
+    let timer;
+    try {
+      const dialogs = await Promise.race([
+        getTelegramDialogs(phone),
+        new Promise((resolve) => { timer = setTimeout(() => resolve(null), 12000); }),
+      ]);
+      if (!dialogs) return null;
+      const seen = new Set();
+      return dialogs
+        .filter((d) => (d.isGroup || d.isChannel) && !isBotAlertGroupTitle(d.title) && telegramGroupKey(d.id))
+        .map((d) => ({ id: telegramGroupKey(d.id), name: d.title || "ללא שם", size: 0, channel: Boolean(d.isChannel && !d.isGroup) }))
+        .filter((g) => !seen.has(g.id) && seen.add(g.id))
+        .sort((a, b) => a.name.localeCompare(b.name, "he", { numeric: true }));
+    } catch (err) {
+      recordError("driver_app_telegram_groups", err);
       return null;
     } finally {
       clearTimeout(timer);

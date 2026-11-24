@@ -159,7 +159,7 @@ window.createLog = function createLog(ctx) {
   function removeSheet(ride) {
     sheet(
       h('h2', null, 'למחוק את הנסיעה מהיומן?'),
-      h('p', { className: 'muted' }, 'היא לא תיספר בהכנסות. אי אפשר לבטל.'),
+      h('p', { className: 'muted' }, ride.manual ? 'היא לא תיספר בהכנסות. אי אפשר לבטל.' : 'היא תימחק מ"הנסיעות שלי" ולא תיספר בהכנסות. בקבוצה ובוואטסאפ לא נמחק כלום. אי אפשר לבטל.'),
       button('מחק', async () => {
         await api('POST', '/log/remove', { id: ride.id });
         closeSheet();
@@ -214,6 +214,7 @@ window.createLog = function createLog(ctx) {
     screen,
     load,
     editSheet,
+    removeSheet,
     reset() {
       data = null;
       error = '';

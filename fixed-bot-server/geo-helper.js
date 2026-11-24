@@ -69,6 +69,17 @@ export const STREET_TO_ZONE_MAP = {
   'רב ביבי': 'רמה ד',
   'רב פפא': 'רמה ד',
   'תלמוד בבלי': 'רמה ד',
+  'ריש לקיש': 'רמה ד',
+  'רבי יוחנן': 'רמה ד',
+  'רב יהודה': 'רמה ד',
+  'רב נחמן': 'רמה ד',
+  'רב חסדא': 'רמה ד',
+  'רבינא': 'רמה ד',
+  'רב זירא': 'רמה ד',
+  'רבי זירא': 'רמה ד',
+  'רב כהנא': 'רמה ד',
+  'רב יוסף': 'רמה ד',
+  'רב דימי': 'רמה ד',
   'ריבל': 'רמה ד',
   'רמה ד 1': 'רמה ד',
   'רמה ד 2': 'רמה ד',
@@ -252,7 +263,8 @@ export function extractDispatcherPhone(text, rawPhone = null) {
 }
 
 // זיהוי שכונה וקואורדינטות מתוך טקסט
-export function detectNeighborhood(text) {
+// aliases: false = בלי קיצורי אות אחת ("לא", "מה"), לטקסט חופשי של נסיעה
+export function detectNeighborhood(text, { aliases = true } = {}) {
   if (!text) return null;
   const clean = String(text).replace(/[.,/#!$%^&*;:{}=\-_`~()?"'ֿ]/g, ' ').replace(/\s+/g, ' ').trim();
 
@@ -311,6 +323,7 @@ export function detectNeighborhood(text) {
   }
 
   // 3. בדיקת קיצורים ישירים וכינויים (מב, לד, רמד, רמב, ביג, חפציבה וכו')
+  if (!aliases) return null;
   for (const [alias, zoneKey] of Object.entries(ZONE_ALIAS_MAP)) {
     const regex = new RegExp(`(^|\\s)${alias}(\\s|$)`, 'i');
     if (regex.test(clean)) {

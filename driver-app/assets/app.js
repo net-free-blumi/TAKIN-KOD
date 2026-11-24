@@ -55,6 +55,7 @@
     route: 'M6 20a2 2 0 1 0 0-4a2 2 0 1 0 0 4M18 8a2 2 0 1 0 0-4a2 2 0 1 0 0 4M8 18h7a3 3 0 0 0 0-6H9a3 3 0 0 1 0-6h7',
     more: 'M5 12h1M11.5 12h1M18 12h1',
     edit: 'M4 20h4L19 9l-4-4L4 16zM13.5 6.5l4 4',
+    trash: 'M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 11v6M14 11v6',
   };
 
   const state = {
@@ -427,11 +428,18 @@
   const etaMinutes = (km) => Math.max(1, Math.round((km / (km < 8 ? 28 : km < 30 ? 50 : 72)) * 60));
   const kmText = (km) => (km < 1 ? 'פחות מק"מ' : `${km < 10 ? km.toFixed(1) : Math.round(km)} ק"מ`);
 
+  // approx = הכתובת לא זוהתה, והנקודה היא מרכז העיר. אז זמן נסיעה רק מטעה ("3 דקות" לרחוב בצד השני של העיר)
   function distanceLabel(ride) {
     if (!ride.pickup) return '';
     const km = native.distance(ride.pickup.lat, ride.pickup.lng);
     if (km < 0) return '';
     const parts = [];
+    if (ride.pickup.approx) {
+      if (km < 6) return pref('showKm', true) ? 'באזור העיר שלך · הכתובת לא זוהתה' : '';
+      if (pref('showKm', true)) parts.push(`כ-${kmText(km)} עד מרכז העיר`);
+      if (pref('showEta', true)) parts.push(`כ-${etaMinutes(km)} דק'`);
+      return parts.join(' · ');
+    }
     if (pref('showKm', true)) parts.push(`${km < 1 ? kmText(km) : `כ-${kmText(km)}`} ממך`);
     if (pref('showEta', true)) parts.push(`כ-${etaMinutes(km)} דק' נסיעה`);
     return parts.join(' · ');
@@ -574,6 +582,8 @@
         live && ride.pickup ? tool('route', 'מרחק אמיתי', () => realRoute(ride)) : null,
         checked && ride.waze ? tool('nav', 'Waze', () => native.navigate(ride.waze)) : null,
         ride.status !== 'new' && ride.status !== 'done' ? tool('edit', 'עריכה', () => log.editSheet(ride)) : null,
+        // "הנסיעות שלי": מחיקה ישר מהנסיעה, בלי להיכנס לעריכה
+        ride.status !== 'new' ? tool('trash', 'מחק', () => log.removeSheet(ride)) : null,
         ride.manual ? null : tool('speak', 'הקרא', () => speak(ride.text)),
         ride.manual ? null : tool('copy', 'העתק', () => {
           native.copy(ride.text);

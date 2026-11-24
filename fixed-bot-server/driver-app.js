@@ -7,6 +7,7 @@ import { FilterError, cleanClaimText, parseFilters, readFilters, rejectReason } 
 import { createDriverAppStore } from "./driver-app-store.js";
 import { AppError, createDriverAuth, normalizeMobile } from "./driver-app-auth.js";
 import { createDriverLog, summarize } from "./driver-app-log.js";
+import { MAX_REPORT_TEXT, buildReport, cleanDeviceInfo, createReportLimiter } from "./driver-app-report.js";
 
 export { summarize };
 
@@ -18,6 +19,7 @@ const OUTCOMES = new Set(["got", "done", "missed"]);
 const GROUP_MESSAGES = 20;
 const MAX_GROUPS_LOGGED = 400;
 const APPROVAL_WINDOW_MS = 45 * 60 * 1000;
+const TELEGRAM_GUIDE_GAP_MS = 60 * 1000;
 const APPROVAL_RE = /^(ק|קיבלת|קבלת|קיבלתה|שלך|סגור|סגרנו|אושר|מאושר|אוקי|אוקיי|ok|okay|לך|קח|תיקח|תקח|כן|יאללה|סע|👍)(?=[\s!.,👍🙏]|$)/iu;
 
 
@@ -34,6 +36,12 @@ export function createDriverApp({
   getSession = () => null,
   getBotPhone = () => "",
   listGroups = async () => null,
+  listTelegramGroups = async () => null,
+  // (phone, text) -> true כשהדיווח נשלח
+  sendReport = async () => false,
+  // שולח לנהג בוואטסאפ את מדריך הטלגרם עם הקישור האישי לבוט
+  sendTelegramGuide = async () => false,
+  describeSearch = null,
   telegram = null,
   quoteForRide = () => null,
   onError = console.error,
@@ -43,6 +51,9 @@ export function createDriverApp({
   const auth = createDriverAuth({ store, canUseApp: isApproved, isBotOnline, sendCode, onError, now });
   const waiters = new Map(); // device id -> { phone, finish }
   const groupCache = new Map(); // phone -> { at, list }
+  const telegramGroupCache = new Map(); // phone -> { at, list }
+  const telegramGuideAt = new Map(); // phone -> ms
+  const reports = createReportLimiter(now);
   // 20 ההודעות האחרונות בכל קבוצה, רק בזיכרון ורק לנהג עצמו
   const groupLog = new Map(); // phone -> Map(jid -> { name, messages })
   const hasDevice = (phone) => [...store.devices.values()].some((d) => d.phone === phone);
@@ -91,7 +102,14 @@ export function createDriverApp({
     async telegramDisconnect({ device }) {
       if (!telegram) throw new AppError(501, "טלגרם לא זמין בשרת");
       groupCache.delete(device.phone);
+      telegramGroupCache.delete(device.phone);
       return telegram.disconnect(device.phone);
+    },
+    // הקישור האישי לבוט חתום, ולכן עובר רק בערוץ המוצפן
+    async telegramBotLink({ device }) {
+      const bot = telegram?.botLink?.(device.phone);
+      if (!bot?.enabled || !bot.link) throw new AppError(409, "בוט הטלגרם לא פעיל כרגע");
+      return { link: bot.link, linked: Boolean(bot.linked), username: bot.username || "" };
     },
     // הקבוצה של נסיעה: ההודעות האחרונות שהבוט ראה מאז שעלה
     async group({ device, args }) {
@@ -141,6 +159,78 @@ export function createDriverApp({
       if (err instanceof FilterError) throw new AppError(400, err.message);
       throw err;
     }
+  }
+
+  // מצב הטלגרם בלי שום סוד: מחובר או לא, ואם הבוט מקושר
+  function telegramState(phone) {
+    if (!telegram) return { available: false, connected: false, bot: { enabled: false, linked: false } };
+    const status = telegram.status(phone) || {};
+    const bot = telegram.botLink?.(phone) || {};
+    return {
+      available: true,
+      connected: Boolean(status.connected),
+      saved: Boolean(status.hasSavedSession),
+      bot: { enabled: Boolean(bot.enabled), linked: Boolean(bot.linked), username: bot.username || "" },
+    };
+  }
+
+  async function telegramGroups({ device }) {
+    if (!telegram || !telegram.status(device.phone)?.connected) {
+      throw new AppError(409, "הטלגרם לא מחובר. חבר אותו בהגדרות > טלגרם.");
+    }
+    let cached = telegramGroupCache.get(device.phone);
+    if (!cached || now() - cached.at > 60000) {
+      const list = await listTelegramGroups(device.phone);
+      if (!list) throw new AppError(409, "אי אפשר לקרוא את הקבוצות מהטלגרם כרגע. נסה שוב בעוד רגע.");
+      cached = { at: now(), list };
+      telegramGroupCache.set(device.phone, cached);
+    }
+    return { groups: cached.list };
+  }
+
+  async function sendGuide({ device }) {
+    if (!telegram) throw new AppError(501, "טלגרם לא זמין בשרת");
+    if (now() - (telegramGuideAt.get(device.phone) || 0) < TELEGRAM_GUIDE_GAP_MS) {
+      throw new AppError(429, "המדריך כבר נשלח. בדוק בוואטסאפ, או נסה שוב בעוד דקה.");
+    }
+    telegramGuideAt.set(device.phone, now());
+    if (!(await sendTelegramGuide(device.phone))) {
+      telegramGuideAt.delete(device.phone);
+      throw new AppError(503, "הבוט לא הצליח לשלוח כרגע. נסה שוב בעוד רגע.");
+    }
+    return {};
+  }
+
+  async function report({ device, body }) {
+    const text = String(body.text ?? "").trim();
+    if (text.length < 3) throw new AppError(400, "כתוב מה קרה");
+    if (text.length > MAX_REPORT_TEXT) throw new AppError(400, `עד ${MAX_REPORT_TEXT} תווים`);
+    reports.check(device.phone);
+    const data = store.driver(device.phone);
+    // הנסיעה האחרונה שהגיעה לנהג, או זו שהוא בחר מהרשימה
+    const ride = (body.rideId && data.rides.find((r) => r.id === String(body.rideId)))
+      || [...data.rides].reverse().find((r) => !r.manual) || null;
+    const message = buildReport({
+      phone: device.phone,
+      name: getProfile(device.phone)?.name,
+      text,
+      ride,
+      search: getSearch().get(device.phone),
+      filters: readFilters(data.filters),
+      device: cleanDeviceInfo(body.device),
+      telegram: telegramState(device.phone).connected,
+      describe: describeSearch,
+      at: now(),
+    });
+    let sent = false;
+    try {
+      sent = await sendReport(device.phone, message);
+    } catch (err) {
+      onError(err);
+    }
+    if (!sent) throw new AppError(503, "הדיווח לא נשלח. ודא שיש חיבור ונסה שוב.");
+    reports.record(device.phone);
+    return {};
   }
 
   async function groups({ device }) {
@@ -303,10 +393,11 @@ export function createDriverApp({
       phone: device.phone,
       ...getProfile(device.phone),
       search: getSearch().get(device.phone),
-      features: { multiSearch: true, filters: true, chats: true },
+      features: { multiSearch: true, filters: true, chats: true, report: true, telegramGroups: true },
       filters: readFilters(store.driver(device.phone).filters),
       chatsReady: chats.isReady(device.id),
       stats: statsFor(device.phone),
+      telegram: telegramState(device.phone),
     }),
     "GET /rides": ({ device, query }) => {
       let rides = store.driver(device.phone).rides;
@@ -320,6 +411,18 @@ export function createDriverApp({
     "POST /log/remove": (args) => log.remove(args),
     "POST /log/since": (args) => log.since(args),
     "GET /groups": groups,
+    "GET /telegram": ({ device }) => telegramState(device.phone),
+    "GET /telegram/groups": telegramGroups,
+    "POST /telegram/guide": sendGuide,
+    // ניתוק לא דורש סוד, ולכן גם בלי צ'אטים מחוברים
+    "POST /telegram/disconnect": async ({ device }) => {
+      if (!telegram) throw new AppError(501, "טלגרם לא זמין בשרת");
+      groupCache.delete(device.phone);
+      telegramGroupCache.delete(device.phone);
+      await telegram.disconnect(device.phone);
+      return {};
+    },
+    "POST /report": report,
     "POST /filters": ({ device, body }) => {
       const data = store.driver(device.phone);
       data.filters = checked(() => parseFilters(body, data.filters));
