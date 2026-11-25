@@ -19,9 +19,8 @@ export const LIMITS = {
   jobTtlMs: 3 * 60 * 60 * 1000, // אחרי 3 שעות כבר לא מזהים תשובות על הנסיעה
   maxRequesters: 30,
   syncDebounceMs: 20000,
-  editWindowMs: 14 * 60 * 1000, // וואטסאפ מאפשר לערוך הודעה עד 15 דקות
-  actionGapMs: 1500, // בין עריכות / מחיקות בקבוצות
   privateWindowMs: 30 * 60 * 1000, // הודעה פרטית בלי ציטוט נחשבת מבקש רק בחצי השעה הראשונה
+  unquotedWindowMs: 5 * 60 * 1000, // "ת 4" בקבוצה בלי ציטוט: רק ב-5 הדקות שאחרי ההפצה לאותה קבוצה
 };
 
 const JOB_STATES = new Set(["sending", "stopped", "done", "paused"]);
@@ -87,6 +86,8 @@ export function createRidePublisher({
   sleep = (ms) => new Promise((r) => setTimeout(r, ms)),
   random = Math.random,
   onError = console.error,
+  // מחיר הנסיעה מתוך הטקסט, לחישוב עמלה באחוזים (index.js מעביר את extractPrice של matcher.js)
+  priceOf = (text) => Number(String(text || "").match(/(?<!\d)(\d{2,4})\s*(?:₪|שח|ש"ח)/)?.[1]) || 0,
   limits: customLimits = {},
 } = {}) {
   // מה שלא הועבר נלקח מברירת המחדל
@@ -225,9 +226,11 @@ export function createRidePublisher({
     requesters: job.requesters.map((r, i) => ({
       n: i + 1, name: r.name, phone: r.phone, group: r.groupName, text: r.text, at: r.at,
       private: Boolean(r.private), quoted: r.quoted !== false,
-      status: r.status || "", thanked: Boolean(r.thankedAt), canChat: Boolean(r.phone || r.jid),
+      status: r.status || "", thanked: Boolean(r.thankedAt), paidFee: r.fee || 0, canChat: Boolean(r.phone || r.jid),
     })),
     givenTo: job.givenTo || 0,
+    price: job.price || 0,
+    fee: feeOf(job.phone, job),
     doneBy: job.requesters.findIndex((r) => r.status === "done") + 1,
   });
 
@@ -286,6 +289,7 @@ export function createRidePublisher({
       text: body,
       list: no,
       customerPhone: phoneOfCustomer,
+      price: priceOf(body) || 0,
       state: sendingJob(phone) ? "queued" : "sending",
       createdAt: now(),
       groups: groups.map((g) => ({ id: g.id, name: g.name, status: "pending" })),
@@ -388,70 +392,25 @@ export function createRidePublisher({
     }
   }
 
-  // עריכה: הטקסט החדש יוצא לקבוצות שעוד לא קיבלו, וההודעות שכבר נשלחו (עד 15 דקות) מתעדכנות בוואטסאפ
-  async function edit(phone, id, { text, customerPhone } = {}) {
+  // עריכה: מעכשיו והלאה. הודעות שכבר נשלחו לקבוצות לא משתנות. רק הקבוצות שעוד לא קיבלו יקבלו את הנוסח החדש
+  function edit(phone, id, { text, customerPhone, price } = {}) {
     const job = findJob(phone, id);
-    let edited = 0;
-    let tooOld = 0;
     if (customerPhone !== undefined) job.customerPhone = cleanCustomerPhone(customerPhone);
+    if (price !== undefined) job.price = cleanPrice(price);
     if (text !== undefined) {
       const split = splitCustomerPhone(text);
       const body = cleanText(split.text);
       if (split.customerPhone) job.customerPhone = split.customerPhone;
-      const changedText = body !== job.text;
-      job.text = body;
+      if (body !== job.text) {
+        // הנוסח הקודם כבר בקבוצות: עדיין לא לסרוק אותו כנסיעה אצל הנהג
+        job.oldTexts = [...(job.oldTexts || []), job.text].slice(-5);
+        job.text = body;
+        if (price === undefined) job.price = priceOf(body) || job.price || 0;
+      }
       job.editedAt = now();
-      changed(phone);
-      const sock = changedText ? getSock(phone) : null;
-      // רק מה שכבר נשלח עכשיו. מה שיישלח מכאן והלאה יוצא כבר בנוסח החדש
-      const already = changedText ? job.groups.filter((g) => g.status === "sent" && g.msgId) : [];
-      for (const g of already) {
-        if (now() - (g.at || 0) > limits.editWindowMs) {
-          tooOld++;
-          continue;
-        }
-        if (!sock) break;
-        try {
-          await sock.sendMessage(g.id, { text: body, edit: { remoteJid: g.id, id: g.msgId, fromMe: true } });
-          edited++;
-          await sleep(limits.actionGapMs);
-        } catch (err) {
-          tooOld++;
-        }
-      }
     }
     changed(phone);
-    return { job: publicJob(job), edited, tooOld };
-  }
-
-  // מחיקה מהקבוצות (למשל כשהנסיעה נתפסה), כדי שלא ימשיכו לבקש
-  async function removeFromGroups(phone, id) {
-    const job = findJob(phone, id);
-    if (job.state === "sending" || job.state === "queued") {
-      job.state = "stopped";
-      job.stopReason = "manual";
-      wake(job);
-    }
-    const sock = getSock(phone);
-    if (!sock) throw new PublishError(409, "הוואטסאפ שלך לא מחובר כרגע");
-    let removed = 0;
-    let failed = 0;
-    for (const g of job.groups) {
-      if (g.status !== "sent" || !g.msgId) continue;
-      try {
-        await sock.sendMessage(g.id, { delete: { remoteJid: g.id, id: g.msgId, fromMe: true } });
-        g.status = "removed";
-        removed++;
-        changed(phone);
-        await sleep(limits.actionGapMs);
-      } catch (err) {
-        failed++;
-      }
-    }
-    // מה שעוד לא נשלח כבר לא יישלח
-    for (const g of job.groups) if (g.status === "pending") g.status = "skipped";
-    changed(phone);
-    return { job: publicJob(job), removed, failed };
+    return { job: publicJob(job), pending: job.groups.filter((g) => g.status === "pending").length };
   }
 
   // מחיקה מהרשימה שלך (באפליקציה ובבוט). לא נוגע בהודעות שבקבוצות
@@ -470,20 +429,51 @@ export function createRidePublisher({
   // הודעה שהנהג עצמו שלח בהפצה: לא לסרוק אותה כנסיעה אצלו
   function isOwnPublished(phone, text) {
     const cutoff = now() - limits.jobTtlMs;
-    return state.jobs.some((j) => j.phone === phone && j.createdAt > cutoff && sameText(j.text, text));
+    return state.jobs.some((j) => j.phone === phone && j.createdAt > cutoff && [j.text, ...(j.oldTexts || [])].some((t) => sameText(t, text)));
   }
 
   const jobForQuote = (phone, quoted, groupJid) => state.jobs.find((j) => j.phone === phone && isLive(j) &&
     j.groups.some((g) => g.msgId === quoted && (!groupJid || g.id === groupJid)));
 
+  // תשובה בלי ציטוט בקבוצה ("ת 4", "ת5", "ת פה"): נחשבת רק כשההפצה שלך היא ההודעה האחרונה בקבוצה
+  // שנראית כמו נסיעה, ותוך 5 דקות ממנה. לא עוצרת את ההפצה, ומסומנת "בלי ציטוט" כדי שתוודא
+  const groupLastRide = new Map(); // phone|groupJid -> מתי נכתבה בקבוצה הודעה ארוכה של מישהו אחר
+  function noteGroupText(phone, groupJid, text, fromMe) {
+    const clean = String(text || "").trim();
+    if (fromMe || clean.length < 25 || CLAIM_RE.test(clean)) return;
+    groupLastRide.set(`${phone}|${groupJid}`, now());
+  }
+
+  function jobForUnquoted(phone, groupJid, text) {
+    const clean = String(text || "").trim();
+    if (!clean || clean.length > 30 || !CLAIM_RE.test(clean)) return null;
+    const otherAt = groupLastRide.get(`${phone}|${groupJid}`) || 0;
+    return state.jobs.filter((j) => j.phone === phone && isLive(j) && !j.requesters.some((r) => r.status === "done") &&
+      j.groups.some((g) => g.id === groupJid && g.status === "sent" && now() - (g.at || 0) < limits.unquotedWindowMs && otherAt < g.at)).at(-1) || null;
+  }
+
   // בדיקה מהירה, לפני שמחפשים את מספר הטלפון של הכותב
-  function repliesToMine(phone, message, groupJid) {
+  function repliesToMine(phone, message, groupJid, text = "") {
     const quoted = quotedIdOf(message);
-    return Boolean(quoted && jobForQuote(phone, quoted, groupJid));
+    if (quoted) return Boolean(jobForQuote(phone, quoted, groupJid));
+    return Boolean(jobForUnquoted(phone, groupJid, text));
   }
 
   function addRequester(phone, job, requester, { stops }) {
-    if (job.requesters.some((r) => r.who === requester.who)) return true;
+    const known = job.requesters.find((r) => r.who === requester.who);
+    if (known) {
+      // כתב קודם "ת" בלי ציטוט, ועכשיו ציטט: עכשיו זה עוצר, בלי הודעה כפולה לנהג
+      if (stops && known.quoted === false) {
+        known.quoted = true;
+        if (job.state === "sending") {
+          job.state = "stopped";
+          job.stopReason = "request";
+          wake(job);
+        }
+        changed(phone);
+      }
+      return true;
+    }
     if (job.requesters.length >= limits.maxRequesters) return true;
     job.requesters.push(requester);
     if (stops && job.state === "sending") {
@@ -505,8 +495,7 @@ export function createRidePublisher({
   function onGroupMessage(phone, { message, msgKey, groupJid, groupName = "", senderPhone = "", senderName = "", text = "" }) {
     if (!message || msgKey?.fromMe) return false;
     const quoted = quotedIdOf(message);
-    if (!quoted) return false;
-    const job = jobForQuote(phone, quoted, groupJid);
+    const job = quoted ? jobForQuote(phone, quoted, groupJid) : jobForUnquoted(phone, groupJid, text);
     if (!job) return false;
     return addRequester(phone, job, {
       who: String(msgKey?.participant || senderPhone || ""),
@@ -518,13 +507,14 @@ export function createRidePublisher({
       text: String(text || "").slice(0, 300),
       at: now(),
       msgId: msgKey?.id || "",
-    }, { stops: true });
+      quoted: Boolean(quoted),
+    }, { stops: Boolean(quoted) });
   }
 
   // הודעה פרטית לנהג על נסיעה שהפיץ.
   // "השב בפרטי" (עם ציטוט של ההודעה בקבוצה) נחשב כמו ציטוט בקבוצה ועוצר.
   // הודעה פרטית קצרה בלי ציטוט ("ת", "אני", "כמה זמן") בחצי השעה שאחרי ההפצה: מגיעה כמבקש, בלי לעצור
-  const CLAIM_RE = /^(?:ת|תן|תני|אני|שלי|לי|לוקח|אקח|לקחתי|מאשר|יכול|פנוי|רוצה|אשמח|בדרך|כמה|מתי|איפה|הנסיעה|נסיעה)(?=[\s,.!?0-9]|$)/;
+  const CLAIM_RE = /^(?:ת|תן|תני|אני|שלי|לי|לוקח|אקח|לקחתי|מאשר|יכול|פנוי|רוצה|אשמח|בדרך|כמה|מתי|איפה|הנסיעה|נסיעה)(?=[\s,.!?0-9'"׳״]|$)/;
   function onPrivateMessage(phone, { message, msgKey, chatJid, senderPhone = "", senderName = "", text = "" }) {
     if (!message || msgKey?.fromMe) return false;
     const who = String(senderPhone || chatJid || "");
@@ -603,50 +593,113 @@ export function createRidePublisher({
     return publicJob(job);
   }
 
-  // ---------- הודעת תודה ועמלה ----------
+  // ---------- תשלום ועמלה ----------
+  // לכל נהג: עמלה קבועה (₪) או אחוז ממחיר הנסיעה, ואמצעי תשלום (ביט, פייבוקס, העברה בנקאית, אחר)
+
+  const PAY_METHODS = [["bit", "ביט"], ["paybox", "פייבוקס"], ["bank", "העברה בנקאית"], ["other", "אחר"]];
+  const money = (n) => `${Math.round(n * 100) / 100} ₪`;
 
   function getSettings(phone) {
     const s = driver(phone).settings || {};
-    return { fee: Number(s.fee) || 0, payInfo: s.payInfo || "", thanks: s.thanks || "" };
+    const pay = { bit: "", paybox: "", bank: "", other: "", ...(s.pay || {}) };
+    if (s.payInfo && !pay.other) pay.other = s.payInfo; // הגדרה ישנה בשורה אחת
+    return {
+      feeMode: s.feeMode === "percent" ? "percent" : "fixed",
+      fee: Number(s.fee) || 0,
+      percent: Number(s.percent) || 0,
+      pay,
+      thanks: s.thanks || "",
+    };
   }
 
-  function setSettings(phone, { fee, payInfo, thanks } = {}) {
+  function setSettings(phone, { feeMode, fee, percent, pay, payInfo, thanks } = {}) {
     const d = driver(phone);
     const current = getSettings(phone);
+    if (feeMode !== undefined) {
+      if (!["fixed", "percent"].includes(feeMode)) throw new PublishError(400, "סוג עמלה לא תקין");
+      current.feeMode = feeMode;
+    }
     if (fee !== undefined) {
       const n = Number(fee);
       if (!(n >= 0 && n <= 500)) throw new PublishError(400, "העמלה צריכה להיות בין 0 ל-500 ₪");
       current.fee = Math.round(n * 100) / 100;
     }
-    if (payInfo !== undefined) current.payInfo = String(payInfo).trim().slice(0, 120);
+    if (percent !== undefined) {
+      const n = Number(percent);
+      if (!(n >= 0 && n <= 50)) throw new PublishError(400, "האחוז צריך להיות בין 0 ל-50");
+      current.percent = Math.round(n * 10) / 10;
+    }
+    if (pay && typeof pay === "object") {
+      for (const [key] of PAY_METHODS) if (pay[key] !== undefined) current.pay[key] = String(pay[key] ?? "").trim().slice(0, 120);
+    }
+    if (payInfo !== undefined) current.pay.other = String(payInfo).trim().slice(0, 120);
     if (thanks !== undefined) current.thanks = String(thanks).trim().slice(0, 200);
-    d.settings = current;
+    d.settings = { ...current };
+    delete d.settings.payInfo;
     changed(phone);
     return current;
   }
 
+  function cleanPrice(value) {
+    if (value === undefined || value === null || value === "") return 0;
+    const n = Number(String(value).replace(/[^\d.]/g, ""));
+    if (!(n >= 0 && n <= 5000)) throw new PublishError(400, "מחיר לא תקין");
+    return Math.round(n * 100) / 100;
+  }
+
+  function setPrice(phone, id, price) {
+    const job = findJob(phone, id);
+    job.price = cleanPrice(price);
+    changed(phone);
+    return publicJob(job);
+  }
+
+  // כמה עמלה על הנסיעה הזו. null = באחוזים ואין מחיר
+  function feeOf(phone, job) {
+    const s = getSettings(phone);
+    if (s.feeMode === "percent") {
+      if (!s.percent) return 0;
+      if (!job.price) return null;
+      return Math.round(job.price * s.percent) / 100;
+    }
+    return s.fee;
+  }
+
   function thanksText(phone, job, r) {
     const s = getSettings(phone);
-    const route = job.text.split("\n").map((l) => l.trim()).filter(Boolean)[0] || "";
-    let text = `🙏 *תודה ${r.name && r.name !== "נהג" ? r.name : ""} על הנסיעה!*`.replace("  ", " ");
+    const route = String(job.text || "").split("\n").map((l) => l.trim()).filter(Boolean)[0] || "";
+    const name = r?.name && r.name !== "נהג" ? ` ${r.name}` : "";
+    let text = `🙏 *תודה${name} על הנסיעה!*`;
     if (route) text += `\n🚕 ${route}`;
-    if (s.fee > 0) {
-      text += `\n\n💰 *עמלה: ${s.fee} ₪*`;
-      if (s.payInfo) text += `\n💳 ${s.payInfo}`;
-      text += `\nאשמח שתעביר כשנוח לך.`;
+    const fee = feeOf(phone, job);
+    if (fee) {
+      if (s.feeMode === "percent") {
+        text += `\n\n💵 מחיר הנסיעה: ${money(job.price)}`;
+        text += `\n💰 *עמלה ${s.percent}%: ${money(fee)}*`;
+      } else {
+        text += `\n\n💰 *עמלה: ${money(fee)}*`;
+      }
+      const ways = PAY_METHODS.filter(([key]) => s.pay[key]).map(([key, label]) => `• ${label}: ${s.pay[key]}`);
+      if (ways.length) text += `\n\n💳 *לתשלום:*\n${ways.join("\n")}`;
+      text += `\n\nאשמח שתעביר כשנוח לך 🙂`;
     }
     if (s.thanks) text += `\n\n${s.thanks}`;
     text += `\n\nנסיעה טובה ובהצלחה! 🍀`;
     return text;
   }
 
-  async function sendThanks(phone, id, n) {
+  async function sendThanks(phone, id, n, { price } = {}) {
     const job = findJob(phone, id);
     const r = findRequester(job, n);
+    if (price !== undefined && price !== null && price !== "") job.price = cleanPrice(price);
+    if (feeOf(phone, job) === null) {
+      throw new PublishError(400, `כדי לחשב ${getSettings(phone).percent}% צריך את מחיר הנסיעה. כתוב אותו.`);
+    }
     const sock = getSock(phone);
     if (!sock) throw new PublishError(409, "הוואטסאפ שלך לא מחובר כרגע");
     await sock.sendMessage(targetOf(r), { text: thanksText(phone, job, r) });
     r.thankedAt = now();
+    r.fee = feeOf(phone, job) || 0;
     if (r.status !== "done") {
       r.status = "done";
       r.doneAt = now();
@@ -824,16 +877,16 @@ export function createRidePublisher({
 
   return {
     getLists, setList, editList,
-    start, republish, resume, stop, give, setOutcome, edit, removeFromGroups, archive,
+    start, republish, resume, stop, give, setOutcome, edit, setPrice, archive,
     getSettings, setSettings, sendThanks, thanksText: (phone, id, n) => {
       const job = findJob(phone, id);
       return thanksText(phone, job, findRequester(job, n));
     },
     // דוגמה להגדרות: כך תיראה הודעת התודה
-    previewThanks: (phone) => thanksText(phone, { text: "שמש ים 180" }, { name: "יוסי" }),
+    previewThanks: (phone) => thanksText(phone, { text: "שמש ים 180", price: 180 }, { name: "יוסי" }),
     contactOf,
     jobs: jobsOf, job: (phone, id) => publicJob(findJob(phone, id)),
-    isOwnPublished, repliesToMine, onGroupMessage, onPrivateMessage,
+    isOwnPublished, repliesToMine, noteGroupText, onGroupMessage, onPrivateMessage,
     onLabelEdit, onLabelAssociation, answer,
     flush, shutdown,
     _state: state,

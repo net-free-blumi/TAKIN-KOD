@@ -446,6 +446,12 @@
     return parts.join(' · ');
   }
 
+  // המיקום דלוק ומאושר, אבל עוד אין מיקום מהטלפון
+  function locationWaiting() {
+    const info = device();
+    return Boolean(info.location && info.locationAllowed);
+  }
+
   async function realRoute(ride) {
     const info = device();
     if (!info.location || !info.locationAllowed) {
@@ -553,8 +559,12 @@
           h('div', { className: 'route' }, route),
           price ? h('div', { className: 'price' }, `₪${price}`) : null)
         : null,
-      distance || real ? h('div', { className: 'distance' }, icon('pin'), distance || 'מסלול',
-        real ? h('span', { className: 'real' }, `בפועל: ${kmText(real.km)} · ${real.minutes} דק'`) : null) : null,
+      // מסלול אמיתי שחושב מחליף את ההערכה, ולא נוסף לידה
+      real
+        ? h('div', { className: 'distance' }, icon('pin'), `${kmText(real.km)} ממך · ${real.minutes} דק' נסיעה`,
+          h('span', { className: 'real' }, 'מסלול אמיתי'))
+        : distance ? h('div', { className: 'distance' }, icon('pin'), distance)
+          : live && ride.pickup && locationWaiting() ? h('div', { className: 'distance waiting' }, icon('pin'), 'מחפש את המיקום שלך...') : null,
       real && !real.exact ? h('p', { className: 'distance-note' }, 'עד מרכז השכונה. הכתובת המדויקת לא נמצאה') : null,
       ride.manual ? null : opts.full ? h('p', { className: 'ride-text' }, ride.text) : rideText(ride.text),
       ride.note ? h('p', { className: 'note' }, ride.note) : null,
@@ -1068,6 +1078,8 @@
     },
     // צ'אט באפליקציה עם מי שביקש נסיעה שהפצת (לא בוואטסאפ החיצוני)
     openPerson: (jobId, n) => chats.openPerson(jobId, n),
+    // הגדרות > תשלום ועמלה: אותו חלון של לשונית ההפצה
+    openPayments: () => publish.paymentSheet(),
     isTab: (tab) => state.tab === tab && !state.hidden && Boolean(root.querySelector('.shell')),
     // מסך של לשונית מתעדכן רק כשהיא פתוחה ולא באמצע הקלדה
     refreshTab(tab) {

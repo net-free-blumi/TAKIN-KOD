@@ -604,10 +604,17 @@ try {
     await sleep(100);
     check("הפצה: הנסיעה שהנהג הפיץ לא חוזרת אליו כהתראה", out.length === mark, textOf(out.slice(mark)));
 
-    // תשובה רגילה, בלי ציטוט, לא עוצרת
-    await groupMsg("PLAIN1", { message: { conversation: "ת" } });
+    // "ת 4" בלי ציטוט מיד אחרי ההפצה: מגיע כמבקש, אבל לא עוצר
+    await groupMsg("PLAIN1", { key: { participant: "972544444445@s.whatsapp.net" }, message: { conversation: "ת 4" } });
+    await sleep(150);
+    check("הפצה: ת 4 בלי ציטוט מגיע כמבקש עם סימון",
+      out.slice(mark).some((m) => /מבקש לנסיעה/.test(m.text) && /בלי ציטוט/.test(m.text) && /054-444-4445/.test(m.text)), textOf(out.slice(mark)));
+    check("הפצה: בלי ציטוט לא עוצר", !out.slice(mark).some((m) => /נעצרה/.test(m.text)));
+    // שיחה רגילה בקבוצה לא נחשבת
+    mark = out.length;
+    await groupMsg("CHAT1", { key: { participant: "972544444446@s.whatsapp.net" }, message: { conversation: "מישהו יודע מה המצב בכביש 1?" } });
     await sleep(100);
-    check("הפצה: תשובה בלי ציטוט לא נחשבת", !out.slice(mark).some((m) => /מבקש לנסיעה/.test(m.text)));
+    check("הפצה: הודעה רגילה בקבוצה לא נחשבת", !out.slice(mark).some((m) => /מבקש לנסיעה/.test(m.text)));
 
     // תשובה בציטוט: עוצרת, ומגיעה לנהג עם שם, טלפון וקבוצה
     await groupMsg("REQ1", { message: { extendedTextMessage: { text: "ת 5 דק", contextInfo: { stanzaId: "D" } } } });
@@ -616,7 +623,8 @@ try {
     const request = r.find((m) => /מבקש לנסיעה/.test(m.text));
     check("הפצה: מבקש מגיע עם שם, טלפון, קבוצה ומה כתב",
       Boolean(request) && /יוסי/.test(request.text) && /053-333-3333/.test(request.text) && /נהגי שמש/.test(request.text) && /ת 5 דק/.test(request.text), textOf(r));
-    const giveId = ids(r).find((id) => /^תן נסיעה \d+ 1$/.test(id));
+    // יוסי הוא המבקש השני (הראשון כתב "ת 4" בלי ציטוט)
+    const giveId = ids(r).find((id) => /^תן נסיעה \d+ 2$/.test(id));
     check("הפצה: כפתור תן לו", Boolean(giveId), ids(r).join());
     check("הפצה: סיכום עם המשך לשאר", r.some((m) => /נעצרה כי מישהו ביקש/.test(m.text)) && ids(r).some((id) => /^המשך הפצה \d+$/.test(id)), textOf(r));
     check("הפצה: לא נשלח לקבוצה השנייה", !driverOut.slice(before).some((s) => s.jid === G2));
@@ -631,18 +639,20 @@ try {
 
     // אחרי "תן לו": ביצע / לא לקח, ואז תודה עם עמלה
     const jobId = giveId.split(" ")[2];
-    r = await tap(DRIVER, `לא לקח ${jobId} 1`);
+    r = await tap(DRIVER, `לא לקח ${jobId} 2`);
     check("הפצה: לא לקח - אפשר להמשיך להפיץ", ids(r).some((id) => id === `המשך הפצה ${jobId}`), ids(r).join());
-    r = await tap(DRIVER, `ביצע ${jobId} 1`);
-    check("הפצה: ביצע - כפתור תודה ועמלה", ids(r).includes(`שלח תודה ${jobId} 1`), ids(r).join());
+    r = await tap(DRIVER, `ביצע ${jobId} 2`);
+    check("הפצה: ביצע - כפתור תודה ועמלה", ids(r).includes(`שלח תודה ${jobId} 2`), ids(r).join());
     r = await type(DRIVER, "עמלה 6");
-    r = await type(DRIVER, "תשלום ביט 050-1234567");
-    check("הפצה: הגדרות עמלה ותשלום עם דוגמה", /עמלה: 6 ₪/.test(textOf(r)) && /ביט 050-1234567/.test(textOf(r)), textOf(r));
+    check("הפצה: עמלה קבועה", /6 ₪ קבוע/.test(textOf(r)), textOf(r));
+    r = await type(DRIVER, "ביט 050-1234567");
+    r = await type(DRIVER, "עמלה 10%");
+    check("הפצה: עמלה באחוזים ואמצעי תשלום, עם דוגמה", /10% ממחיר הנסיעה/.test(textOf(r)) && /ביט: 050-1234567/.test(textOf(r)) && /עמלה 10%: 18 ₪/.test(textOf(r)), textOf(r));
     const beforeThanks = driverOut.length;
-    r = await tap(DRIVER, `שלח תודה ${jobId} 1`);
+    r = await tap(DRIVER, `שלח תודה ${jobId} 2`);
     const thanks = driverOut.slice(beforeThanks);
     check("הפצה: הודעת תודה ועמלה מהוואטסאפ של הנהג",
-      thanks.length === 1 && thanks[0].jid === "972533333333@s.whatsapp.net" && /עמלה: 6 ₪/.test(thanks[0].content.text) && /שמש ים 180/.test(thanks[0].content.text),
+      thanks.length === 1 && thanks[0].jid === "972533333333@s.whatsapp.net" && /מחיר הנסיעה: 180 ₪/.test(thanks[0].content.text) && /עמלה 10%: 18 ₪/.test(thanks[0].content.text) && /ביט: 050-1234567/.test(thanks[0].content.text),
       JSON.stringify(thanks));
 
     // מישהו כתב לנהג בפרטי, עם ציטוט ההודעה בקבוצה ("השב בפרטי")

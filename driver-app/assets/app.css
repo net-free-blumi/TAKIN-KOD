@@ -464,3 +464,4 @@ button.sticky { position: sticky; bottom: 8px; }
 }
 .sheet label { display: block; margin-top: 10px; margin-bottom: 4px; }
 .sheet input { margin-bottom: 4px; }
+.distance.waiting { color: var(--muted); font-weight: normal; }

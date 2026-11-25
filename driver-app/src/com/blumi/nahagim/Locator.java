@@ -20,6 +20,9 @@ import org.json.JSONObject;
 /** The driver's location. It stays on the phone and is never sent to the server. */
 final class Locator {
     private static final long MAX_AGE_MS = 10 * 60 * 1000;
+    // Updates come only after 100 m of movement. While we listen and none came, the driver is standing still,
+    // so the last fix is still right. Without this the distance disappeared after 10 minutes parked
+    private static final long STILL_MAX_AGE_MS = 60 * 60 * 1000;
     private static final double ROAD_FACTOR = 1.3;
 
     private static Locator instance;
@@ -30,6 +33,8 @@ final class Locator {
     private final Handler main = new Handler(Looper.getMainLooper());
     private final Set<String> users = new HashSet<>(); // main thread only
     private volatile Location last;
+    private volatile boolean listening; // updates are registered right now
+    private volatile long askedAt;
 
     // Every method is needed: before Android 11 the interface has no defaults
     private final LocationListener listener = new LocationListener() {
@@ -81,6 +86,7 @@ final class Locator {
         main.post(() -> {
             if (manager == null) return;
             manager.removeUpdates(listener);
+            listening = false;
             if (!active()) {
                 last = null;
                 return;
@@ -91,6 +97,7 @@ final class Locator {
                     if (!manager.getAllProviders().contains(provider)) continue;
                     accept(manager.getLastKnownLocation(provider));
                     manager.requestLocationUpdates(provider, 30000, 100, listener, Looper.getMainLooper());
+                    listening = true;
                 } catch (SecurityException | IllegalArgumentException e) {
                     Log.w("Locator", "provider unavailable: " + provider); // approximate permission has no GPS
                 }
@@ -101,11 +108,18 @@ final class Locator {
     private void accept(Location location) {
         if (location == null || ageMs(location) > MAX_AGE_MS) return;
         Location previous = last;
+        boolean hadNone = previous == null || ageMs(previous) > maxAge();
         boolean better = previous == null
                 || ageMs(previous) > 60000
                 || !previous.hasAccuracy()
                 || location.hasAccuracy() && location.getAccuracy() <= previous.getAccuracy() + 50;
         if (better) last = location;
+        // The first fix after none: show the distances now, not on the next refresh
+        if (better && hadNone) MainActivity.refreshIfOpen();
+    }
+
+    private long maxAge() {
+        return listening ? STILL_MAX_AGE_MS : MAX_AGE_MS;
     }
 
     private static long ageMs(Location location) {
@@ -115,11 +129,12 @@ final class Locator {
     private Location current() {
         Location location = last;
         if (location == null || !active()) return null;
-        // Standing still gives no updates, so ask the system again before giving up
-        if (ageMs(location) > MAX_AGE_MS) {
+        // Standing still gives no updates: ask the system again, and meanwhile keep the last fix while it is still believable
+        if (ageMs(location) > MAX_AGE_MS && SystemClock.elapsedRealtime() - askedAt > 60000) {
+            askedAt = SystemClock.elapsedRealtime(); // once a minute, not once per ride on the screen
             update();
-            return null;
         }
+        if (ageMs(location) > maxAge()) return null;
         return location;
     }
 

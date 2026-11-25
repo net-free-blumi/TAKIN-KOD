@@ -2,7 +2,7 @@ import cron from "node-cron";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { normalizeText, isSearchCommand, isStopCommand, hasStopWord, extractRequestPhone, parseDriverCommand, processDriverCommand, rideMatches, matchesAnySearch, findPlaces, extractDispatcherContact, buildQuotedRideMessage } from "./matcher.js";
+import { normalizeText, extractPrice, isSearchCommand, isStopCommand, hasStopWord, extractRequestPhone, parseDriverCommand, processDriverCommand, rideMatches, matchesAnySearch, findPlaces, extractDispatcherContact, buildQuotedRideMessage } from "./matcher.js";
 import { createDeduper } from "./dedupe.js";
 import { startDashboard, recordEvent, recordError, getRecentEvents, getErrorReports } from "./dashboard-api.js";
 import { createAdminAiFromEnv } from "./admin-ai.js";
@@ -2287,8 +2287,10 @@ async function handleIncomingMessage(sock, upsert, sessionContext) {
       // הפצת נסיעה: ההודעה שהנהג עצמו הפיץ לא נסרקת אצלו כנסיעה
       const publishOwner = cleanPhone(sessionContext.driverPhone);
       if (m.key.fromMe && publisher.isOwnPublished(publishOwner, text)) continue;
-      // תשובה בציטוט על נסיעה שהנהג הפיץ: עוצרת את ההפצה ומגיעה אליו כמבקש
-      if (!m.key.fromMe && publisher.repliesToMine(publishOwner, m.message, jid)) {
+      // מה עוד נכתב בקבוצה, כדי לדעת אם "ת 4" בלי ציטוט שייך להפצה של הנהג
+      if (!publisher.repliesToMine(publishOwner, m.message, jid, text)) publisher.noteGroupText(publishOwner, jid, text, m.key.fromMe);
+      // תשובה על נסיעה שהנהג הפיץ: בציטוט עוצרת את ההפצה, "ת 4" מיד אחריה בלי ציטוט רק מגיעה כמבקש
+      if (!m.key.fromMe && publisher.repliesToMine(publishOwner, m.message, jid, text)) {
         const realPhone = await getRealSenderPhone(sock, jid, m).catch(() => "");
         publisher.onGroupMessage(publishOwner, {
           message: m.message,
@@ -2441,6 +2443,8 @@ async function listDriverGroups(phone) {
 // ==========================================
 const publisher = createRidePublisher({
   file: path.join(__dirname, "driver-app-data", "ride-publish.json"),
+  // מחיר הנסיעה לעמלה באחוזים: אותו זיהוי מחיר של הבוט
+  priceOf: (text) => extractPrice(text) || 0,
   getSock: (phone) => {
     const session = getDriverSession(phone);
     return session?.status === "connected" && session.sock ? session.sock : null;
@@ -2605,11 +2609,16 @@ async function handlePublishCommand(sock, jid, rawPhone, text, norm) {
       await reply(ui.publishOutcomeCard({ job, n }));
       return true;
     }
-    if ((m = norm.match(/^שלח תודה (\d{4,}) (\d+)$/))) {
+    // "שלח תודה 12345 1", ואפשר גם עם מחיר בסוף: "שלח תודה 12345 1 50"
+    if ((m = norm.match(/^שלח תודה (\d{4,}) (\d+)(?: (\d{2,4}))?$/))) {
       const n = Number(m[2]);
-      const text = publisher.thanksText(phone, m[1], n);
+      if (m[3]) publisher.setPrice(phone, m[1], m[3]);
       const job = await publisher.sendThanks(phone, m[1], n);
-      await reply(ui.publishThanksSentCard({ job, n, text }));
+      await reply(ui.publishThanksSentCard({ job, n, text: publisher.thanksText(phone, m[1], n) }));
+      return true;
+    }
+    if ((m = norm.match(/^מחיר הפצה (\d{4,}) (\d{1,4})$/))) {
+      await reply(ui.publishJobCard({ job: publisher.setPrice(phone, m[1], m[2]) }));
       return true;
     }
     if ((m = norm.match(/^הפצה (\d{4,})$/))) {
@@ -2620,10 +2629,6 @@ async function handlePublishCommand(sock, jid, rawPhone, text, norm) {
       await reply(ui.myJobsCard({ jobs: publisher.jobs(phone) }));
       return true;
     }
-    if ((m = norm.match(/^מחק מהקבוצות (\d{4,})$/))) {
-      await reply(ui.publishRemovedCard(await publisher.removeFromGroups(phone, m[1])));
-      return true;
-    }
     if ((m = norm.match(/^מחק הפצה (\d{4,})$/))) {
       publisher.archive(phone, m[1]);
       await reply(ui.publishArchivedCard());
@@ -2631,18 +2636,21 @@ async function handlePublishCommand(sock, jid, rawPhone, text, norm) {
     }
     // הגדרות העמלה והודעת התודה
     const settingsCard = () => ui.publishSettingsCard({ settings: publisher.getSettings(phone), preview: publisher.previewThanks(phone) });
-    if (norm === "הגדרות הפצה" || norm === "עמלה") {
-      await reply(settingsCard());
-      return true;
-    }
-    if ((m = norm.match(/^עמלה (\d{1,3})$/))) {
-      publisher.setSettings(phone, { fee: Number(m[1]) });
+    if (norm === "הגדרות הפצה" || norm === "עמלה" || norm === "תשלום ועמלה" || norm === "תשלומים") {
       await reply(settingsCard());
       return true;
     }
     const raw = String(text || "").trim();
-    if ((m = raw.match(/^תשלום[\s:]+([\s\S]{2,120})$/))) {
-      publisher.setSettings(phone, { payInfo: m[1] });
+    // "עמלה 10%" / "עמלה 10 אחוז" = אחוז מהנסיעה. "עמלה 6" = סכום קבוע
+    if ((m = raw.match(/^עמלה\s*:?\s*(\d{1,3}(?:\.\d{1,2})?)\s*(%|אחוז|אחוזים)?\s*(?:₪|שח|ש"ח)?$/))) {
+      publisher.setSettings(phone, m[2] ? { feeMode: "percent", percent: Number(m[1]) } : { feeMode: "fixed", fee: Number(m[1]) });
+      await reply(settingsCard());
+      return true;
+    }
+    const PAY_COMMANDS = { "ביט": "bit", "פייבוקס": "paybox", "העברה": "bank", "העברה בנקאית": "bank", "תשלום": "other" };
+    if ((m = raw.match(/^(העברה בנקאית|ביט|פייבוקס|העברה|תשלום)[\s:]+([\s\S]{2,120})$/))) {
+      const value = m[2].trim();
+      publisher.setSettings(phone, { pay: { [PAY_COMMANDS[m[1]]]: /^(מחק|ללא|אין)$/.test(value) ? "" : value } });
       await reply(settingsCard());
       return true;
     }

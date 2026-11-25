@@ -144,18 +144,7 @@ window.createPublish = function createPublish(ctx) {
       tools.push(button('❌ לא לקח', () => act('/publish/outcome', { id: job.id, n: r.n, status: 'cancelled' }, 'הנסיעה פנויה שוב')));
     }
     if (r.status === 'done' && !r.thanked) {
-      const fee = data.settings?.fee;
-      tools.push(button(fee ? `💰 תודה ועמלה ${fee} ₪` : '💰 שלח תודה', () => {
-        sheet(
-          h('h2', null, `לשלוח ל${r.name}?`),
-          h('p', { className: 'ride-text thanks-preview' }, (data.thanksPreview || '').replace('יוסי', r.name).replace('שמש ים 180', job.text.split('\n')[0])),
-          fee ? null : h('p', { className: 'muted' }, 'אפשר לקבוע עמלה ופרטי תשלום למטה, ב"תודה ועמלה".'),
-          button('שלח', async () => {
-            await act('/publish/thanks', { id: job.id, n: r.n }, 'ההודעה נשלחה');
-            closeSheet();
-          }, 'primary wide'),
-          button('ביטול', closeSheet, 'wide'));
-      }, 'primary'));
+      tools.push(button(job.fee ? `💰 תודה ועמלה ${job.fee} ₪` : '💰 שלח תודה', () => thanksSheet(job, r), 'primary'));
     }
     if (r.canChat) tools.push(button(icon('chat'), () => ctx.openPerson(job.id, r.n), 'more', `צ'אט עם ${r.name}`));
     if (r.phone) tools.push(button(icon('phone'), () => native.dial(local(r.phone)), 'more', `חייג ל${r.name}`));
@@ -166,7 +155,9 @@ window.createPublish = function createPublish(ctx) {
         r.status ? h('span', { className: `req-state ${r.status}` }, REQ_STATUS[r.status] + (r.thanked ? ' · 💰' : '')) : null),
       h('div', { className: 'muted' }, [r.phone ? local(r.phone) : '', where, ctx.clock(r.at)].filter(Boolean).join(' · ')),
       r.text ? h('div', { className: 'requester-text' }, `"${r.text}"`) : null,
-      r.private && !r.quoted ? h('div', { className: 'muted' }, 'כתב בפרטי בלי ציטוט. ודא שזה על הנסיעה הזו.') : null,
+      !r.quoted ? h('div', { className: 'muted' }, r.private
+        ? 'כתב בפרטי בלי ציטוט. ודא שזה על הנסיעה הזו.'
+        : 'כתב בקבוצה בלי ציטוט, מיד אחרי ההפצה שלך. ודא שזה על הנסיעה הזו.') : null,
       tools.length ? h('div', { className: 'actions' }, tools) : null);
   }
 
@@ -181,19 +172,55 @@ window.createPublish = function createPublish(ctx) {
     return { text: STOP_LABEL[job.stopReason] || STATE_LABEL[job.state] || job.state, cls: '' };
   }
 
+  // הודעת תודה למי שביצע. באחוזים: המחיר מהנסיעה, ואפשר לתקן אותו כאן, והעמלה מחושבת לבד
+  function thanksSheet(job, r) {
+    const s = data.settings || {};
+    const percent = s.feeMode === 'percent' && s.percent > 0;
+    const price = h('input', { type: 'number', inputMode: 'decimal', className: 'number', value: job.price || '', placeholder: 'מחיר הנסיעה ב-₪' });
+    price.setAttribute('aria-label', 'מחיר הנסיעה');
+    const calc = h('p', { className: 'notice' });
+    const update = () => {
+      const p = Number(price.value) || 0;
+      calc.textContent = p ? `${s.percent}% מ-${p} ₪ = ${Math.round(p * s.percent) / 100} ₪` : 'כתוב את מחיר הנסיעה כדי לחשב את העמלה';
+    };
+    price.oninput = update;
+    if (percent) update();
+    sheet(
+      h('h2', null, `הודעת תודה ל${r.name}`),
+      percent ? [h('label', { className: 'muted' }, 'מחיר הנסיעה (₪)'), price, calc] : null,
+      !percent && job.fee ? h('p', { className: 'notice' }, `עמלה קבועה: ${job.fee} ₪`) : null,
+      !job.fee && !percent ? h('p', { className: 'muted' }, 'אין עמלה מוגדרת. אפשר לקבוע ב"תשלום ועמלה".') : null,
+      h('p', { className: 'muted' }, 'ההודעה נשלחת לו מהוואטסאפ שלך, עם הנסיעה, הסכום ואמצעי התשלום שלך.'),
+      button('שלח', async () => {
+        const body = { id: job.id, n: r.n };
+        if (percent) {
+          if (!(Number(price.value) > 0)) throw new Error('כתוב את מחיר הנסיעה');
+          body.price = Number(price.value);
+        }
+        await api('POST', '/publish/thanks', body);
+        closeSheet();
+        toast('ההודעה נשלחה');
+        await load();
+      }, 'primary wide'),
+      button('ביטול', closeSheet, 'wide'));
+  }
+
   function editSheet(job) {
     const text = h('textarea', { id: 'publish-edit', rows: 5, maxLength: 1000, value: job.text });
     const customer = h('input', { type: 'tel', inputMode: 'tel', value: job.customerPhone || '', placeholder: 'טלפון הלקוח (לא חובה)' });
     customer.setAttribute('aria-label', 'טלפון הלקוח');
+    const price = h('input', { type: 'number', inputMode: 'decimal', className: 'number', value: job.price || '', placeholder: 'מחיר הנסיעה ב-₪ (לא חובה)' });
+    price.setAttribute('aria-label', 'מחיר הנסיעה');
     sheet(
       h('h2', null, 'עריכת ההפצה'),
       text,
       customer,
-      h('p', { className: 'muted' }, 'הודעות שנשלחו ב-15 הדקות האחרונות מתעדכנות גם בקבוצות. קבוצות שעוד לא קיבלו יקבלו את הנוסח החדש.'),
+      price,
+      h('p', { className: 'muted' }, 'העריכה חלה מעכשיו: הודעות שכבר נשלחו לקבוצות לא משתנות. קבוצות שעוד לא קיבלו, ו"הפץ שוב", יקבלו את הנוסח החדש.'),
       button('שמור', async () => {
-        const result = await api('POST', '/publish/edit', { id: job.id, text: text.value, customerPhone: customer.value });
+        const result = await api('POST', '/publish/edit', { id: job.id, text: text.value, customerPhone: customer.value, price: price.value || 0 });
         closeSheet();
-        toast(result.edited ? `עודכן גם ב-${result.edited} קבוצות` : 'נשמר');
+        toast(result.pending ? `נשמר. ${result.pending} קבוצות יקבלו את הנוסח החדש` : 'נשמר');
         await load();
       }, 'primary wide'),
       button('ביטול', closeSheet, 'wide'));
@@ -202,15 +229,9 @@ window.createPublish = function createPublish(ctx) {
   function moreSheet(job) {
     sheet(
       h('h2', null, 'פעולות'),
-      button('✏️ עריכת הנוסח ומספר הלקוח', () => editSheet(job), 'wide'),
+      button('✏️ עריכה (מעכשיו והלאה)', () => editSheet(job), 'wide'),
       button('🔁 הפץ שוב לכל הרשימה', () => confirmSheet('להפיץ שוב?', 'הודעה חדשה תצא לכל הקבוצות ברשימה.', 'כן, להפיץ',
         () => act('/publish/republish', { id: job.id }, 'ההפצה יצאה שוב')), 'wide'),
-      job.sent ? button('🗑️ מחק מהקבוצות', () => confirmSheet('למחוק את ההודעה מהקבוצות?', 'ההודעה תימחק מכל הקבוצות שקיבלו אותה, והשליחה לשאר תיעצר.', 'כן, למחוק',
-        async () => {
-          const result = await api('POST', '/publish/remove', { id: job.id });
-          toast(result.removed ? `נמחקה מ-${result.removed} קבוצות` : 'לא היה מה למחוק');
-          await load();
-        }), 'wide danger') : null,
       button('🧹 מחק מהרשימה שלי', () => confirmSheet('למחוק את ההפצה מהרשימה?', 'ההודעות בקבוצות נשארות. מבקשים חדשים כבר לא יגיעו.', 'כן, למחוק',
         () => act('/publish/delete', { id: job.id }, 'נמחקה')), 'wide danger'),
       button('סגור', closeSheet, 'wide'));
@@ -229,9 +250,9 @@ window.createPublish = function createPublish(ctx) {
     }
     tools.push(button(icon('more'), () => moreSheet(job), 'more', 'פעולות'));
     const info = [`נשלחה ל-${job.sent} מתוך ${total}`];
-    if (job.removed) info.push(`נמחקה מ-${job.removed}`);
     if (failed) info.push(`${failed} לא קיבלו`);
     if (job.customerPhone) info.push(`לקוח ${job.customerPhone}`);
+    if (job.price) info.push(`${job.price} ₪`);
     return h('div', { className: `ride publish-job ${job.state}` },
       h('div', { className: 'publish-head' },
         h('span', { className: `state ${label.cls}` }, label.text),
@@ -258,36 +279,89 @@ window.createPublish = function createPublish(ctx) {
       h('p', { className: 'muted' }, `עד ${data.limits?.maxGroups || 25} קבוצות ברשימה ועד ${data.limits?.perHour || 6} הפצות בשעה, כדי שוואטסאפ לא יחסום את המספר שלך.`));
   }
 
-  // הודעת תודה ועמלה למי שביצע נסיעה שנתת
-  function settingsSection() {
-    const s = data.settings || { fee: 0, payInfo: '', thanks: '' };
-    const edit = () => {
-      const fee = h('input', { type: 'number', inputMode: 'numeric', className: 'number', value: s.fee || '', placeholder: '0 = בלי עמלה' });
-      fee.setAttribute('aria-label', 'עמלה בשקלים');
-      const pay = h('input', { value: s.payInfo, maxLength: 120, placeholder: 'לדוגמה: ביט 050-1234567' });
-      pay.setAttribute('aria-label', 'פרטי תשלום');
-      const extra = h('input', { value: s.thanks, maxLength: 200, placeholder: 'משפט נוסף (לא חובה)' });
-      extra.setAttribute('aria-label', 'תוספת להודעה');
-      sheet(
-        h('h2', null, 'תודה ועמלה'),
-        h('label', { className: 'muted' }, 'עמלה (₪)'), fee,
-        h('label', { className: 'muted' }, 'פרטי תשלום'), pay,
-        h('label', { className: 'muted' }, 'תוספת להודעה'), extra,
-        button('שמור', async () => {
-          const result = await api('POST', '/publish/settings', { fee: Number(fee.value) || 0, payInfo: pay.value, thanks: extra.value });
-          data.settings = result.settings;
-          data.thanksPreview = result.thanksPreview;
-          closeSheet();
-          toast('נשמר');
-          ctx.refreshTab('publish');
-        }, 'primary wide'),
-        button('ביטול', closeSheet, 'wide'));
+  // ---------- תשלום ועמלה (גם מהגדרות) ----------
+  const PAY_FIELDS = [
+    ['bit', 'ביט', 'מספר טלפון לביט'],
+    ['paybox', 'פייבוקס', 'מספר טלפון או קישור לפייבוקס'],
+    ['bank', 'העברה בנקאית', 'בנק, סניף, חשבון, שם'],
+    ['other', 'אחר', 'לדוגמה: מזומן בנסיעה הבאה'],
+  ];
+
+  function feeSummary(s) {
+    if (s.feeMode === 'percent') return s.percent ? `${s.percent}% ממחיר הנסיעה` : 'בלי עמלה';
+    return s.fee ? `${s.fee} ₪ קבוע לכל נסיעה` : 'בלי עמלה';
+  }
+
+  async function paymentSheet() {
+    if (!data) await load();
+    if (!data) throw new Error(error || 'אין חיבור לשרת');
+    const s = data.settings || { feeMode: 'fixed', fee: 0, percent: 0, pay: {}, thanks: '' };
+    let mode = s.feeMode || 'fixed';
+    const amount = h('input', { type: 'number', inputMode: 'decimal', className: 'number' });
+    amount.setAttribute('aria-label', 'סכום העמלה');
+    const amountLabel = h('label', { className: 'muted' });
+    const example = h('p', { className: 'notice' });
+    const drawMode = () => {
+      amount.value = mode === 'percent' ? (s.percent || '') : (s.fee || '');
+      amount.placeholder = mode === 'percent' ? 'לדוגמה 10' : 'לדוגמה 6';
+      amountLabel.textContent = mode === 'percent' ? 'אחוז מהנסיעה (%)' : 'סכום קבוע (₪)';
+      drawExample();
     };
+    const drawExample = () => {
+      const n = Number(amount.value) || 0;
+      example.textContent = !n ? 'בלי עמלה: נשלחת רק הודעת תודה.'
+        : mode === 'percent' ? `לדוגמה: נסיעה של 50 ₪ → עמלה ${Math.round(50 * n) / 100} ₪. נסיעה של 180 ₪ → ${Math.round(180 * n) / 100} ₪.`
+          : `כל נסיעה: ${n} ₪.`;
+    };
+    amount.oninput = drawExample;
+    const modes = h('div');
+    const drawModes = () => modes.replaceChildren(segments([['fixed', 'סכום קבוע'], ['percent', 'אחוז מהנסיעה']], mode, (m) => {
+      mode = m;
+      drawModes();
+      drawMode();
+    }));
+    drawModes();
+    drawMode();
+    const inputs = PAY_FIELDS.map(([key, label, hint]) => {
+      const el = h('input', { value: s.pay?.[key] || '', maxLength: 120, placeholder: hint });
+      el.setAttribute('aria-label', label);
+      return [key, label, el];
+    });
+    const extra = h('input', { value: s.thanks || '', maxLength: 200, placeholder: 'משפט נוסף להודעה (לא חובה)' });
+    extra.setAttribute('aria-label', 'תוספת להודעה');
+    sheet(
+      h('h2', null, 'תשלום ועמלה'),
+      h('p', { className: 'muted' }, 'אחרי שנהג ביצע נסיעה שנתת לו, הוא מקבל ממך הודעת תודה עם הסכום ואיך לשלם.'),
+      h('h3', null, 'עמלה'),
+      modes, amountLabel, amount, example,
+      h('h3', null, 'אמצעי תשלום'),
+      h('p', { className: 'muted' }, 'רק מה שתמלא יופיע בהודעה.'),
+      inputs.map(([, label, el]) => [h('label', { className: 'muted' }, label), el]),
+      h('h3', null, 'תוספת להודעה'),
+      extra,
+      button('שמור', async () => {
+        const n = Number(amount.value) || 0;
+        const pay = Object.fromEntries(inputs.map(([key, , el]) => [key, el.value]));
+        const result = await api('POST', '/publish/settings', mode === 'percent'
+          ? { feeMode: 'percent', percent: n, pay, thanks: extra.value }
+          : { feeMode: 'fixed', fee: n, pay, thanks: extra.value });
+        data.settings = result.settings;
+        data.thanksPreview = result.thanksPreview;
+        closeSheet();
+        toast('נשמר');
+        await load();
+      }, 'primary wide'),
+      button('ביטול', closeSheet, 'wide'));
+  }
+
+  function settingsSection() {
+    const s = data.settings || { pay: {} };
+    const ways = PAY_FIELDS.filter(([key]) => s.pay?.[key]).map(([, label]) => label).join(', ');
     return h('section', { className: 'section' },
-      h('h2', null, 'תודה ועמלה'),
-      h('p', { className: 'muted' }, 'אחרי שמסמנים "ביצע", כפתור אחד שולח לו מהוואטסאפ שלך הודעת תודה מסודרת, עם העמלה ופרטי התשלום.'),
-      button([h('div', null, h('strong', null, s.fee ? `עמלה ${s.fee} ₪` : 'בלי עמלה'), h('span', null, s.payInfo || 'אין פרטי תשלום')), icon('edit')], edit, 'field'),
-      h('details', null, h('summary', null, 'איך ההודעה נראית'), h('p', { className: 'ride-text thanks-preview' }, data.thanksPreview || '')));
+      h('h2', null, 'תשלום ועמלה'),
+      h('p', { className: 'muted' }, 'אחרי "ביצע", כפתור אחד שולח לו מהוואטסאפ שלך הודעת תודה עם העמלה ואיך לשלם.'),
+      button([h('div', null, h('strong', null, feeSummary(s)), h('span', null, ways || 'אין אמצעי תשלום')), icon('edit')], paymentSheet, 'field'),
+      h('details', null, h('summary', null, 'איך ההודעה נראית (נסיעה של 180 ₪)'), h('p', { className: 'ride-text thanks-preview' }, data.thanksPreview || '')));
   }
 
   function mainScreen() {
@@ -379,6 +453,8 @@ window.createPublish = function createPublish(ctx) {
       ctx.render();
       return true;
     },
+    // מסך ההגדרות פותח את אותו חלון
+    paymentSheet,
     // מהתראה על מבקש: לפתוח את הלשונית
     open() {
       page = null;

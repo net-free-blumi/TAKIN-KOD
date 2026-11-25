@@ -274,7 +274,7 @@ test("תן לו שוב לאחר: הקודם מסומן לא לקח, וביצע /
     assert.equal(j.doneBy, 1);
     await assert.rejects(() => t.pub.give(PHONE, job.id, 2), /כבר סומנה כבוצעה/);
 
-    t.pub.setSettings(PHONE, { fee: 6, payInfo: "ביט 050-1234567" });
+    t.pub.setSettings(PHONE, { fee: 6, pay: { bit: "050-1234567" } });
     assert.throws(() => t.pub.setSettings(PHONE, { fee: 900 }), /בין 0 ל-500/);
     j = await t.pub.sendThanks(PHONE, job.id, 1);
     const msg = t.sent.at(-1);
@@ -282,7 +282,7 @@ test("תן לו שוב לאחר: הקודם מסומן לא לקח, וביצע /
     assert.match(msg.text, /תודה יוסי/);
     assert.match(msg.text, /שמש ים 180/);
     assert.match(msg.text, /עמלה: 6 ₪/);
-    assert.match(msg.text, /ביט 050-1234567/);
+    assert.match(msg.text, /ביט: 050-1234567/);
     assert.ok(!/ריש לקיש/.test(msg.text), "רק השורה הראשונה של הנסיעה");
     assert.equal(j.requesters[0].thanked, true);
     // בלי עמלה: רק תודה
@@ -316,6 +316,45 @@ test("השב בפרטי עם ציטוט עוצר כמו בקבוצה. פרטי �
   }
 });
 
+test("ת 4 / ת5 / ת פה בקבוצה בלי ציטוט, מיד אחרי ההפצה: מגיע כמבקש בלי לעצור", async () => {
+  const t = setup();
+  try {
+    t.pub.setList(PHONE, 1, [G(1), G(2)]);
+    const job = t.pub.start(PHONE, { text: "שמש ים 180" });
+    await tick();
+    const plain = (text, id, participant) => ({ message: { conversation: text }, msgKey: { id, participant }, groupJid: G(1).id, senderName: id, text });
+    for (const [text, who] of [["ת 4", "a@lid"], ["ת5", "b@lid"], ["ת פה", "c@lid"], ["ת'", "d@lid"]]) {
+      assert.equal(t.pub.repliesToMine(PHONE, { conversation: text }, G(1).id, text), true, text);
+      assert.equal(t.pub.onGroupMessage(PHONE, plain(text, who, who)), true, text);
+    }
+    // מילה רגילה או טקסט ארוך לא נחשבים
+    assert.equal(t.pub.onGroupMessage(PHONE, plain("תודה רבה לכולם", "e", "e@lid")), false);
+    // בקבוצה שעוד לא קיבלה את ההפצה: לא נחשב
+    assert.equal(t.pub.repliesToMine(PHONE, { conversation: "ת 4" }, G(2).id, "ת 4"), false);
+    const j = t.pub.job(PHONE, job.id);
+    assert.equal(j.state, "sending", "בלי ציטוט לא עוצר");
+    assert.equal(j.requesters.length, 4);
+    assert.equal(j.requesters[0].quoted, false);
+  } finally {
+    t.cleanup();
+  }
+});
+
+test("ת 4 בלי ציטוט אחרי שנסיעה אחרת נכתבה בקבוצה: כבר לא שלך", async () => {
+  const t = setup();
+  try {
+    t.pub.setList(PHONE, 1, [G(1), G(2)]);
+    t.pub.start(PHONE, { text: "שמש ים 180" });
+    await tick();
+    t.pub.noteGroupText(PHONE, G(1).id, "ירושלים בני ברק 250 ש\"ח עכשיו דחוף", false);
+    assert.equal(t.pub.repliesToMine(PHONE, { conversation: "ת 4" }, G(1).id, "ת 4"), false);
+    // הודעה קצרה של מישהו אחר ("ת") לא חוסמת
+    t.pub.noteGroupText(PHONE, G(2).id, "ת", false);
+  } finally {
+    t.cleanup();
+  }
+});
+
 test("פרטי בלי ציטוט אחרי חצי שעה לא נחשב", async () => {
   let clock = 1_000_000;
   const t = setup();
@@ -332,12 +371,12 @@ test("פרטי בלי ציטוט אחרי חצי שעה לא נחשב", async ()
   }
 });
 
-test("עריכה: מעדכן הודעות שנשלחו עד 15 דקות, והטקסט החדש יוצא לשאר", async () => {
-  const edits = [];
+test("עריכה מעכשיו והלאה: הודעות שכבר נשלחו לא נוגעים בהן, השאר מקבלות את הנוסח החדש", async () => {
+  const touched = [];
   const t = setup({
     sock: {
       sendMessage: async (jid, content) => {
-        if (content.edit) { edits.push({ jid, ...content }); return {}; }
+        if (content.edit || content.delete) { touched.push(content); return {}; }
         t.sent.push({ jid, text: content.text });
         return { key: { id: `M${t.sent.length}` } };
       },
@@ -347,43 +386,77 @@ test("עריכה: מעדכן הודעות שנשלחו עד 15 דקות, והט�
     t.pub.setList(PHONE, 1, [G(1), G(2)]);
     const job = t.pub.start(PHONE, { text: "שמש ים 180" });
     await tick();
-    const r = await t.settle(t.pub.edit(PHONE, job.id, { text: "שמש ים 200\nלקוח: 0501112222" }));
-    assert.equal(r.edited, 1);
-    assert.deepEqual(edits[0].edit, { remoteJid: G(1).id, id: "M1", fromMe: true });
-    assert.equal(edits[0].text, "שמש ים 200");
+    const r = t.pub.edit(PHONE, job.id, { text: "שמש ים 200\nלקוח: 0501112222" });
+    assert.equal(r.pending, 1);
     assert.equal(r.job.customerPhone, "0501112222");
+    assert.equal(r.job.price, 0, "אין ₪ בטקסט");
     await t.wake();
-    assert.equal(t.sent.at(-1).text, "שמש ים 200", "הקבוצה הבאה מקבלת את הנוסח החדש");
+    assert.equal(touched.length, 0, "לא עורכים ולא מוחקים בקבוצות");
+    assert.deepEqual(t.sent.map((s) => s.text), ["שמש ים 180", "שמש ים 200"]);
+    // גם הנוסח הישן וגם החדש לא חוזרים לנהג כנסיעה
+    assert.equal(t.pub.isOwnPublished(PHONE, "שמש ים 180"), true);
     assert.equal(t.pub.isOwnPublished(PHONE, "שמש ים 200"), true);
   } finally {
     t.cleanup();
   }
 });
 
-test("מחיקה מהקבוצות ומחיקה מהרשימה: אחרי מחיקה מהרשימה לא מגיעים מבקשים", async () => {
-  const deletes = [];
-  const t = setup({
-    sock: {
-      sendMessage: async (jid, content) => {
-        if (content.delete) { deletes.push(content.delete); return {}; }
-        t.sent.push({ jid, text: content.text });
-        return { key: { id: `M${t.sent.length}` } };
-      },
-    },
-  });
+test("מחיקה מהרשימה: לא נוגע בקבוצות, ואחריה לא מגיעים מבקשים", async () => {
+  const t = setup();
   try {
-    t.pub.setList(PHONE, 1, [G(1), G(2), G(3)]);
+    t.pub.setList(PHONE, 1, [G(1), G(2)]);
     const job = t.pub.start(PHONE, { text: "שמש ים 180" });
     await tick();
-    const r = await t.settle(t.pub.removeFromGroups(PHONE, job.id));
-    assert.equal(r.removed, 1);
-    assert.deepEqual(deletes[0], { remoteJid: G(1).id, id: "M1", fromMe: true });
-    assert.deepEqual(r.job.groups.map((g) => g.status), ["removed", "skipped", "skipped"]);
-    assert.equal(r.job.state, "stopped");
     t.pub.archive(PHONE, job.id);
+    await t.wake();
+    assert.equal(t.sent.length, 1, "נעצרה, ושום דבר לא נמחק או נשלח");
     assert.equal(t.pub.jobs(PHONE).length, 0);
     assert.throws(() => t.pub.job(PHONE, job.id), /לא נמצאה/);
     assert.equal(t.pub.onGroupMessage(PHONE, { ...reply("M1"), groupJid: G(1).id }), false);
+  } finally {
+    t.cleanup();
+  }
+});
+
+test("עמלה באחוזים: מחיר מהטקסט, חישוב 10% ואמצעי תשלום בהודעה", async () => {
+  const t = setup();
+  try {
+    t.pub.setList(PHONE, 1, [G(1)]);
+    const job = t.pub.start(PHONE, { text: "שמש ים 50 ₪" });
+    assert.equal(job.price, 50);
+    await tick();
+    t.pub.onGroupMessage(PHONE, { ...reply("M1"), groupJid: G(1).id, senderPhone: "972533333331" });
+    t.pub.setSettings(PHONE, { feeMode: "percent", percent: 10, pay: { bit: "050-1234567", paybox: "https://payboxapp.page.link/x" } });
+    assert.throws(() => t.pub.setSettings(PHONE, { percent: 80 }), /בין 0 ל-50/);
+    assert.equal(t.pub.job(PHONE, job.id).fee, 5);
+    await t.pub.sendThanks(PHONE, job.id, 1);
+    const msg = t.sent.at(-1).text;
+    assert.match(msg, /מחיר הנסיעה: 50 ₪/);
+    assert.match(msg, /עמלה 10%: 5 ₪/);
+    assert.match(msg, /ביט: 050-1234567/);
+    assert.match(msg, /פייבוקס: https:\/\/payboxapp/);
+    assert.ok(!/העברה בנקאית/.test(msg), "רק אמצעים שמולאו");
+    assert.equal(t.pub.job(PHONE, job.id).requesters[0].paidFee, 5);
+  } finally {
+    t.cleanup();
+  }
+});
+
+test("עמלה באחוזים בלי מחיר: מבקש מחיר, ואפשר לתת אותו בשליחה", async () => {
+  const t = setup();
+  try {
+    t.pub.setList(PHONE, 1, [G(1)]);
+    const job = t.pub.start(PHONE, { text: "שמש ים עכשיו" });
+    await tick();
+    t.pub.onGroupMessage(PHONE, { ...reply("M1"), groupJid: G(1).id, senderPhone: "972533333331" });
+    t.pub.setSettings(PHONE, { feeMode: "percent", percent: 10 });
+    assert.equal(t.pub.job(PHONE, job.id).fee, null);
+    await assert.rejects(() => t.pub.sendThanks(PHONE, job.id, 1), /צריך את מחיר הנסיעה/);
+    await t.pub.sendThanks(PHONE, job.id, 1, { price: "75" });
+    assert.match(t.sent.at(-1).text, /עמלה 10%: 7.5 ₪/);
+    // הגדרה ישנה בשורה אחת עוברת ל"אחר"
+    t.pub.setSettings(PHONE, { payInfo: "מזומן בפעם הבאה" });
+    assert.equal(t.pub.getSettings(PHONE).pay.other, "מזומן בפעם הבאה");
   } finally {
     t.cleanup();
   }

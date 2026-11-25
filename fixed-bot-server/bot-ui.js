@@ -41,7 +41,6 @@ export const CMD = {
   myJobs: "ההפצות שלי",
   publishAgain: "הפץ שוב",
   publishEdit: "ערוך הפצה",
-  publishRemove: "מחק מהקבוצות",
   publishDelete: "מחק הפצה",
   publishDone: "ביצע",
   publishCancelled: "לא לקח",
@@ -586,12 +585,12 @@ export function howPublishCard() {
       `*2. מפיצים.* כותבים *הפץ* ואחריו הנסיעה, ובוחרים רשימה.\n` +
       `שורה *לקוח: 05...* לא תפורסם. היא נשמרת רק לך, ונשלחת למי שתיתן לו את הנסיעה.\n\n` +
       `*3. מחכים.* הבוט שולח מהוואטסאפ שלך, קבוצה כל 8–15 שניות.\n` +
-      `כשמישהו עונה על הנסיעה *בציטוט* (בקבוצה, או "השב בפרטי"), השליחה לשאר הקבוצות נעצרת ותקבל כאן את השם, הטלפון, הקבוצה ומה כתב. תשובה בלי ציטוט בקבוצה לא עוצרת. הודעה בפרטי כמו "ת" בחצי השעה הראשונה מגיעה אליך כמבקש, בלי לעצור.\n\n` +
+      `כשמישהו עונה על הנסיעה *בציטוט* (בקבוצה, או "השב בפרטי"), השליחה לשאר הקבוצות נעצרת ותקבל כאן את השם, הטלפון, הקבוצה ומה כתב. תשובה בלי ציטוט לא עוצרת, אבל עדיין מגיעה אליך כמבקש: "ת 4", "ת5" או "ת פה" בקבוצה מיד אחרי ההפצה שלך (5 דקות, ולפני שנסיעה אחרת נכתבה שם), או הודעה כזו בפרטי בחצי השעה הראשונה.\n\n` +
       `*4. נותנים.* *🤝 תן לו* שולח לו בפרטי את הנסיעה ואת מספר הלקוח. אחר כך מסמנים *✅ ביצע* או *❌ לא לקח*. לא לקח? נותנים לאחר, או *▶️ המשך* לקבוצות שעוד לא קיבלו.\n\n` +
-      `*5. תודה ועמלה.* אחרי *ביצע*: *💰 שלח תודה ועמלה* שולח לו הודעה מסודרת עם הסכום ופרטי התשלום. קובעים ב*הגדרות הפצה*.\n\n` +
-      `*הכול ב🗂️ ההפצות שלי:* עצירה, המשך, *הפץ שוב*, עריכה (*ערוך הפצה* ואז הנוסח החדש, גם בקבוצות שכבר קיבלו עד 15 דקות), *מחק מהקבוצות* ו*מחק מהרשימה*. אפשר כמה הפצות: חדשה מחכה בתור ויוצאת כשהקודמת מסתיימת.\n\n` +
+      `*5. תודה ועמלה.* אחרי *ביצע*: *💰 שלח תודה ועמלה* שולח לו הודעה מסודרת עם הסכום ואיך לשלם. עמלה קבועה או באחוזים (למשל 10% מנסיעה של 50 ₪ = 5 ₪, מחושב לבד). קובעים ב*תשלום ועמלה*.\n\n` +
+      `*הכול ב🗂️ ההפצות שלי:* עצירה, המשך, *הפץ שוב*, עריכה (*ערוך הפצה* ואז הנוסח החדש; חל מעכשיו, ההודעות שכבר יצאו לא משתנות) ו*מחק מהרשימה*. אפשר כמה הפצות: חדשה מחכה בתור ויוצאת כשהקודמת מסתיימת.\n\n` +
       `🛡️ כדי שוואטסאפ לא יחסום את המספר שלך: עד 25 קבוצות ברשימה ועד 6 הפצות בשעה.`,
-    buttons: [{ id: CMD.myJobs, text: "🗂️ ההפצות שלי" }, { id: CMD.publishSettings, text: "⚙️ הגדרות הפצה" }, BTN.menu],
+    buttons: [{ id: CMD.myJobs, text: "🗂️ ההפצות שלי" }, { id: CMD.publishSettings, text: "⚙️ תשלום ועמלה" }, BTN.menu],
   };
 }
 
@@ -659,7 +658,9 @@ export function publishRequestCard({ job, requester }) {
   if (requester.phone) text += `📞 ${localPhone(requester.phone)}\n`;
   if (requester.group) text += `👥 ${requester.group}${requester.private ? " (השיב לך בפרטי)" : ""}\n`;
   if (requester.text) text += `💬 "${requester.text}"\n`;
-  if (requester.private && !requester.quoted) text += `\nℹ️ כתב לך בפרטי בלי ציטוט. ודא שזה על הנסיעה הזו.`;
+  if (!requester.quoted) text += requester.private
+    ? `\nℹ️ כתב לך בפרטי בלי ציטוט. ודא שזה על הנסיעה הזו.`
+    : `\nℹ️ כתב בקבוצה בלי ציטוט, מיד אחרי ההפצה שלך. ודא שזה על הנסיעה הזו.`;
   text += `\n🚕 ${firstLine(job.text)}`;
   if (requester.n === 1 && job.stopReason === "request") text += `\n\n⏸️ עצרתי את השליחה לשאר הקבוצות.`;
   const buttons = [];
@@ -680,7 +681,7 @@ export function publishGivenCard({ job }) {
     buttons: [
       { id: `${CMD.publishDone} ${job.id} ${job.givenTo}`, text: "✅ ביצע" },
       { id: `${CMD.publishCancelled} ${job.id} ${job.givenTo}`, text: "❌ לא לקח" },
-      { id: `${CMD.publishRemove} ${job.id}`, text: "🗑️ מחק מהקבוצות" },
+      { id: `${CMD.publishJob} ${job.id}`, text: "📋 ההפצה" },
     ],
   };
 }
@@ -689,11 +690,16 @@ export function publishOutcomeCard({ job, n }) {
   const r = job.requesters[n - 1];
   if (r?.status === "done") {
     return {
-      text: `✅ *${r.name} ביצע את הנסיעה.*\n\nלשלוח לו הודעת תודה${"" /* העמלה בהגדרות */}? אפשר לקבוע עמלה ופרטי תשלום ב*הגדרות הפצה*.`,
+      text:
+        `✅ *${r.name} ביצע את הנסיעה.*\n\n` +
+        (job.fee === null
+          ? `העמלה שלך באחוזים, ובנסיעה אין מחיר. שלח *מחיר הפצה ${job.id}* ואחריו המחיר, ואז שלח תודה.`
+          : job.fee
+            ? `לשלוח לו הודעת תודה עם עמלה של ${job.fee} ₪?`
+            : `לשלוח לו הודעת תודה? אפשר לקבוע עמלה ואמצעי תשלום ב*תשלום ועמלה*.`),
       buttons: [
         { id: `${CMD.publishThanks} ${job.id} ${n}`, text: "💰 שלח תודה ועמלה" },
-        { id: `${CMD.publishRemove} ${job.id}`, text: "🗑️ מחק מהקבוצות" },
-        { id: CMD.publishSettings, text: "⚙️ הגדרות הפצה" },
+        { id: CMD.publishSettings, text: "⚙️ תשלום ועמלה" },
       ],
     };
   }
@@ -733,9 +739,10 @@ export function publishJobCard({ job }) {
   const failed = job.groups.filter((g) => g.status === "failed").length;
   let text = `📋 *הפצה ${job.id}* · ${jobStateText(job)}\n\n${job.text}\n\n`;
   text += `📤 נשלחה ל-${job.sent} מתוך ${total} קבוצות`;
-  if (job.removed) text += ` · נמחקה מ-${job.removed}`;
   if (failed) text += ` · ${failed} לא קיבלו`;
   if (job.customerPhone) text += `\n📞 לקוח: ${localPhone(job.customerPhone)}`;
+  text += job.price ? `\n💵 מחיר: ${job.price} ₪` : `\n💵 מחיר: לא ידוע (לעמלה באחוזים: *מחיר הפצה ${job.id}* ואז המחיר)`;
+  if (job.fee) text += ` · עמלה ${job.fee} ₪`;
   text += job.requesters.length ? `\n\n🙋 *ביקשו:*\n${job.requesters.map(requesterLine).join("\n")}` : `\n\nעוד אף אחד לא ביקש.`;
   text += `\n\n✏️ לעריכה: *ערוך הפצה ${job.id}* ואחריו הנוסח החדש.`;
 
@@ -753,7 +760,6 @@ export function publishJobCard({ job }) {
     }
   }
   rows.push(row(`${CMD.publishAgain} ${job.id}`, "🔁 הפץ שוב", "הודעה חדשה לכל הרשימה"));
-  if (job.sent) rows.push(row(`${CMD.publishRemove} ${job.id}`, "🗑️ מחק מהקבוצות", "ההודעה נמחקת מהקבוצות"));
   rows.push(row(`${CMD.publishDelete} ${job.id}`, "🧹 מחק מהרשימה שלי", "לא נוגע בקבוצות"));
   return {
     text,
@@ -780,40 +786,47 @@ export function myJobsCard({ jobs }) {
   };
 }
 
-export function publishEditedCard({ job, edited, tooOld }) {
-  let text = `✏️ *הנוסח עודכן.*\n\n${job.text}`;
-  if (edited) text += `\n\n✅ עודכן גם ב-${edited} קבוצות שכבר קיבלו.`;
-  if (tooOld) text += `\n⚠️ ב-${tooOld} קבוצות ההודעה ישנה מ-15 דקות, ושם וואטסאפ לא מאפשר לערוך.`;
-  if (job.pending) text += `\nהקבוצות שעוד לא קיבלו יקבלו את הנוסח החדש.`;
+export function publishEditedCard({ job, pending }) {
+  let text = `✏️ *הנוסח עודכן מעכשיו.*\n\n${job.text}\n\n`;
+  text += pending
+    ? `${pending} קבוצות שעוד לא קיבלו יקבלו את הנוסח החדש. ההודעות שכבר נשלחו נשארות כמו שהן.`
+    : `ההודעות שכבר נשלחו נשארות כמו שהן. הנוסח החדש ישמש ב*הפץ שוב*.`;
   return { text, buttons: [{ id: `${CMD.publishJob} ${job.id}`, text: "📋 ההפצה" }] };
 }
 
 export function publishEditHintCard({ job }) {
   return {
-    text: `✏️ *עריכת הפצה ${job.id}*\n\nהנוסח עכשיו:\n${job.text}\n\nשלח *ערוך הפצה ${job.id}* ואחריו הנוסח החדש (אפשר בכמה שורות). שורה *לקוח: 05...* מעדכנת את מספר הלקוח.`,
+    text:
+      `✏️ *עריכת הפצה ${job.id}*\n\nהנוסח עכשיו:\n${job.text}\n\n` +
+      `שלח *ערוך הפצה ${job.id}* ואחריו הנוסח החדש (אפשר בכמה שורות). שורה *לקוח: 05...* מעדכנת את מספר הלקוח.\n` +
+      `העריכה חלה מעכשיו: הודעות שכבר יצאו לקבוצות לא משתנות.`,
     buttons: [{ id: `${CMD.publishJob} ${job.id}`, text: "📋 ההפצה" }],
   };
 }
 
-export function publishRemovedCard({ job, removed, failed }) {
-  let text = removed ? `🗑️ *ההודעה נמחקה מ-${removed} קבוצות.*` : "ℹ️ לא היה מה למחוק.";
-  if (failed) text += `\n⚠️ ב-${failed} קבוצות לא הצלחתי למחוק.`;
-  return { text, buttons: [{ id: `${CMD.publishJob} ${job.id}`, text: "📋 ההפצה" }, { id: CMD.myJobs, text: "🗂️ ההפצות שלי" }] };
+export function publishArchivedCard() {
+  return { text: "🧹 ההפצה נמחקה מהרשימה שלך. ההודעות בקבוצות לא נמחקו.", buttons: [{ id: CMD.myJobs, text: "🗂️ ההפצות שלי" }, BTN.menu] };
 }
 
-export function publishArchivedCard() {
-  return { text: "🧹 ההפצה נמחקה מהרשימה שלך.", buttons: [{ id: CMD.myJobs, text: "🗂️ ההפצות שלי" }, BTN.menu] };
-}
+const PAY_LABELS = [["bit", "ביט"], ["paybox", "פייבוקס"], ["bank", "העברה בנקאית"], ["other", "אחר"]];
 
 export function publishSettingsCard({ settings, preview }) {
+  const fee = settings.feeMode === "percent"
+    ? (settings.percent ? `${settings.percent}% ממחיר הנסיעה` : "ללא")
+    : (settings.fee ? `${settings.fee} ₪ קבוע` : "ללא");
+  const pay = PAY_LABELS.map(([key, label]) => `• ${label}: ${settings.pay?.[key] || "—"}`).join("\n");
   return {
     text:
-      `⚙️ *הגדרות הפצה*\n\n` +
-      `💰 עמלה: ${settings.fee ? `${settings.fee} ₪` : "ללא"}\n` +
-      `💳 פרטי תשלום: ${settings.payInfo || "לא הוגדרו"}\n` +
-      `📝 תוספת להודעת התודה: ${settings.thanks || "אין"}\n\n` +
-      `*לשנות:*\n• *עמלה 6* (או *עמלה 0* בלי עמלה)\n• *תשלום ביט 050-1234567*\n• *נוסח תודה* ואחריו מה להוסיף\n\n` +
-      `*כך תיראה הודעת התודה:*\n${preview}`,
+      `⚙️ *תשלום ועמלה*\n\n` +
+      `💰 עמלה: ${fee}\n\n💳 *אמצעי תשלום:*\n${pay}\n\n` +
+      `📝 תוספת להודעה: ${settings.thanks || "אין"}\n\n` +
+      `*לשנות (שלח כאן):*\n` +
+      `• *עמלה 10%* (אחוז מהנסיעה) או *עמלה 6* (סכום קבוע), *עמלה 0* בלי עמלה\n` +
+      `• *ביט 050-1234567*\n• *פייבוקס* ואחריו מספר או קישור\n• *העברה* ואחריו פרטי חשבון\n• *תשלום* ואחריו כל דרך אחרת\n` +
+      `• *נוסח תודה* ואחריו משפט נוסף\n\n` +
+      `באחוזים: המחיר נלקח מהנסיעה. אם אין בה מחיר: *מחיר הפצה* מספר-ההפצה ואז המחיר.\n` +
+      `אפשר גם באפליקציה: הגדרות > תשלום ועמלה.\n\n` +
+      `*כך תיראה ההודעה (נסיעה של 180 ₪):*\n${preview}`,
     buttons: [{ id: CMD.myJobs, text: "🗂️ ההפצות שלי" }, BTN.menu],
   };
 }

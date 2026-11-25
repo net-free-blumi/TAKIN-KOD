@@ -64,7 +64,7 @@ node driver-app/build.mjs --server https://nsiot.vercel.app --version 1.2.0 --co
 
 מעתיקים את ה-APK אל `public/nahagim.apk` ומעדכנים את מספר הגרסה ב-`src/components/LoginScreen.tsx`.
 
-מעדכנים גם את `public/app-version.json` (גרסה, תאריך ומה חדש). דף ההורדה הקבוע לנהגים הוא `/app` (גם `/download`): הקישור לא משתנה, והכפתור תמיד מוריד את ה-APK האחרון.
+אחרי הבנייה: `node driver-app/release.mjs --version X.Y.Z` מעתיק את ה-APK ומעדכן את הגרסה בכל המקומות, כולל שם הקובץ שנשמר בטלפון ("נהגים X.Y.Z.apk"). את "מה חדש" כותבים ב-`public/app-version.json`. דף ההורדה הקבוע לנהגים הוא `/app` (גם `/download`): הקישור לא משתנה, והכפתור תמיד מוריד את ה-APK האחרון.
 
 ## הפצת נסיעה
 

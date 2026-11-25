@@ -507,16 +507,22 @@ export function createDriverApp({
     "POST /publish/outcome": ({ device, body }) => viaPublisher((p) => ({
       job: p.setOutcome(device.phone, String(body.id ?? ""), Number(body.n), String(body.status ?? "")),
     })),
-    "POST /publish/thanks": ({ device, body }) => viaPublisher(async (p) => ({ job: await p.sendThanks(device.phone, String(body.id ?? ""), Number(body.n)) })),
+    "POST /publish/thanks": ({ device, body }) => viaPublisher(async (p) => ({
+      job: await p.sendThanks(device.phone, String(body.id ?? ""), Number(body.n), { price: body.price }),
+    })),
+    "POST /publish/price": ({ device, body }) => viaPublisher((p) => ({ job: p.setPrice(device.phone, String(body.id ?? ""), body.price) })),
     "POST /publish/republish": ({ device, body }) => viaPublisher((p) => ({ job: p.republish(device.phone, String(body.id ?? "")) })),
     "POST /publish/edit": ({ device, body }) => viaPublisher((p) => p.edit(device.phone, String(body.id ?? ""), {
       text: body.text === undefined ? undefined : String(body.text),
       customerPhone: body.customerPhone === undefined ? undefined : String(body.customerPhone),
+      price: body.price === undefined ? undefined : body.price,
     })),
-    "POST /publish/remove": ({ device, body }) => viaPublisher((p) => p.removeFromGroups(device.phone, String(body.id ?? ""))),
     "POST /publish/delete": ({ device, body }) => viaPublisher((p) => p.archive(device.phone, String(body.id ?? ""))),
     "POST /publish/settings": ({ device, body }) => viaPublisher((p) => ({
-      settings: p.setSettings(device.phone, { fee: body.fee, payInfo: body.payInfo, thanks: body.thanks }),
+      settings: p.setSettings(device.phone, {
+        feeMode: body.feeMode, fee: body.fee, percent: body.percent,
+        pay: body.pay && typeof body.pay === "object" ? body.pay : undefined, thanks: body.thanks,
+      }),
       thanksPreview: p.previewThanks(device.phone),
     })),
     "POST /filters": ({ device, body }) => {

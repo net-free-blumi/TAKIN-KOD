@@ -46,7 +46,7 @@
       <div class="logo" aria-hidden="true">🚕</div>
       <h1>אפליקציית הנהגים</h1>
       <p class="lead">נסיעות מהקבוצות שלך עם התראה, הקראה, מרחק וזמן הגעה, והפצה של נסיעות שלך לקבוצות.</p>
-      <a class="download" id="download" href="/nahagim.apk" download="nahagim.apk">⬇️ הורדה לאנדרואיד</a>
+      <a class="download" id="download" href="/nahagim.apk" download="נהגים.apk">⬇️ הורדה לאנדרואיד</a>
       <p class="version" id="version">הגרסה האחרונה</p>
     </div>
 
@@ -82,7 +82,8 @@
         if (!info || !info.version) return;
         const link = document.getElementById('download');
         link.href = '/nahagim.apk?v=' + encodeURIComponent(info.version);
-        link.download = 'nahagim-' + info.version + '.apk';
+        // שם הקובץ בטלפון כולל את הגרסה, למשל "נהגים 1.8.0.apk"
+        link.download = 'נהגים ' + info.version + '.apk';
         document.getElementById('version').textContent =
           'גרסה ' + info.version + (info.date ? ' · עודכנה ' + info.date.split('-').reverse().join('/') : '');
         const notes = Array.isArray(info.notes) ? info.notes.slice(0, 6) : [];
