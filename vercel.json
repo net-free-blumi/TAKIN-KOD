@@ -5,6 +5,10 @@
       "destination": "http://82.70.210.206:3000/api/$1"
     },
     {
+      "source": "/(app|download)/?",
+      "destination": "/app/index.html"
+    },
+    {
       "source": "/(.*)",
       "destination": "/index.html"
     }

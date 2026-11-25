@@ -21,6 +21,7 @@ final class Notifications {
     static final String EXTRA_RIDE = "ride";
     static final String EXTRA_CHAT = "chat";
     static final String EXTRA_RIDE_CHAT = "rideChat";
+    static final String EXTRA_PUBLISH = "publish";
 
     private Notifications() {}
 
@@ -167,6 +168,24 @@ final class Notifications {
                 .setTimeoutAfter(60 * 60 * 1000L)
                 .build();
         context.getSystemService(NotificationManager.class).notify("ok:" + rideId, 30, notification);
+    }
+
+    /** Someone asked for the ride the driver published, or the publishing stopped. Opens the publish tab. */
+    static void publish(Context context, String tag, String title, String text) {
+        Intent open = new Intent(context, MainActivity.class)
+                .addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP | Intent.FLAG_ACTIVITY_CLEAR_TOP)
+                .setAction("com.blumi.nahagim.PUBLISH." + tag)
+                .putExtra(EXTRA_PUBLISH, "1");
+        PendingIntent tap = PendingIntent.getActivity(context, 0, open,
+                PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
+        Notification notification = base(context, RIDES, title, text)
+                .setContentIntent(tap)
+                .setStyle(new Notification.BigTextStyle().bigText(text))
+                .setCategory(Notification.CATEGORY_MESSAGE)
+                .setAutoCancel(true)
+                .setTimeoutAfter(3 * 60 * 60 * 1000L)
+                .build();
+        context.getSystemService(NotificationManager.class).notify("pub:" + tag, 40, notification);
     }
 
     static void cancelChats(Context context) {

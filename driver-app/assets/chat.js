@@ -299,6 +299,7 @@ window.createChats = function createChats(ctx) {
     parts.customer = h('div', { className: 'customer-bar' });
     parts.thread = h('div', { className: 'thread' });
     parts.quote = h('div', { className: 'reply-quote' });
+    parts.smart = h('div', { className: 'quick-replies' });
 
     const input = h('textarea', { id: 'message', rows: 1, placeholder: 'הודעה', maxLength: 4000, value: s.drafts.get(s.open) || '' });
     input.setAttribute('aria-label', 'הודעה');
@@ -309,7 +310,10 @@ window.createChats = function createChats(ctx) {
     input.oninput = () => {
       s.drafts.set(s.open, input.value);
       grow();
+      parts.smart.hidden = Boolean(input.value.trim());
     };
+    parts.input = input;
+    parts.grow = grow;
     const send = button(icon('send'), async () => {
       const text = input.value.trim();
       if (!text) return;
@@ -342,7 +346,7 @@ window.createChats = function createChats(ctx) {
           const chat = current();
           if (chat) hideSheet(chat);
         }, 'plain', 'מחק מהרשימה')),
-      parts.note, parts.customer, parts.thread, parts.quote,
+      parts.note, parts.customer, parts.thread, parts.smart, parts.quote,
       h('div', { className: 'composer' }, input, send));
   }
 
@@ -385,6 +389,7 @@ window.createChats = function createChats(ctx) {
 
     const signature = JSON.stringify(s.messages);
     if (parts.signature === signature) return;
+    drawSmart(chat);
     const thread = parts.thread;
     const first = parts.signature === undefined || parts.signature === '[]';
     const atEnd = thread.scrollHeight - thread.scrollTop - thread.clientHeight < 80;
@@ -393,6 +398,37 @@ window.createChats = function createChats(ctx) {
       ? s.messages.map(bubble)
       : [h('p', { className: 'bubble-system' }, 'כתוב הודעה. היא תישלח מהוואטסאפ שלך.')]));
     if (first || atEnd) thread.scrollTop = thread.scrollHeight;
+  }
+
+  // תשובות מהירות לסדרן של נסיעה שביקשת: לפי מצב הנסיעה, המרחק ומה שהסדרן כתב אחרון.
+  // לחיצה רק ממלאת את התיבה. שולחים בכפתור השליחה, כדי ששום דבר לא ייצא בטעות
+  function smartReplies(chat) {
+    const ride = ctx.rideForChat(chat?.phone);
+    if (!ride) return [];
+    const eta = ctx.etaFor(ride);
+    const lastIn = [...s.messages].reverse().find((m) => !m.me)?.text || '';
+    const onTheWay = eta ? `אני בדרך, אגיע בעוד ${eta} דק'` : 'אני בדרך';
+    const list = [];
+    if (/כמה זמן|תוך כמה|מתי|איפה אתה|עוד כמה/.test(lastIn)) list.push(onTheWay);
+    if (ride.status === 'requested') list.push(eta ? `יכול להגיע בעוד ${eta} דק'` : 'אני זמין, הנסיעה עדיין רלוונטית?');
+    else list.push(onTheWay);
+    if (!chat.customer) list.push('אפשר את הטלפון של הלקוח?');
+    if (ride.pickup?.approx || !ride.pickup) list.push('מה הכתובת המדויקת?');
+    if (ride.status === 'got') list.push('הגעתי, מחכה למטה');
+    list.push('תודה! 🙏');
+    return [...new Set(list)].slice(0, 4);
+  }
+
+  function drawSmart(chat) {
+    if (!parts.smart) return;
+    parts.smart.replaceChildren(...smartReplies(chat).map((text) => button(text, () => {
+      parts.input.value = text;
+      s.drafts.set(s.open, text);
+      parts.grow();
+      parts.smart.hidden = true;
+      parts.input.focus();
+    }, 'chip')));
+    parts.smart.hidden = Boolean(parts.input?.value.trim());
   }
 
   function screen() {

@@ -44,6 +44,8 @@ export function createDriverApp({
   describeSearch = null,
   telegram = null,
   quoteForRide = () => null,
+  // הפצת נסיעה (ride-publisher.js)
+  getPublisher = () => null,
   onError = console.error,
   now = Date.now,
 }) {
@@ -57,6 +59,8 @@ export function createDriverApp({
   // 20 ההודעות האחרונות בכל קבוצה, רק בזיכרון ורק לנהג עצמו
   const groupLog = new Map(); // phone -> Map(jid -> { name, messages })
   const hasDevice = (phone) => [...store.devices.values()].some((d) => d.phone === phone);
+  // אירועי הפצה להתראה בטלפון: מבקש חדש וסיכום. רק בזיכרון
+  const publishFeed = new Map(); // phone -> { seq, items }
 
   function groupMessage(rawPhone, jid, message) {
     try {
@@ -339,14 +343,17 @@ export function createDriverApp({
     // הודעה חדשה בצ'אט: רק מספר. התראה עליה רק כשיש חיפוש פעיל
     const chatAfter = Number(query.get("chat")) || 0;
     const apprAfter = Number(query.get("appr")) || 0;
+    const pubAfter = Number(query.get("pub")) || 0;
+    const feed = () => publishFeed.get(device.phone) || { seq: 0, items: [] };
     const chatSignal = () => {
       const seq = chats.incomingSeq(device.id, device.phone);
       return seq ? { seq, notify: Boolean(getSearch().get(device.phone)?.active) } : null;
     };
     // בלי חיפוש פעיל הטלפון עוצר את החיבור ברקע וחוסך סוללה
-    const searching = () => Boolean(getSearch().get(device.phone)?.active);
+    // גם הפצה פעילה מחזיקה את החיבור, כדי שמבקשים יגיעו כהתראה
+    const searching = () => Boolean(getSearch().get(device.phone)?.active) || publishActive(device.phone);
     // חיבור ראשון מקבל רק סמן, בלי הצפה של נסיעות ישנות
-    if (!after) return { cursor: data.seq || now(), rides: [], chat: chatSignal(), searching: searching(), apprSeq: data.approvalSeq || 0, approvals: [] };
+    if (!after) return { cursor: data.seq || now(), rides: [], chat: chatSignal(), searching: searching(), apprSeq: data.approvalSeq || 0, approvals: [], pubSeq: feed().seq, pubs: [] };
     const collect = () => {
       const fresh = data.rides.filter((r) => r.seq > after);
       return {
@@ -359,6 +366,8 @@ export function createDriverApp({
         approvals: data.rides
           .filter((r) => r.approvalSeq > apprAfter && now() - r.approvedAt < NOTIFY_MAX_AGE_MS)
           .map((r) => ({ id: r.id, from: r.from || "", to: r.to || "", spoken: r.spoken || "", dispatcher: r.dispatcher || "", group: r.group || "" })),
+        pubSeq: feed().seq,
+        pubs: feed().items.filter((i) => i.seq > pubAfter),
       };
     };
     const ready = collect();
@@ -366,7 +375,8 @@ export function createDriverApp({
     const waitSec = Math.min(MAX_WAIT_SEC, Math.max(0, Number.isFinite(requested) ? requested : 0));
     const newChat = query.has("chat") && (ready.chat?.seq || 0) > chatAfter;
     const newApproval = query.has("appr") && ready.apprSeq > apprAfter;
-    if (ready.cursor > after || newChat || newApproval || !waitSec) return ready;
+    const newPub = query.has("pub") && ready.pubSeq > pubAfter;
+    if (ready.cursor > after || newChat || newApproval || newPub || !waitSec) return ready;
 
     waiters.get(device.id)?.finish(); // בקשה ממתינה אחת לכל מכשיר
     return new Promise((resolve) => {
@@ -383,6 +393,59 @@ export function createDriverApp({
     });
   }
 
+  // ---------- הפצת נסיעה ----------
+  function publisher() {
+    const p = getPublisher();
+    if (!p) throw new AppError(501, "הפצה לא זמינה בשרת");
+    return p;
+  }
+
+  async function viaPublisher(fn) {
+    try {
+      return await fn(publisher());
+    } catch (err) {
+      if (err?.status && !(err instanceof AppError)) throw new AppError(err.status, err.message);
+      throw err;
+    }
+  }
+
+  function publishActive(phone) {
+    const p = getPublisher();
+    if (!p) return false;
+    return p.jobs(phone).some((j) => j.state === "sending" || now() - j.createdAt < 30 * 60 * 1000);
+  }
+
+  function publishState(phone) {
+    const p = publisher();
+    return {
+      lists: p.getLists(phone),
+      jobs: p.jobs(phone),
+      connected: getSession(phone)?.status === "connected",
+      limits: { maxGroups: 25, perHour: 6 },
+    };
+  }
+
+  // נקרא מהבוט בכל אירוע הפצה. מבקש וסיכום מגיעים לטלפון כהתראה
+  function publishEvent(rawPhone, event) {
+    try {
+      const phone = normalizeMobile(rawPhone);
+      if (!phone || !hasDevice(phone) || !["request", "finished"].includes(event?.type)) return;
+      const feed = publishFeed.get(phone) || { seq: 0, items: [] };
+      feed.seq = Math.max(feed.seq + 1, now());
+      const job = event.job || {};
+      const item = { seq: feed.seq, type: event.type, jobId: job.id || "", state: job.state || "", stopReason: job.stopReason || "", sent: job.sent || 0, total: job.groups?.length || 0, pending: job.pending || 0 };
+      if (event.type === "request") Object.assign(item, { name: event.requester?.name || "", phone: event.requester?.phone || "", group: event.requester?.group || "", text: event.requester?.text || "" });
+      feed.items = [...feed.items, item].slice(-20);
+      publishFeed.set(phone, feed);
+      for (const waiter of [...waiters.values()]) if (waiter.phone === phone) waiter.finish();
+    } catch (err) {
+      onError(err);
+    }
+  }
+
+  // התקדמות השליחה: המסך הפתוח מתעדכן בעצמו (GET /publish)
+  function publishChanged() {}
+
   const publicRoutes = {
     "POST /auth/request": ({ body, ip }) => auth.requestCode(body.phone, ip),
     "POST /auth/verify": ({ body }) => auth.verifyCode(body.challengeId, body.code, body.device),
@@ -393,7 +456,7 @@ export function createDriverApp({
       phone: device.phone,
       ...getProfile(device.phone),
       search: getSearch().get(device.phone),
-      features: { multiSearch: true, filters: true, chats: true, report: true, telegramGroups: true },
+      features: { multiSearch: true, filters: true, chats: true, report: true, telegramGroups: true, publish: Boolean(getPublisher()) },
       filters: readFilters(store.driver(device.phone).filters),
       chatsReady: chats.isReady(device.id),
       stats: statsFor(device.phone),
@@ -423,6 +486,14 @@ export function createDriverApp({
       return {};
     },
     "POST /report": report,
+    "GET /publish": ({ device }) => viaPublisher(() => publishState(device.phone)),
+    "POST /publish/list": ({ device, body }) => viaPublisher((p) => ({ list: p.setList(device.phone, Number(body.no), body.groups, "app") })),
+    "POST /publish/start": ({ device, body }) => viaPublisher((p) => ({
+      job: p.start(device.phone, { text: String(body.text ?? ""), list: Number(body.list) || 1, customerPhone: body.customerPhone }),
+    })),
+    "POST /publish/continue": ({ device, body }) => viaPublisher((p) => ({ job: p.resume(device.phone, String(body.id ?? "")) })),
+    "POST /publish/stop": ({ device, body }) => viaPublisher((p) => ({ job: p.stop(device.phone, String(body.id ?? "")) })),
+    "POST /publish/give": ({ device, body }) => viaPublisher(async (p) => ({ job: await p.give(device.phone, String(body.id ?? ""), Number(body.n)) })),
     "POST /filters": ({ device, body }) => {
       const data = store.driver(device.phone);
       data.filters = checked(() => parseFilters(body, data.filters));
@@ -542,5 +613,5 @@ export function createDriverApp({
     detectApproval(upsert, phone);
   }
 
-  return { handle, addRide, linkAlert, markRequested, filterRide, ingestChats, groupMessage, shutdown };
+  return { handle, addRide, linkAlert, markRequested, filterRide, ingestChats, groupMessage, publishEvent, publishChanged, shutdown };
 }

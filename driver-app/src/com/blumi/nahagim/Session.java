@@ -71,6 +71,14 @@ final class Session {
         prefs.edit().putLong("apprSeq", seq).apply();
     }
 
+    long pubSeq() {
+        return prefs.getLong("pubSeq", 0);
+    }
+
+    void setPubSeq(long seq) {
+        prefs.edit().putLong("pubSeq", seq).apply();
+    }
+
     long cursor() {
         return prefs.getLong("cursor", 0);
     }

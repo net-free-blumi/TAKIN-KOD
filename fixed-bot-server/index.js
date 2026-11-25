@@ -93,6 +93,7 @@ import {
   cancelDriverPairing,
   shutdownAllSockets,
   startConnectionWatchdog,
+  setDriverLabelHandler,
 } from "./session-manager.js";
 import {
   detectNeighborhood,
@@ -122,6 +123,7 @@ import { describeRoute } from "./driver-app-route.js";
 import { CONFIRM_RE } from "./driver-app-secure.js";
 import { createDriverApp } from "./driver-app.js";
 import { normalizeMobile } from "./driver-app-auth.js";
+import { createRidePublisher, PublishError, splitCustomerPhone, LIMITS as PUBLISH_LIMITS } from "./ride-publisher.js";
 
 const DEBUG_FILTER = true;
 const DEDUPE_MINUTES = 15;
@@ -1191,6 +1193,7 @@ function getScreenContext(phone) {
     search: getUserSearch(phone),
     telegram: getTelegramStatus(phone),
     botLink: getBotLinkStatus(phone),
+    publish: { lists: publisher.getLists(cleanPhone(phone)) },
   };
 }
 
@@ -1205,6 +1208,9 @@ const DRIVER_SCREENS = {
   telegram: ui.telegramCard,
   telegramBot: ui.telegramBotCard,
   disconnect: ui.disconnectCard,
+  publish: ui.publishHomeCard,
+  howPublish: ui.howPublishCard,
+  publishLists: ui.publishListsCard,
 };
 
 async function sendDriverScreen(sock, jid, phone, screen) {
@@ -1968,6 +1974,9 @@ async function handleIncomingMessage(sock, upsert, sessionContext) {
         continue;
       }
 
+      // הפצת נסיעה: הפץ / שלח הפצה / המשך / עצור / תן לו / עריכת רשימות
+      if (await handlePublishCommand(sock, jid, senderPhone, text, norm)) continue;
+
       // 0. מענה על כפתור תפיסת נסיעה / תגובה "תן" / "ת" על הודעת נסיעה
       const quotedStanzaId =
         m.message?.extendedTextMessage?.contextInfo?.stanzaId ||
@@ -2267,6 +2276,24 @@ async function handleIncomingMessage(sock, upsert, sessionContext) {
         sender: m.pushName || "", groupName: groupMetadataCache.get(jid)?.subject || "",
       });
 
+      // הפצת נסיעה: ההודעה שהנהג עצמו הפיץ לא נסרקת אצלו כנסיעה
+      const publishOwner = cleanPhone(sessionContext.driverPhone);
+      if (m.key.fromMe && publisher.isOwnPublished(publishOwner, text)) continue;
+      // תשובה בציטוט על נסיעה שהנהג הפיץ: עוצרת את ההפצה ומגיעה אליו כמבקש
+      if (!m.key.fromMe && publisher.repliesToMine(publishOwner, m.message, jid)) {
+        const realPhone = await getRealSenderPhone(sock, jid, m).catch(() => "");
+        publisher.onGroupMessage(publishOwner, {
+          message: m.message,
+          msgKey: m.key,
+          groupJid: jid,
+          groupName: groupMetadataCache.get(jid)?.subject || "",
+          senderPhone: /^\d{9,13}$/.test(String(realPhone)) ? realPhone : "",
+          senderName: m.pushName || "",
+          text,
+        });
+        continue;
+      }
+
       const targetDrivers = [];
       const ownerPhone = cleanPhone(sessionContext.driverPhone);
       if (ownerPhone && getUserSearch(ownerPhone).active) targetDrivers.push(ownerPhone);
@@ -2374,6 +2401,178 @@ async function handleIncomingMessage(sock, upsert, sessionContext) {
   }
 }
 
+// כל הקבוצות של הנהג בוואטסאפ שלו (לאפליקציה ולרשימות ההפצה). null = לא מחובר
+async function listDriverGroups(phone) {
+  const session = getDriverSession(phone);
+  const sock = session?.status === "connected" ? session.sock : null;
+  if (!sock?.groupFetchAllParticipating || String(sock.user?.id || "").split(/[:@]/)[0] !== phone) return null;
+  let timer;
+  try {
+    const all = await Promise.race([
+      sock.groupFetchAllParticipating(),
+      new Promise((resolve, reject) => { timer = setTimeout(() => reject(new Error("groups timeout")), 18000); }),
+    ]);
+    for (const g of Object.values(all || {})) {
+      if (g?.id && g.subject && !groupMetadataCache.get(g.id)?.subject) groupMetadataCache.set(g.id, g);
+    }
+    return Object.values(all || {})
+      .filter((g) => String(g?.id).endsWith("@g.us") && !g.isCommunity)
+      .map((g) => ({ id: g.id, name: g.subject || "קבוצה ללא שם", size: g.size || g.participants?.length || 0 }))
+      .sort((a, b) => a.name.localeCompare(b.name, "he", { numeric: true }));
+  } catch (err) {
+    recordError("driver_app_groups", err);
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// ==========================================
+// הפצת נסיעה (ride-publisher.js)
+// השליחה לקבוצות מהוואטסאפ של הנהג. ההודעות לנהג (מבקשים, סיכום, רשימות) מהבוט הראשי.
+// ==========================================
+const publisher = createRidePublisher({
+  file: path.join(__dirname, "driver-app-data", "ride-publish.json"),
+  getSock: (phone) => {
+    const session = getDriverSession(phone);
+    return session?.status === "connected" && session.sock ? session.sock : null;
+  },
+  notify: (phone, event) => notifyPublishEvent(phone, event),
+  onChange: (phone) => driverApp.publishChanged(phone),
+  onError: (err) => {
+    console.error("הפצת נסיעה:", err?.message || err);
+    try { recordError("ride_publisher", err); } catch (e) {}
+  },
+});
+
+const groupNameOf = (id) => groupMetadataCache.get(id)?.subject || "קבוצה";
+
+// רשימות בוואטסאפ של הנהג: שם הקבוצה נטען לפני הסנכרון, כדי שההודעה לנהג תציג שמות
+setDriverLabelHandler(async (driverPhone, kind, data) => {
+  const phone = cleanPhone(driverPhone);
+  try {
+    const chatId = data?.association?.chatId;
+    if (kind === "association" && String(chatId || "").endsWith("@g.us") && !groupMetadataCache.get(chatId)?.subject) {
+      const sock = getDriverSession(phone)?.sock;
+      let timer;
+      const meta = await Promise.race([
+        sock?.groupMetadata?.(chatId),
+        new Promise((resolve) => { timer = setTimeout(() => resolve(null), 4000); }),
+      ]).catch(() => null);
+      clearTimeout(timer);
+      if (meta?.subject) {
+        groupMetadataCache.set(chatId, meta);
+        persistGroupMetadataSoon();
+      }
+    }
+    if (kind === "edit") publisher.onLabelEdit(phone, data, groupNameOf);
+    else publisher.onLabelAssociation(phone, data, groupNameOf);
+  } catch (err) {
+    recordError("publish_labels", err);
+  }
+});
+
+async function sendToDriver(phone, card, quoted = null) {
+  const mainSock = getMainBotSock();
+  if (!mainSock || !getMainBotStatus().connected) return null;
+  return await sendCard(mainSock, getDestinationJid(phone), card, { quoted });
+}
+
+async function notifyPublishEvent(phone, event) {
+  driverApp.publishEvent(phone, event);
+  let card = null;
+  let quoted = null;
+  if (event.type === "request") {
+    card = ui.publishRequestCard(event);
+    // לחיצה על הציטוט קופצת לבקשה בקבוצה
+    const q = event.requester.quote;
+    if (q?.msgId && q.groupJid) {
+      quoted = {
+        key: { remoteJid: q.groupJid, id: q.msgId, fromMe: false, participant: q.participant || undefined },
+        message: { conversation: q.text || "ת" },
+      };
+    }
+  } else if (event.type === "finished") card = ui.publishFinishedCard(event);
+  else if (event.type === "list-synced") card = ui.listSyncedCard(event);
+  else if (event.type === "list-ask-merge") card = ui.listAskMergeCard(event);
+  else if (event.type === "list-ask-delete") card = ui.listAskDeleteCard(event);
+  if (card) await sendToDriver(phone, card, quoted);
+}
+
+// נסיעה שהוקלדה אחרי "הפץ" ומחכה לבחירת רשימה
+const pendingPublish = new Map(); // phone -> { text, at }
+const PUBLISH_DRAFT_MS = 15 * 60 * 1000;
+const LIST_ANSWERS = { "החלף": ["merge", "replace"], "הוסף": ["merge", "add"], "השאר": ["merge", "keep"], "מחק": ["delete", "yes"], "שמור": ["delete", "no"] };
+
+async function handlePublishCommand(sock, jid, rawPhone, text, norm) {
+  const phone = cleanPhone(rawPhone);
+  const reply = (card) => sendCard(sock, jid, card);
+  try {
+    const draft = String(text || "").match(/^\s*(?:הפץ|פרסם)[\s:]+([\s\S]{3,})$/);
+    if (draft) {
+      const { text: body, customerPhone } = splitCustomerPhone(draft[1]);
+      if (body.length > PUBLISH_LIMITS.maxText) throw new PublishError(400, `הנסיעה ארוכה מדי (עד ${PUBLISH_LIMITS.maxText} תווים)`);
+      pendingPublish.set(phone, { text: draft[1], at: Date.now() });
+      await reply(ui.publishPreviewCard({ text: body, customerPhone, lists: publisher.getLists(phone) }));
+      return true;
+    }
+    let m;
+    if ((m = norm.match(/^שלח הפצה ([123])$/))) {
+      const pending = pendingPublish.get(phone);
+      if (!pending || Date.now() - pending.at > PUBLISH_DRAFT_MS) {
+        throw new PublishError(404, "אין נסיעה שמחכה לשליחה. כתוב *הפץ* ואחריו הנסיעה.");
+      }
+      const job = publisher.start(phone, { text: pending.text, list: Number(m[1]) });
+      pendingPublish.delete(phone);
+      await reply(ui.publishStartedCard({ job }));
+      return true;
+    }
+    if (norm === "בטל הפצה") {
+      pendingPublish.delete(phone);
+      await reply(ui.publishCancelledCard());
+      return true;
+    }
+    if ((m = norm.match(/^המשך הפצה (\d+)$/))) {
+      await reply(ui.publishStartedCard({ job: publisher.resume(phone, m[1]) }));
+      return true;
+    }
+    if ((m = norm.match(/^עצור הפצה (\d+)$/))) {
+      publisher.stop(phone, m[1]); // הסיכום מגיע מיד מהלולאה
+      return true;
+    }
+    if ((m = norm.match(/^תן נסיעה (\d+) (\d+)$/))) {
+      await reply(ui.publishGivenCard({ job: await publisher.give(phone, m[1], m[2]) }));
+      return true;
+    }
+    if ((m = norm.match(/^(הוסף ל|הסר מ)הפצה(?: ([בג]))? ([\d\s]+)$/))) {
+      const no = m[2] === "ב" ? 2 : m[2] === "ג" ? 3 : 1;
+      const nums = m[3].trim().split(/\s+/).map(Number).filter((n) => n > 0);
+      const groups = await listDriverGroups(phone);
+      if (!groups) {
+        await reply(ui.allGroupsCard({ groups: null, lists: [] }));
+        return true;
+      }
+      const list = publisher.editList(phone, no, groups, m[1] === "הוסף ל" ? { add: nums } : { remove: nums });
+      await reply(ui.listEditedCard({ list }));
+      return true;
+    }
+    if ((m = norm.match(/^רשימה (החלף|הוסף|השאר|מחק|שמור) ([123])$/))) {
+      const [kind, choice] = LIST_ANSWERS[m[1]];
+      await reply(ui.listAnsweredCard({ list: publisher.answer(phone, kind, Number(m[2]), choice, groupNameOf) }));
+      return true;
+    }
+    if (norm === "הקבוצות שלי" || norm === "כל הקבוצות" || norm === "קבוצות") {
+      await reply(ui.allGroupsCard({ groups: await listDriverGroups(phone), lists: publisher.getLists(phone) }));
+      return true;
+    }
+    return false;
+  } catch (err) {
+    if (!(err instanceof PublishError)) recordError("publish_command", err);
+    await reply(ui.publishErrorCard(err instanceof PublishError ? err.message : "משהו השתבש. נסה שוב."));
+    return true;
+  }
+}
+
 // אפליקציית הנהגים: הבוט הראשי שולח את קוד הכניסה
 const driverApp = createDriverApp({
   dir: path.join(__dirname, "driver-app-data"),
@@ -2448,29 +2647,8 @@ const driverApp = createDriverApp({
   chatsDir: path.join(__dirname, "driver-app-chats"),
   getSession: getDriverSession,
   getBotPhone: () => cleanPhone(loadUsersData().botPhone || getMainBotStatus().phone),
-  listGroups: async (phone) => {
-    const session = getDriverSession(phone);
-    const sock = session?.status === "connected" ? session.sock : null;
-    if (!sock?.groupFetchAllParticipating || String(sock.user?.id || "").split(/[:@]/)[0] !== phone) return null;
-    let timer;
-    try {
-      const all = await Promise.race([
-        sock.groupFetchAllParticipating(),
-        new Promise((resolve, reject) => { timer = setTimeout(() => reject(new Error("groups timeout")), 18000); }),
-      ]);
-      const whatsapp = Object.values(all || {})
-        .filter((g) => String(g?.id).endsWith("@g.us") && !g.isCommunity)
-        .map((g) => ({ id: g.id, name: g.subject || "קבוצה ללא שם", size: g.size || g.participants?.length || 0 }))
-        .sort((a, b) => a.name.localeCompare(b.name, "he", { numeric: true }));
-      // טלגרם ברשימה נפרדת (listTelegramGroups)
-      return whatsapp;
-    } catch (err) {
-      recordError("driver_app_groups", err);
-      return null;
-    } finally {
-      clearTimeout(timer);
-    }
-  },
+  listGroups: listDriverGroups,
+  getPublisher: () => publisher,
   // הקבוצות והערוצים של הנהג בטלגרם, לסינון. רק שמות ומזהים, בלי הודעות. null = טלגרם לא מחובר
   listTelegramGroups: async (phone) => {
     if (!getTelegramStatus(phone).connected) return null;
@@ -2755,6 +2933,11 @@ async function handleGracefulShutdown(signal) {
     driverApp.shutdown();
   } catch (e) {
     console.error("שמירת נתוני האפליקציה נכשלה:", e.message);
+  }
+  try {
+    publisher.shutdown();
+  } catch (e) {
+    console.error("שמירת ההפצות נכשלה:", e.message);
   }
   try {
     await shutdownAllSockets();

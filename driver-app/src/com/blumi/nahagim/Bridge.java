@@ -258,6 +258,11 @@ final class Bridge {
     }
 
     @JavascriptInterface
+    public boolean takePublish() {
+        return activity.takePublish();
+    }
+
+    @JavascriptInterface
     public String takeChat() {
         return activity.takeChat();
     }

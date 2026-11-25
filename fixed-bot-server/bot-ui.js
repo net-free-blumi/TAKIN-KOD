@@ -28,6 +28,16 @@ export const CMD = {
   cancel: "ביטול",
   requestStatus: "סטטוס בקשה",
   removeSearch: "הסר חיפוש",
+  publish: "הפצה",
+  howPublish: "איך מפיצים",
+  publishLists: "רשימות הפצה",
+  allGroups: "הקבוצות שלי",
+  publishSend: "שלח הפצה",
+  publishCancel: "בטל הפצה",
+  publishResume: "המשך הפצה",
+  publishStop: "עצור הפצה",
+  publishGive: "תן נסיעה",
+  listAnswer: "רשימה",
 };
 
 // פקודה (אחרי normalizeText) -> מסך
@@ -42,6 +52,10 @@ const SCREEN_ALIASES = {
   telegram: [CMD.telegram, "הוראות טלגרם", "עזרה טלגרם"],
   telegramBot: [CMD.telegramBot, "טלגרם בוט", "נסיעות בטלגרם", "קבל נסיעות בטלגרם"],
   disconnect: [CMD.disconnect, "ניתוק", "איפוס", "אפס", "נתק הכל"],
+  publish: [CMD.publish, "הפצת נסיעה", "הפץ", "פרסום נסיעה"],
+  howPublish: [CMD.howPublish, "מדריך הפצה", "איך מפרסמים"],
+  publishLists: [CMD.publishLists, "רשימת הפצה", "רשימות"],
+  // "הקבוצות שלי" צריך את הוואטסאפ המחובר, ולכן מטופל ב-handlePublishCommand ולא כמסך
 };
 const SCREEN_BY_COMMAND = new Map(
   Object.entries(SCREEN_ALIASES).flatMap(([screen, words]) => words.map((w) => [w, screen]))
@@ -68,6 +82,13 @@ export const MAIN_MENU = {
         row(CMD.stop, "🛑 תפוס", "עצירת כל החיפושים"),
         row(CMD.searches, "🔎 החיפושים שלי", "צפייה והסרה של חיפושים"),
         row(CMD.howSearch, "✍️ איך מחפשים", "דוגמאות קצרות להקלדה"),
+      ],
+    },
+    {
+      title: "הפצת נסיעה",
+      rows: [
+        row(CMD.publish, "📣 הפצת נסיעה", "שולחים נסיעה לקבוצות שלך"),
+        row(CMD.publishLists, "📋 רשימות הפצה", "לאילו קבוצות זה יוצא"),
       ],
     },
     {
@@ -330,6 +351,7 @@ export function guideCard() {
       `2. *כותבים* מה מחפשים: פנוי שמש\n` +
       `3. *לוחצים ת* על נסיעה שרוצים\n` +
       `4. *תפוס* כדי לעצור\n\n` +
+      `📣 יש לך נסיעה לתת? כתוב *הפץ* ואחריו הנסיעה, והבוט ישלח אותה לקבוצות שלך.\n\n` +
       `🌙 כל לילה ב-02:00 החיפושים נעצרים.`,
     buttons: [BTN.menu],
     menu: {
@@ -340,6 +362,7 @@ export function guideCard() {
           rows: [
             row(CMD.howSearch, "✍️ איך מחפשים", "סוגי החיפוש ודוגמאות"),
             row(CMD.howClaim, "✋ איך תופסים", "ת, ציטוט, מרחק ודיווח"),
+            row(CMD.howPublish, "📣 איך מפיצים", "נסיעה שלך לקבוצות, ורשימות הפצה"),
             row(CMD.connectHelp, "🔗 חיבור וואטסאפ", "הוראות ופתרון בעיות"),
             row(CMD.telegram, "✈️ טלגרם", "סריקה וקבלת נסיעות"),
           ],
@@ -530,4 +553,211 @@ export function siteSearchCard({ before, after, linkState }) {
   const buttons = after.active ? [BTN.stop] : [];
   if (!canSearch(linkState)) return { text, buttons: [...buttons, BTN.connect], menu: UNLINKED_MENU };
   return { text, buttons, menu: MAIN_MENU };
+}
+
+// ---------- הפצת נסיעה (ride-publisher.js) ----------
+
+const LIST_LABELS = ["הפצה", "הפצה ב", "הפצה ג"];
+const localPhone = (p) => {
+  const d = String(p || "").replace(/\D/g, "");
+  const local = d.startsWith("972") ? `0${d.slice(3)}` : d;
+  return /^0\d{9}$/.test(local) ? `${local.slice(0, 3)}-${local.slice(3, 6)}-${local.slice(6)}` : local;
+};
+const listLine = (l) => `• *${l.name}*: ${l.groups.length ? `${l.groups.length} קבוצות` : "ריקה"}`;
+
+export function howPublishCard() {
+  return {
+    text:
+      `📣 *הפצת נסיעה*\n\n` +
+      `*1. בוחרים קבוצות.* יש 3 רשימות: *הפצה*, *הפצה ב*, *הפצה ג*.\n` +
+      `הכי פשוט: בוואטסאפ, במסננים שמעל הצ'אטים, לוחצים ➕ > רשימה חדשה, קוראים לה *הפצה* ומוסיפים קבוצות. תוך דקה הבוט מתעדכן ושולח אישור.\n` +
+      `אפשר גם באפליקציה, או כאן: *הקבוצות שלי* ואז *הוסף להפצה 3 7*.\n\n` +
+      `*2. מפיצים.* כותבים *הפץ* ואחריו הנסיעה, ובוחרים רשימה.\n` +
+      `שורה *לקוח: 05...* לא תפורסם. היא נשמרת רק לך, ונשלחת למי שתיתן לו את הנסיעה.\n\n` +
+      `*3. מחכים.* הבוט שולח מהוואטסאפ שלך, קבוצה כל 8–15 שניות.\n` +
+      `כשמישהו עונה על הנסיעה *בציטוט*, השליחה לשאר הקבוצות נעצרת ותקבל כאן את השם, הטלפון, הקבוצה ומה כתב. תשובה בלי ציטוט לא עוצרת.\n\n` +
+      `*4. נותנים.* *🤝 תן לו* שולח לו בפרטי את הנסיעה ואת מספר הלקוח. אף אחד לא מתאים? *▶️ המשך* שולח רק לקבוצות שעוד לא קיבלו.\n\n` +
+      `🛡️ כדי שוואטסאפ לא יחסום את המספר שלך: עד 25 קבוצות ברשימה ועד 6 הפצות בשעה.`,
+    buttons: [{ id: CMD.publishLists, text: "📋 רשימות הפצה" }, BTN.menu],
+  };
+}
+
+export function publishHomeCard({ linkState, publish }) {
+  if (!canSearch(linkState)) {
+    return {
+      text: `📣 *הפצת נסיעה*\n\nהבוט מפיץ את הנסיעה מהוואטסאפ שלך, ולכן צריך קודם לחבר אותו.`,
+      buttons: [BTN.connect, { id: CMD.howPublish, text: "📖 איך מפיצים" }],
+      menu: UNLINKED_MENU,
+    };
+  }
+  const lists = publish?.lists || [];
+  return {
+    text:
+      `📣 *הפצת נסיעה*\n\n` +
+      `כתוב *הפץ* ואחריו הנסיעה, למשל:\n*הפץ שמש ים 180 עכשיו*\n\n` +
+      `📋 *הרשימות שלך:*\n${lists.map(listLine).join("\n")}`,
+    buttons: [{ id: CMD.publishLists, text: "📋 רשימות הפצה" }, { id: CMD.howPublish, text: "📖 איך מפיצים" }, BTN.menu],
+  };
+}
+
+export function publishPreviewCard({ text, customerPhone, lists }) {
+  const ready = lists.filter((l) => l.groups.length);
+  let body = `📣 *לשלוח את הנסיעה?*\n\n${text}`;
+  if (customerPhone) body += `\n\n📞 לקוח (לא יפורסם): ${localPhone(customerPhone)}`;
+  if (!ready.length) {
+    return {
+      text: `${body}\n\n⚠️ *כל רשימות ההפצה ריקות.* קודם הוסף קבוצות.`,
+      buttons: [{ id: CMD.publishLists, text: "📋 רשימות הפצה" }, { id: CMD.howPublish, text: "📖 איך מפיצים" }],
+    };
+  }
+  const buttons = ready.slice(0, 2).map((l) => ({ id: `${CMD.publishSend} ${l.no}`, text: `🚀 ${l.name} (${l.groups.length})` }));
+  buttons.push({ id: CMD.publishCancel, text: "❌ ביטול" });
+  return { text: `${body}\n\nלאיזו רשימה?`, buttons };
+}
+
+export function publishCancelledCard() {
+  return { text: "👌 בוטל. לא נשלח כלום.", buttons: [BTN.menu] };
+}
+
+export function publishStartedCard({ job }) {
+  const minutes = Math.max(1, Math.round(((job.groups.length - 1) * 11.5) / 60));
+  return {
+    text:
+      `🚀 *ההפצה התחילה* · ${job.groups.length} קבוצות ברשימה *${LIST_LABELS[job.list - 1]}*\n\n` +
+      `קבוצה כל 8–15 שניות, בערך ${minutes} דק'.\nכשמישהו יענה על הנסיעה בציטוט, אעצור ואשלח לך אותו כאן.`,
+    buttons: [{ id: `${CMD.publishStop} ${job.id}`, text: "⏹️ עצור" }],
+  };
+}
+
+export function publishRequestCard({ job, requester }) {
+  let text = `🙋 *מבקש לנסיעה שלך*\n\n👤 ${requester.name}\n`;
+  if (requester.phone) text += `📞 ${localPhone(requester.phone)}\n`;
+  if (requester.group) text += `👥 ${requester.group}\n`;
+  if (requester.text) text += `💬 "${requester.text}"\n`;
+  if (requester.n === 1 && job.stopReason === "request") text += `\n⏸️ עצרתי את השליחה לשאר הקבוצות.`;
+  const buttons = [];
+  if (!job.givenTo) buttons.push({ id: `${CMD.publishGive} ${job.id} ${requester.n}`, text: "🤝 תן לו" });
+  if (requester.phone) buttons.push({ text: "💬 צ'אט איתו", url: `https://wa.me/${requester.phone}` });
+  return { text, buttons };
+}
+
+export function publishGivenCard({ job }) {
+  const r = job.requesters[job.givenTo - 1];
+  return {
+    text: `🤝 *שלחתי ל${r?.name || "נהג"} בפרטי* את הנסיעה${job.customerPhone ? " ואת מספר הלקוח" : ""}.`,
+    buttons: [BTN.menu],
+  };
+}
+
+export function publishFinishedCard({ job }) {
+  const total = job.groups.length;
+  const failed = job.groups.filter((g) => g.status === "failed").length;
+  const requests = job.requesters.length;
+  let text;
+  if (job.state === "done") text = `✅ *ההפצה הסתיימה.* נשלחה ל-${job.sent} מתוך ${total} קבוצות.`;
+  else if (job.stopReason === "request") text = `⏸️ *ההפצה נעצרה כי מישהו ביקש.* נשלחה ל-${job.sent} מתוך ${total} קבוצות.`;
+  else if (job.stopReason === "given") text = `🤝 *נתת את הנסיעה.* נשלחה ל-${job.sent} מתוך ${total} קבוצות.`;
+  else if (job.stopReason === "disconnected") text = `⚠️ *הוואטסאפ שלך התנתק באמצע ההפצה.* נשלחה ל-${job.sent} מתוך ${total} קבוצות.`;
+  else text = `⏹️ *עצרת את ההפצה.* נשלחה ל-${job.sent} מתוך ${total} קבוצות.`;
+  if (failed) text += `\n🚫 ${failed} קבוצות לא קיבלו (אולי רק מנהלים כותבים בהן).`;
+  text += requests ? `\n🙋 ביקשו: ${requests}` : `\nעוד אף אחד לא ביקש.`;
+  if (job.state !== "done" && job.pending) text += `\n\nמבקשים חדשים ימשיכו להגיע לכאן.`;
+  const buttons = [];
+  if (job.state !== "done" && job.pending && !job.givenTo) {
+    buttons.push({ id: `${CMD.publishResume} ${job.id}`, text: `▶️ המשך לשאר (${job.pending})` });
+  }
+  buttons.push(BTN.menu);
+  return { text, buttons };
+}
+
+export function publishListsCard({ publish }) {
+  const lists = publish?.lists || [];
+  const lines = lists.map((l) => {
+    const from = l.source === "whatsapp" ? " · מסונכרנת מוואטסאפ" : "";
+    const groups = l.groups.map((g) => `   - ${g.name}`).join("\n");
+    return `📋 *${l.name}* (${l.groups.length})${from}${groups ? `\n${groups}` : ""}`;
+  });
+  return {
+    text:
+      `${lines.join("\n\n")}\n\n` +
+      `*לשנות:*\n` +
+      `• בוואטסאפ: רשימה בשם *הפצה* (או *הפצה ב*, *הפצה ג*) במסננים שמעל הצ'אטים\n` +
+      `• באפליקציה: הפצה > רשימות\n` +
+      `• כאן: *הקבוצות שלי*, ואז *הוסף להפצה 3 7* או *הסר מהפצה ב 2*`,
+    buttons: [{ id: CMD.allGroups, text: "👥 הקבוצות שלי" }, { id: CMD.howPublish, text: "📖 איך מפיצים" }, BTN.menu],
+  };
+}
+
+// כל הקבוצות של הנהג עם מספר, לעריכת הרשימות בהקלדה
+export function allGroupsCard({ groups, lists }) {
+  if (!groups) {
+    return { text: "⚠️ אי אפשר לקרוא את הקבוצות שלך כרגע. ודא שהוואטסאפ מחובר ונסה שוב.", buttons: [BTN.menu] };
+  }
+  const MARK = ["", "✅", "🅱️", "🇬"];
+  const marks = (id) => lists.filter((l) => l.groups.some((g) => g.id === id)).map((l) => MARK[l.no]).join("");
+  const shown = groups.slice(0, 150);
+  let text = `👥 *הקבוצות שלך* (${groups.length})\n✅ = בהפצה · 🅱️ = בהפצה ב · 🇬 = בהפצה ג\n\n`;
+  text += shown.map((g, i) => `${i + 1}. ${g.name}${marks(g.id) ? ` ${marks(g.id)}` : ""}`).join("\n");
+  if (groups.length > shown.length) text += `\n... ועוד ${groups.length - shown.length}. את השאר מוסיפים באפליקציה או ברשימה בוואטסאפ.`;
+  text += `\n\n*להוסיף:* הוסף להפצה 3 7 12\n*להסיר:* הסר מהפצה 3\nלרשימה אחרת: *הוסף להפצה ב 4*`;
+  return { text, buttons: [{ id: CMD.publishLists, text: "📋 רשימות הפצה" }] };
+}
+
+export function listEditedCard({ list }) {
+  return {
+    text: `✅ *${list.name}* עודכנה: ${list.groups.length} קבוצות.\n${list.groups.map((g) => `• ${g.name}`).join("\n")}`,
+    buttons: [{ id: CMD.allGroups, text: "👥 הקבוצות שלי" }, { id: CMD.publish, text: "📣 הפצת נסיעה" }],
+  };
+}
+
+export function listSyncedCard(e) {
+  let text;
+  if (e.linked) {
+    text =
+      `✅ *הרשימה "${e.name}" חוברה מוואטסאפ:* ${e.groups.length} קבוצות.\n` +
+      `${e.groups.map((g) => `• ${g.name}`).join("\n")}\n\n` +
+      `מעכשיו כל הוספה או הסרה ברשימה בוואטסאפ מתעדכנת גם כאן.`;
+  } else {
+    text = `🔄 *"${e.name}" עודכנה מוואטסאפ.*`;
+    if (e.added?.length) text += `\n➕ נוספו: ${e.added.join(", ")}`;
+    if (e.removed?.length) text += `\n➖ הוסרו: ${e.removed.join(", ")}`;
+    text += `\nעכשיו ${e.groups.length} קבוצות.`;
+  }
+  if (e.overflow) text += `\n\n⚠️ ברשימה בוואטסאפ יש יותר מ-25 קבוצות. נכנסו רק 25.`;
+  return { text, buttons: [{ id: CMD.publishLists, text: "📋 רשימות הפצה" }] };
+}
+
+export function listAskMergeCard(e) {
+  return {
+    text:
+      `📋 *מצאתי בוואטסאפ רשימה בשם "${e.name}"* (${e.waCount} קבוצות).\n` +
+      `ברשימה "${e.name}" שלך בבוט כבר יש ${e.botCount} קבוצות.\n\nמה לעשות?`,
+    buttons: [
+      { id: `${CMD.listAnswer} החלף ${e.no}`, text: "🔄 להחליף" },
+      { id: `${CMD.listAnswer} הוסף ${e.no}`, text: "➕ להוסיף" },
+      { id: `${CMD.listAnswer} השאר ${e.no}`, text: "✋ לא לגעת" },
+    ],
+  };
+}
+
+export function listAskDeleteCard(e) {
+  const why = e.reason === "deleted" ? "נמחקה בוואטסאפ" : `קיבלה בוואטסאפ שם אחר ("${e.newName}")`;
+  return {
+    text: `⚠️ *הרשימה "${e.name}" ${why}.*\nלמחוק גם את הרשימה בבוט?`,
+    buttons: [
+      { id: `${CMD.listAnswer} מחק ${e.no}`, text: "🗑️ למחוק" },
+      { id: `${CMD.listAnswer} שמור ${e.no}`, text: "✋ להשאיר" },
+    ],
+  };
+}
+
+export function listAnsweredCard({ list }) {
+  return {
+    text: `👌 בוצע. ברשימה *${list.name}* יש עכשיו ${list.groups.length} קבוצות.`,
+    buttons: [{ id: CMD.publishLists, text: "📋 רשימות הפצה" }],
+  };
+}
+
+export function publishErrorCard(message) {
+  return { text: `⚠️ ${message}`, buttons: [{ id: CMD.publish, text: "📣 הפצת נסיעה" }, BTN.menu] };
 }

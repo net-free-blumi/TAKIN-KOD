@@ -190,7 +190,7 @@ try {
   // ---------- חיפושים ----------
   r = await type(DRIVER, "תפריט");
   const menuIds = ids(r);
-  check("בתפריט אין כפתורי נסיעות", !menuIds.some((id) => /פנוי|^פ /.test(id)) && menuIds.length === 5, menuIds.join());
+  check("בתפריט אין כפתורי נסיעות", !menuIds.some((id) => /פנוי|^פ /.test(id)) && menuIds.length === 7 && menuIds.includes("הפצה"), menuIds.join()); // כולל "הפצה" ו"רשימות הפצה"
   r = await type(DRIVER, "פנוי שמש");
   check("חיפוש בהקלדה", um.getUserSearch(DRIVER).active && ids(r).includes("תפוס"));
   r = await type(DRIVER, "פנוי ים");
@@ -567,6 +567,68 @@ try {
   last().ev.emit("connection.update", { connection: "open" });
   await sleep(200);
   check("חיבור מחדש רגיל לא שולח ברכה", out.length === mark, textOf(out.slice(mark)));
+
+  // ---------- הפצת נסיעה ----------
+  {
+    const dsock = last();
+    const G1 = "120363000000000001@g.us";
+    const G2 = "120363000000000002@g.us";
+    dsock.groupFetchAllParticipating = async () => ({
+      [G1]: { id: G1, subject: "נהגי שמש" },
+      [G2]: { id: G2, subject: "נסיעות ים" },
+    });
+    const groupMsg = (id, extra) => bot.__handle(dsock, { messages: [{
+      key: { remoteJid: G1, id, fromMe: false, participant: "972533333333@s.whatsapp.net", ...extra?.key },
+      pushName: "יוסי", messageTimestamp: Math.floor(Date.now() / 1000), message: extra?.message,
+    }] }, { isMainBot: false, driverPhone: DRIVER });
+
+    r = await type(DRIVER, "הקבוצות שלי");
+    check("הפצה: הקבוצות שלי עם מספרים", /1\. נהגי שמש/.test(textOf(r)) && /2\. נסיעות ים/.test(textOf(r)), textOf(r));
+    r = await type(DRIVER, "הפץ שמש ים 180\nלקוח: 054-312-8890");
+    check("הפצה: כל הרשימות ריקות", /ריקות/.test(textOf(r)) && !ids(r).some((id) => id.startsWith("שלח הפצה")), textOf(r));
+    r = await type(DRIVER, "הוסף להפצה 1 2");
+    check("הפצה: הוספה לרשימה בהקלדה", /עודכנה: 2 קבוצות/.test(textOf(r)), textOf(r));
+    r = await type(DRIVER, "הפץ שמש ים 180\nלקוח: 054-312-8890");
+    check("הפצה: תצוגה מקדימה וכפתור לרשימה", ids(r).includes("שלח הפצה 1") && /לא יפורסם/.test(textOf(r)), textOf(r));
+    const before = driverOut.length;
+    r = await tap(DRIVER, "שלח הפצה 1");
+    await sleep(200);
+    const published = driverOut.slice(before);
+    check("הפצה: יצאה לקבוצה הראשונה מהוואטסאפ של הנהג, בלי מספר הלקוח",
+      published.length === 1 && published[0].jid === G1 && published[0].content.text === "שמש ים 180", JSON.stringify(published));
+    check("הפצה: כפתור עצירה", ids(r).some((id) => /^עצור הפצה \d+$/.test(id)), ids(r).join());
+
+    // הנהג רואה את ההודעה של עצמו בקבוצה: לא מגיעה אליו כנסיעה
+    mark = out.length;
+    await groupMsg("OWN1", { key: { fromMe: true, participant: undefined }, message: { conversation: "שמש ים 180" } });
+    await sleep(100);
+    check("הפצה: הנסיעה שהנהג הפיץ לא חוזרת אליו כהתראה", out.length === mark, textOf(out.slice(mark)));
+
+    // תשובה רגילה, בלי ציטוט, לא עוצרת
+    await groupMsg("PLAIN1", { message: { conversation: "ת" } });
+    await sleep(100);
+    check("הפצה: תשובה בלי ציטוט לא נחשבת", !out.slice(mark).some((m) => /מבקש לנסיעה/.test(m.text)));
+
+    // תשובה בציטוט: עוצרת, ומגיעה לנהג עם שם, טלפון וקבוצה
+    await groupMsg("REQ1", { message: { extendedTextMessage: { text: "ת 5 דק", contextInfo: { stanzaId: "D" } } } });
+    await sleep(300);
+    r = out.slice(mark);
+    const request = r.find((m) => /מבקש לנסיעה/.test(m.text));
+    check("הפצה: מבקש מגיע עם שם, טלפון, קבוצה ומה כתב",
+      Boolean(request) && /יוסי/.test(request.text) && /053-333-3333/.test(request.text) && /נהגי שמש/.test(request.text) && /ת 5 דק/.test(request.text), textOf(r));
+    const giveId = ids(r).find((id) => /^תן נסיעה \d+ 1$/.test(id));
+    check("הפצה: כפתור תן לו", Boolean(giveId), ids(r).join());
+    check("הפצה: סיכום עם המשך לשאר", r.some((m) => /נעצרה כי מישהו ביקש/.test(m.text)) && ids(r).some((id) => /^המשך הפצה \d+$/.test(id)), textOf(r));
+    check("הפצה: לא נשלח לקבוצה השנייה", !driverOut.slice(before).some((s) => s.jid === G2));
+
+    const beforeGive = driverOut.length;
+    r = await tap(DRIVER, giveId);
+    const given = driverOut.slice(beforeGive);
+    check("הפצה: תן לו שולח בפרטי את הנסיעה ואת מספר הלקוח",
+      given.length === 1 && given[0].jid === "972533333333@s.whatsapp.net" && /0543128890/.test(given[0].content.text), JSON.stringify(given));
+    r = await type(DRIVER, "שלח הפצה 1");
+    check("הפצה: אין טיוטה שנייה לשלוח", /אין נסיעה שמחכה/.test(textOf(r)), textOf(r));
+  }
 
   // ---------- ניתוק מהטלפון ----------
   mark = out.length;

@@ -12,6 +12,7 @@ import { readFilters } from "./driver-app-filters.js";
 import { BEIT_SHEMESH_ZONES, calculateDistanceKm } from "./geo-helper.js";
 import { plainApprovalJid } from "./users-manager.js";
 import { approvedPlainText } from "./bot-ui.js";
+import { createRidePublisher } from "./ride-publisher.js";
 
 let passed = 0;
 const tests = [];
@@ -258,6 +259,67 @@ test("מחיקה מ\"הנסיעות שלי\": נסיעה שהתבקשה נעלמ
     const log = await call(env.app, "GET", "/api/app/log", null, token);
     assert.equal(log.body.rides.length, 0);
   } finally {
+    cleanup(env);
+  }
+});
+
+test("הפצה באפליקציה: רשימה, הפצה, מבקש כהתראה, תן לו ושגיאות ברורות", async () => {
+  const groupsSent = [];
+  const pub = createRidePublisher({
+    getSock: () => ({ sendMessage: async (jid, content) => { groupsSent.push({ jid, text: content.text }); return { key: { id: `M${groupsSent.length}` } }; } }),
+    sleep: () => new Promise(() => {}), // השליחה לקבוצה השנייה מחכה
+    notify: (phone, event) => env.app.publishEvent(phone, event), // כמו ב-index.js
+    onError: (err) => { throw err; },
+  });
+  // eslint-disable-next-line prefer-const
+  var env = makeApp({ options: { getPublisher: () => pub, getSession: () => ({ status: "connected" }) } });
+  try {
+    const token = await login(env);
+    const me = await call(env.app, "GET", "/api/app/me", null, token);
+    assert.equal(me.body.features.publish, true);
+    const empty = await call(env.app, "POST", "/api/app/publish/start", { text: "שמש ים 180" }, token);
+    assert.equal(empty.status, 400);
+    assert.match(empty.body.error, /ריקה/);
+    const tooMany = await call(env.app, "POST", "/api/app/publish/list", { no: 1, groups: Array.from({ length: 26 }, (_, i) => ({ id: `${i}@g.us`, name: "x" })) }, token);
+    assert.equal(tooMany.status, 400);
+    const saved = await call(env.app, "POST", "/api/app/publish/list", { no: 1, groups: [{ id: "1@g.us", name: "א" }, { id: "2@g.us", name: "ב" }, { id: "not-a-group", name: "ג" }] }, token);
+    assert.equal(saved.status, 200, JSON.stringify(saved.body));
+    assert.equal(saved.body.list.groups.length, 2);
+
+    // נקודת התחלה להתראות
+    const first = await call(env.app, "GET", "/api/app/events", null, token);
+    const after = first.body.cursor;
+    const started = await call(env.app, "POST", "/api/app/publish/start", { text: "שמש ים 180", list: 1, customerPhone: "054-312-8890" }, token);
+    assert.equal(started.status, 200, JSON.stringify(started.body));
+    await new Promise((r) => setImmediate(r));
+    assert.deepEqual(groupsSent, [{ jid: "1@g.us", text: "שמש ים 180" }]);
+
+    pub.onGroupMessage("972501234567", {
+      message: { extendedTextMessage: { text: "ת", contextInfo: { stanzaId: "M1" } } },
+      msgKey: { id: "R1", participant: "972533333333@s.whatsapp.net" },
+      groupJid: "1@g.us", senderPhone: "972533333333", senderName: "יוסי", text: "ת",
+    });
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+    // ההתראה בטלפון: מבקש חדש, גם בלי חיפוש פעיל
+    const ev = await call(env.app, "GET", `/api/app/events?after=${after}&pub=1`, null, token);
+    const request = ev.body.pubs.find((p) => p.type === "request");
+    assert.equal(request?.name, "יוסי");
+    assert.ok(ev.body.pubSeq > 1);
+
+    const state = await call(env.app, "GET", "/api/app/publish", null, token);
+    const job = state.body.jobs[0];
+    assert.equal(job.state, "stopped");
+    assert.equal(job.requesters[0].phone, "972533333333");
+    assert.equal(state.body.connected, true);
+
+    const given = await call(env.app, "POST", "/api/app/publish/give", { id: job.id, n: 1 }, token);
+    assert.equal(given.status, 200, JSON.stringify(given.body));
+    assert.match(groupsSent.at(-1).text, /0543128890/);
+    const missing = await call(env.app, "POST", "/api/app/publish/stop", { id: "999" }, token);
+    assert.equal(missing.status, 404);
+  } finally {
+    pub.shutdown();
     cleanup(env);
   }
 });

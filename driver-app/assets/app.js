@@ -8,6 +8,7 @@
   const TABS = [
     ['rides', 'נסיעות', 'car'],
     ['search', 'חיפוש', 'search'],
+    ['publish', 'הפצה', 'send'],
     ['chats', 'וואטסאפ', 'chat'],
     ['settings', 'הגדרות', 'sliders'],
   ];
@@ -652,6 +653,13 @@
 
   // לחיצה על התראה פותחת את הנסיעה, בלי לשלוח כלום
   function openFromNotification() {
+    // מבקש לנסיעה שהנהג הפיץ: ללשונית ההפצה
+    if (native.takePublish && native.takePublish()) {
+      state.tab = 'publish';
+      render();
+      publish.open();
+      return;
+    }
     // הסדרן אישר: ישר לצ'אט איתו
     const approved = native.takeRideChat();
     if (approved) {
@@ -823,6 +831,7 @@
       ];
     },
 
+    publish: () => publish.screen(),
     chats: () => chats.screen(),
     settings: () => settings.screen(),
   };
@@ -886,9 +895,11 @@
         () => {
           if (state.tab === id && id === 'settings') settings.back();
           if (state.tab === id && id === 'chats') chats.back();
+          if (state.tab === id && id === 'publish') publish.back();
           state.tab = id;
           render();
           load();
+          if (id === 'publish') publish.load();
         }, id === state.tab ? 'active' : '');
     });
   }
@@ -904,7 +915,8 @@
   // בלי חיפוש פעיל ההתראות ברקע נכנסות לשינה. נדלקות מחדש כשמחפשים
   function reportSearching() {
     if (!state.me) return;
-    const active = currentSearches().length > 0;
+    // גם הפצה פעילה מחזיקה את ההתראות ברקע, כדי שמבקשים יגיעו
+    const active = currentSearches().length > 0 || publish.active();
     if (active !== reportedSearching) {
       reportedSearching = active;
       native.setSearching(active);
@@ -917,7 +929,8 @@
       chats.setActive(false);
       return renderLogin();
     }
-    const key = state.tab === 'rides' ? `rides:${state.view}` : state.tab === 'settings' ? `settings:${settings.page()}` : state.tab;
+    const key = state.tab === 'rides' ? `rides:${state.view}` : state.tab === 'settings' ? `settings:${settings.page()}`
+      : state.tab === 'publish' ? `publish:${publish.page()}` : state.tab;
     const old = root.querySelector('main');
     const same = old?.dataset.key === key;
 
@@ -938,14 +951,15 @@
     main.dataset.key = key;
     main.querySelectorAll('details').forEach((el, i) => { el.open = el.open || Boolean(opened[i]); });
 
-    const inPage = state.tab === 'settings' && settings.page();
-    const title = state.tab === 'settings' ? settings.title() : TABS.find(([id]) => id === state.tab)[1];
+    const inPage = (state.tab === 'settings' && settings.page()) || (state.tab === 'publish' && publish.page());
+    const title = state.tab === 'settings' ? settings.title() : state.tab === 'publish' ? publish.title()
+      : TABS.find(([id]) => id === state.tab)[1];
     root.replaceChildren(h('div', { className: 'shell' },
       h('header', null,
         h('div', { className: 'title' },
-          inPage ? button(icon('back'), () => settings.back(), '', 'חזרה') : null,
+          inPage ? button(icon('back'), () => (state.tab === 'publish' ? publish.back() : settings.back()), '', 'חזרה') : null,
           h('h1', null, title)),
-        button(icon('refresh'), load, '', 'רענן')),
+        button(icon('refresh'), () => (state.tab === 'publish' ? Promise.all([load(), publish.load()]) : load()), '', 'רענן')),
       main,
       h('nav', null, navButtons())));
     main.scrollTop = scrollTop;
@@ -962,6 +976,7 @@
       Object.assign(state, { me: settings.merge(me, state.me), rides: rides.rides, mine: mine.rides, loaded: true, offline: false });
       chats.refresh();
       if (state.tab === 'rides' && state.view === 'mine') log.load();
+      if (state.me?.features?.publish && state.tab !== 'publish') publish.load();
     } catch (err) {
       if (seq !== loadSeq || err.status === 401) return;
       state.offline = true;
@@ -997,6 +1012,7 @@
     if (device().loggedIn) {
       chats.setActive(state.tab === 'chats' && Boolean(root.querySelector('.shell')));
       load();
+      if (state.tab === 'publish') publish.load();
     }
     else if (root.querySelector('.shell')) {
       resetSession();
@@ -1011,6 +1027,7 @@
     if (root.querySelector('.shell')) {
       if (state.tab === 'chats' && chats.back()) return true;
       if (state.tab === 'settings' && settings.back()) return true;
+      if (state.tab === 'publish' && publish.back()) return true;
       if (state.tab !== 'rides' || state.view !== 'new') {
         state.tab = 'rides';
         state.view = 'new';
@@ -1037,6 +1054,24 @@
     secure: (op, args) => secure(op, args),
     chatsPaired: () => chats.isPaired(),
     me: () => state.me,
+    // הנסיעה שביקשת מהסדרן הזה בשלוש השעות האחרונות (לתשובות המהירות בצ'אט)
+    rideForChat(phone) {
+      if (!phone) return null;
+      const fresh = (r) => Date.now() - (r.requestedAt || r.at) < 3 * 60 * 60 * 1000;
+      return state.mine.find((r) => String(r.contact) === String(phone) && ['requested', 'got'].includes(r.status) && fresh(r)) || null;
+    },
+    // דקות נסיעה משוערות עד האיסוף. רק כשהכתובת זוהתה והמיקום דלוק
+    etaFor(ride) {
+      if (!ride?.pickup || ride.pickup.approx) return null;
+      const km = native.distance(ride.pickup.lat, ride.pickup.lng);
+      return km >= 0 ? etaMinutes(km) : null;
+    },
+    isTab: (tab) => state.tab === tab && !state.hidden && Boolean(root.querySelector('.shell')),
+    // מסך של לשונית מתעדכן רק כשהיא פתוחה ולא באמצע הקלדה
+    refreshTab(tab) {
+      if (state.tab === tab && root.querySelector('.shell') && !typing()) render();
+      else if (root.querySelector('.shell')) reportSearching();
+    },
     // מונה וכפתור חיוג ללקוח במסכים שמחוץ לצ'אט
     changed() {
       const shell = root.querySelector('.shell');
@@ -1058,6 +1093,7 @@
   const chats = window.createChats(shared);
   const settings = window.createSettings(shared);
   const log = window.createLog(shared);
+  const publish = window.createPublish(shared);
 
   start();
 })();

@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="he" dir="rtl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>אפליקציית הנהגים · הורדה</title>
+  <meta name="description" content="הורדת הגרסה האחרונה של אפליקציית הנהגים לאנדרואיד">
+  <meta property="og:title" content="אפליקציית הנהגים 🚕">
+  <meta property="og:description" content="נסיעות מהקבוצות שלך, התראות, הקראה והפצת נסיעות. לחץ להורדה.">
+  <meta name="theme-color" content="#18222f">
+  <style>
+    :root { --ink: #18222f; --taxi: #f5c542; --bg: #f6f4ee; --card: #fff; --muted: #5d6673; --line: #e3dfd3; }
+    * { box-sizing: border-box; margin: 0; }
+    body {
+      min-height: 100vh; padding: 28px 18px 40px; background: var(--bg); color: var(--ink);
+      font: 17px/1.55 system-ui, -apple-system, "Segoe UI", Arial, sans-serif;
+      display: flex; flex-direction: column; align-items: center;
+    }
+    .wrap { width: 100%; max-width: 440px; }
+    .hero { padding: 26px 22px 24px; border-radius: 26px; background: var(--ink); color: #fff; text-align: center; }
+    .logo {
+      width: 76px; height: 76px; margin: 0 auto 14px; border-radius: 22px; background: var(--taxi);
+      display: flex; align-items: center; justify-content: center; font-size: 40px;
+    }
+    h1 { font-size: 1.6rem; line-height: 1.25; }
+    .lead { margin-top: 8px; color: #c9d0da; }
+    .download {
+      display: flex; align-items: center; justify-content: center; gap: 10px; width: 100%; min-height: 62px;
+      margin-top: 22px; border-radius: 18px; background: var(--taxi); color: var(--ink);
+      font-size: 1.2rem; font-weight: 800; text-decoration: none;
+    }
+    .download:active { transform: scale(.98); }
+    .version { margin-top: 10px; color: #c9d0da; font-size: .9rem; }
+    section { margin-top: 16px; padding: 18px 20px; border: 1px solid var(--line); border-radius: 22px; background: var(--card); }
+    h2 { margin-bottom: 8px; font-size: 1.1rem; }
+    ol, ul { padding-inline-start: 22px; }
+    li { margin: 6px 0; }
+    .muted { color: var(--muted); font-size: .92rem; }
+    .new li::marker { content: "✦ "; color: #c99a12; }
+    footer { margin-top: 20px; color: var(--muted); font-size: .85rem; text-align: center; }
+  </style>
+</head>
+<body>
+  <main class="wrap">
+    <div class="hero">
+      <div class="logo" aria-hidden="true">🚕</div>
+      <h1>אפליקציית הנהגים</h1>
+      <p class="lead">נסיעות מהקבוצות שלך עם התראה, הקראה, מרחק וזמן הגעה, והפצה של נסיעות שלך לקבוצות.</p>
+      <a class="download" id="download" href="/nahagim.apk" download="nahagim.apk">⬇️ הורדה לאנדרואיד</a>
+      <p class="version" id="version">הגרסה האחרונה</p>
+    </div>
+
+    <section class="new" id="news" hidden>
+      <h2>מה חדש</h2>
+      <ul id="notes"></ul>
+    </section>
+
+    <section>
+      <h2>התקנה</h2>
+      <ol>
+        <li>לוחצים על <b>הורדה</b> ופותחים את הקובץ שירד.</li>
+        <li>אם הטלפון שואל, מאשרים <b>התקנה ממקור לא ידוע</b>.</li>
+        <li>נכנסים עם מספר הטלפון ועם הקוד שמגיע מהבוט בוואטסאפ.</li>
+        <li>מאשרים התראות, ולוחצים <b>תקן עכשיו</b> בהודעת הסוללה.</li>
+      </ol>
+      <p class="muted">כבר מותקנת? מורידים ומתקינים מעליה. ההגדרות והנסיעות נשמרות.</p>
+    </section>
+
+    <section>
+      <h2>סמסונג חוסם את ההתקנה?</h2>
+      <p class="muted">הגדרות ← אבטחה ופרטיות ← חוסם אוטומטי (Auto Blocker) ← כבוי. אחרי ההתקנה אפשר להדליק שוב.</p>
+    </section>
+
+    <footer>רק נהג מאושר בבוט יכול להיכנס. אנדרואיד 8 ומעלה.</footer>
+  </main>
+
+  <script>
+    // הגרסה ומה חדש מגיעים מקובץ אחד שמתעדכן בכל גרסה. הקישור לדף לא משתנה לעולם
+    fetch('/app-version.json', { cache: 'no-store' })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((info) => {
+        if (!info || !info.version) return;
+        const link = document.getElementById('download');
+        link.href = '/nahagim.apk?v=' + encodeURIComponent(info.version);
+        link.download = 'nahagim-' + info.version + '.apk';
+        document.getElementById('version').textContent =
+          'גרסה ' + info.version + (info.date ? ' · עודכנה ' + info.date.split('-').reverse().join('/') : '');
+        const notes = Array.isArray(info.notes) ? info.notes.slice(0, 6) : [];
+        if (notes.length) {
+          const list = document.getElementById('notes');
+          for (const note of notes) {
+            const li = document.createElement('li');
+            li.textContent = String(note);
+            list.append(li);
+          }
+          document.getElementById('news').hidden = false;
+        }
+      })
+      .catch(() => {});
+  </script>
+</body>
+</html>

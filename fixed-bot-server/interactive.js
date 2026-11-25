@@ -213,16 +213,23 @@ export function cardToText(card) {
 /**
  * הדרך היחידה לשליחת מסך של הבוט (bot-ui.js): כפתורים + תפריט נפתח, ובגיבוי טקסט מלא.
  */
-export async function sendCard(sock, jid, card, { variant } = {}) {
+export async function sendCard(sock, jid, card, { variant, quoted = null } = {}) {
   if (!sock) return null;
   const v = variant || getInteractiveVariant();
   const nativeButtons = (card.buttons || []).map(toNativeButton);
   if (card.menu) nativeButtons.push(toSingleSelect(card.menu.label, card.menu.sections));
   if (v !== "off" && nativeButtons.length && sock.relayMessage) {
     try {
-      return await relayNativeFlow(sock, jid, { body: card.text, nativeButtons, variant: v });
+      return await relayNativeFlow(sock, jid, { body: card.text, nativeButtons, variant: v, quoted });
     } catch (e) {
       console.log(`ℹ️ [כפתורים] שליחה אינטראקטיבית נכשלה (${e?.message}) - שולח טקסט`);
+    }
+  }
+  if (quoted) {
+    try {
+      return await sock.sendMessage(jid, { text: cardToText(card) }, { quoted });
+    } catch (e) {
+      console.log(`ℹ️ [ציטוט] שליחה עם ציטוט נכשלה (${e?.message}) - שולח בלי`);
     }
   }
   return await sock.sendMessage(jid, { text: cardToText(card) });

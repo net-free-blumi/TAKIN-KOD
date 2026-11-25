@@ -683,6 +683,12 @@ export async function resetMainBotAuth(callbacks = {}) {
 // לא נוגע ב-401 (הטלפון הסיר את המכשיר - נדרשת סריקה) ולא בתהליך צימוד / ביטול של המנהל.
 // ==========================================
 let lastDriverCallbacks = {};
+
+// רשימות של הנהג בוואטסאפ (labels). משמש לסנכרון רשימות ההפצה (ride-publisher.js)
+let driverLabelHandler = null;
+export function setDriverLabelHandler(fn) {
+  driverLabelHandler = typeof fn === "function" ? fn : null;
+}
 let watchdogTimer = null;
 const watchState = new Map(); // key -> { status, since }
 const STUCK_CONNECTING_MS = 3 * 60 * 1000;
@@ -984,6 +990,22 @@ async function createDriverSocket(driverPhone, callbacks = {}) {
     } catch (err) {
       console.error(`שגיאה בטיפול בהודעה (נהג ${driverPhone}):`, err?.message || err);
       try { recordError("driver_message_handler", err, { driverPhone }); } catch (e) {}
+    }
+  });
+
+  // שינויים ברשימות של הנהג בוואטסאפ (מסנן "רשימות" ברשימת הצ'אטים)
+  sock.ev.on("labels.edit", (label) => {
+    try {
+      driverLabelHandler?.(driverPhone, "edit", label);
+    } catch (err) {
+      console.error(`שגיאה ברשימה (נהג ${driverPhone}):`, err?.message || err);
+    }
+  });
+  sock.ev.on("labels.association", (change) => {
+    try {
+      driverLabelHandler?.(driverPhone, "association", change);
+    } catch (err) {
+      console.error(`שגיאה ברשימה (נהג ${driverPhone}):`, err?.message || err);
     }
   });
 

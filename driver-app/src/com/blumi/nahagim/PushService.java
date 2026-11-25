@@ -133,7 +133,8 @@ public final class PushService extends Service {
             try {
                 // Renewed on every request, so it cannot leak if the loop dies
                 wakeLock.acquire(READ_TIMEOUT_MS + MAX_RETRY_MS);
-                String chat = (session.chatKey().isEmpty() ? "" : "&chat=" + session.chatSeq()) + "&appr=" + session.apprSeq();
+                String chat = (session.chatKey().isEmpty() ? "" : "&chat=" + session.chatSeq()) + "&appr=" + session.apprSeq()
+                        + "&pub=" + session.pubSeq();
                 current = Api.open("GET", "/api/app/events?wait=" + WAIT_SECONDS + "&after=" + cursor + chat, token,
                         READ_TIMEOUT_MS);
                 Api.Response response = Api.exchange(current, null);
@@ -158,6 +159,7 @@ public final class PushService extends Service {
                 session.setCursor(response.body.getLong("cursor"));
                 newChatMessages(session, response.body.optJSONObject("chat"));
                 approvals(session, response.body);
+                publishing(session, response.body);
                 if (!response.body.optBoolean("searching", true)) {
                     // Busy, or the nightly stop: sleep until the driver searches again in the app
                     session.setSearching(false);
@@ -215,6 +217,34 @@ public final class PushService extends Service {
             String route = ride.optString("spoken");
             if (route.isEmpty() && !ride.optString("from").isEmpty()) route = ride.optString("from") + " ← " + ride.optString("to");
             Notifications.approved(this, ride.optString("id"), route, ride.optString("dispatcher"));
+        }
+        MainActivity.refreshIfOpen();
+    }
+
+    /** Someone asked for the ride the driver published, or the publishing stopped. */
+    private void publishing(Session session, JSONObject body) {
+        long seq = body.optLong("pubSeq");
+        long saved = session.pubSeq();
+        if (seq <= saved) return;
+        session.setPubSeq(seq);
+        if (saved == 0) return; // a starting point, not news
+        JSONArray list = body.optJSONArray("pubs");
+        for (int i = 0; list != null && i < list.length(); i++) {
+            JSONObject item = list.optJSONObject(i);
+            if (item == null) continue;
+            String job = item.optString("jobId");
+            if ("request".equals(item.optString("type"))) {
+                String text = item.optString("name");
+                if (!item.optString("group").isEmpty()) text += " · " + item.optString("group");
+                if (!item.optString("text").isEmpty()) text += "\n\"" + item.optString("text") + "\"";
+                Notifications.publish(this, job + ":" + item.optLong("seq"), "🙋 מבקש לנסיעה שהפצת", text);
+            } else if ("request".equals(item.optString("stopReason")) && "stopped".equals(item.optString("state"))) {
+                Notifications.publish(this, job, "⏸️ ההפצה נעצרה",
+                        "נשלחה ל-" + item.optInt("sent") + " מתוך " + item.optInt("total") + " קבוצות. אפשר להמשיך לשאר מהאפליקציה.");
+            } else if ("done".equals(item.optString("state"))) {
+                Notifications.publish(this, job, "✅ ההפצה הסתיימה",
+                        "נשלחה ל-" + item.optInt("sent") + " מתוך " + item.optInt("total") + " קבוצות.");
+            }
         }
         MainActivity.refreshIfOpen();
     }

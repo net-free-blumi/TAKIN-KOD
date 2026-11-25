@@ -428,3 +428,27 @@ button.send, button.send:active {
 }
 #report-text:focus { outline: 2px solid var(--taxi); }
 .chat-hint { margin: 14px 16px; color: var(--muted); font-size: .8rem; text-align: center; }
+
+/* הפצת נסיעה */
+#publish-text {
+  width: 100%; min-height: 120px; max-height: 260px; margin-bottom: 10px; padding: 12px 14px;
+  border: 1px solid var(--line); border-radius: 14px; line-height: 1.5;
+}
+#publish-text:focus { outline: 2px solid var(--taxi); }
+.publish-job { cursor: auto; }
+.publish-head { display: flex; align-items: center; justify-content: space-between; }
+.publish-head .state { margin-top: 0; }
+.publish-job.sending { border-color: var(--taxi); }
+.progress { height: 8px; margin: 10px 0 6px; border-radius: 4px; background: var(--soft); overflow: hidden; }
+.progress span { display: block; height: 100%; background: var(--ok); transition: width .4s; }
+.requesters { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line); }
+.requesters h3 { margin-bottom: 6px; font-size: 1rem; }
+.requester { padding: 10px 12px; margin-bottom: 8px; border-radius: 14px; background: var(--soft); }
+.requester.given { background: var(--ok-soft); }
+.requester-head { display: flex; align-items: baseline; justify-content: space-between; }
+.requester-text { margin-top: 4px; overflow-wrap: anywhere; }
+.requester .actions { margin-top: 8px; }
+button.sticky { position: sticky; bottom: 8px; }
+.quick-replies { flex: none; display: flex; gap: 6px; padding: 6px 8px 0; overflow-x: auto; background: var(--wall); }
+.quick-replies:empty, .quick-replies[hidden] { display: none; }
+.quick-replies button.chip { flex: none; min-height: 36px; padding: 4px 12px; border-radius: 18px; white-space: nowrap; font-size: .9rem; }
