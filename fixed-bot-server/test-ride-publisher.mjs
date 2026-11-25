@@ -340,32 +340,81 @@ test("ת 4 / ת5 / ת פה בקבוצה בלי ציטוט, מיד אחרי הה�
   }
 });
 
-test("ת 4 בלי ציטוט אחרי שנסיעה אחרת נכתבה בקבוצה: כבר לא שלך", async () => {
+test("ת 4 בלי ציטוט: הודעה של מישהו אחר באמצע (גם קצרה) או יותר מדקה - כבר לא נחשב", async () => {
+  let clock = 1_000_000;
+  const pub = createRidePublisher({
+    getSock: () => ({ sendMessage: async () => ({ key: { id: "M1" } }) }),
+    now: () => clock, sleep: () => new Promise(() => {}), notify: () => {},
+  });
+  pub.setList(PHONE, 1, [G(1), G(2), G(3)]);
+  pub.start(PHONE, { text: "שמש ים 180" });
+  await tick();
+  clock += 1000;
+  // הודעה רגילה וקצרה של מישהו אחר אחרי ההפצה
+  pub.noteGroupText(PHONE, G(1).id, "בוקר טוב", false);
+  clock += 1000;
+  assert.equal(pub.repliesToMine(PHONE, { conversation: "ת 4" }, G(1).id, "ת 4"), false, "הודעה באמצע");
+  // הודעה של הנהג עצמו לא נחשבת "באמצע"
+  pub.noteGroupText(PHONE, G(2).id, "עוד משהו", true);
+  // יותר מדקה מההפצה: לא נחשב, גם בלי הודעה באמצע
+  clock += 60 * 1000;
+  assert.equal(pub.repliesToMine(PHONE, { conversation: "ת 4" }, G(1).id, "ת 4"), false, "יותר מדקה");
+  // תשובה בציטוט נחשבת תמיד
+  assert.equal(pub.repliesToMine(PHONE, { extendedTextMessage: { contextInfo: { stanzaId: "M1" } } }, G(1).id, "ת"), true);
+  pub.shutdown();
+});
+
+test("פרטי בלי ציטוט: רק בדקה שאחרי ההודעה שלך", async () => {
+  let clock = 1_000_000;
+  const pub = createRidePublisher({
+    getSock: () => ({ sendMessage: async () => ({ key: { id: "M1" } }) }),
+    now: () => clock, sleep: () => new Promise(() => {}), notify: () => {},
+  });
+  pub.setList(PHONE, 1, [G(1), G(2)]);
+  pub.start(PHONE, { text: "שמש ים 180" });
+  await tick();
+  clock += 30 * 1000;
+  assert.equal(pub.onPrivateMessage(PHONE, { message: { conversation: "ת 4" }, msgKey: { id: "P1" }, senderPhone: "972544444441", text: "ת 4" }), true);
+  clock += 61 * 1000;
+  assert.equal(pub.onPrivateMessage(PHONE, { message: { conversation: "ת" }, msgKey: { id: "P2" }, senderPhone: "972544444442", text: "ת" }), false);
+  pub.shutdown();
+});
+
+test("אותו מספר גם בקבוצה וגם בפרטי: התראה אחת בלבד", async () => {
   const t = setup();
   try {
     t.pub.setList(PHONE, 1, [G(1), G(2)]);
-    t.pub.start(PHONE, { text: "שמש ים 180" });
+    const job = t.pub.start(PHONE, { text: "שמש ים 180" });
     await tick();
-    t.pub.noteGroupText(PHONE, G(1).id, "ירושלים בני ברק 250 ש\"ח עכשיו דחוף", false);
-    assert.equal(t.pub.repliesToMine(PHONE, { conversation: "ת 4" }, G(1).id, "ת 4"), false);
-    // הודעה קצרה של מישהו אחר ("ת") לא חוסמת
-    t.pub.noteGroupText(PHONE, G(2).id, "ת", false);
+    // כתב בקבוצה בציטוט (מזהה מוסתר, אבל המספר זוהה)
+    t.pub.onGroupMessage(PHONE, { ...reply("M1", { participant: "123456@lid" }), groupJid: G(1).id, senderPhone: "972533333333" });
+    // ואחר כך גם בפרטי
+    t.pub.onPrivateMessage(PHONE, { message: { conversation: "ת אני" }, msgKey: { id: "P1" }, chatJid: "972533333333@s.whatsapp.net", senderPhone: "972533333333", text: "ת אני" });
+    // ועוד פעם בפרטי, מהמזהה המוסתר בלי מספר
+    t.pub.onPrivateMessage(PHONE, { ...reply("M1", { id: "P2" }), chatJid: "123456@lid", senderPhone: "", text: "ת" });
+    await tick();
+    assert.equal(t.events.filter((e) => e.type === "request").length, 1);
+    assert.equal(t.pub.job(PHONE, job.id).requesters.length, 1);
   } finally {
     t.cleanup();
   }
 });
 
-test("פרטי בלי ציטוט אחרי חצי שעה לא נחשב", async () => {
-  let clock = 1_000_000;
+test("כתב קודם בפרטי בלי ציטוט ואז ציטט בקבוצה: עוצר, בלי התראה כפולה", async () => {
   const t = setup();
   try {
-    const pub = createRidePublisher({ getSock: () => ({ sendMessage: async () => ({ key: { id: "M1" } }) }), now: () => clock, sleep: () => new Promise(() => {}), notify: () => {} });
-    pub.setList(PHONE, 1, [G(1), G(2)]);
-    pub.start(PHONE, { text: "שמש ים 180" });
+    t.pub.setList(PHONE, 1, [G(1), G(2), G(3)]);
+    const job = t.pub.start(PHONE, { text: "שמש ים 180" });
     await tick();
-    clock += 31 * 60 * 1000;
-    assert.equal(pub.onPrivateMessage(PHONE, { message: { conversation: "ת" }, msgKey: { id: "P1" }, senderPhone: "972544444441", text: "ת" }), false);
-    pub.shutdown();
+    t.pub.onPrivateMessage(PHONE, { message: { conversation: "ת 4" }, msgKey: { id: "P1" }, chatJid: "972533333333@s.whatsapp.net", senderPhone: "972533333333", text: "ת 4" });
+    assert.equal(t.pub.job(PHONE, job.id).state, "sending");
+    t.pub.onGroupMessage(PHONE, { ...reply("M1", { participant: "972533333333@s.whatsapp.net" }), groupJid: G(1).id, senderPhone: "972533333333" });
+    await t.wake();
+    const j = t.pub.job(PHONE, job.id);
+    assert.equal(j.state, "stopped");
+    assert.equal(j.requesters.length, 1);
+    assert.equal(j.requesters[0].group, "קבוצה 1", "הקבוצה הושלמה מהציטוט");
+    assert.equal(t.events.filter((e) => e.type === "request").length, 1);
   } finally {
     t.cleanup();
   }
@@ -437,6 +486,48 @@ test("עמלה באחוזים: מחיר מהטקסט, חישוב 10% ואמצע�
     assert.match(msg, /פייבוקס: https:\/\/payboxapp/);
     assert.ok(!/העברה בנקאית/.test(msg), "רק אמצעים שמולאו");
     assert.equal(t.pub.job(PHONE, job.id).requesters[0].paidFee, 5);
+  } finally {
+    t.cleanup();
+  }
+});
+
+test("שם משלך לרשימה: מוצג בהפצה, והסנכרון מוואטסאפ ממשיך לפי השם הרגיל", async () => {
+  const t = setup();
+  try {
+    t.pub.setListTitle(PHONE, 2, "  ירושלים   מהיר ");
+    assert.equal(t.pub.getLists(PHONE)[1].name, "ירושלים מהיר");
+    assert.equal(t.pub.getLists(PHONE)[1].syncName, "הפצה ב");
+    assert.throws(() => t.pub.start(PHONE, { text: "שמש ים 180", list: 2 }), /רשימת "ירושלים מהיר" ריקה/);
+    t.pub.setList(PHONE, 2, [G(1)]);
+    assert.equal(t.pub.start(PHONE, { text: "שמש ים 180", list: 2 }).listName, "ירושלים מהיר");
+    assert.throws(() => t.pub.setListTitle(PHONE, 2, "א".repeat(30)), /עד 24/);
+    t.pub.setListTitle(PHONE, 2, "");
+    assert.equal(t.pub.getLists(PHONE)[1].name, "הפצה ב");
+  } finally {
+    t.cleanup();
+  }
+});
+
+test("הודעת חיוב בנוסח משלך: השדות מתמלאים, ושורה עם שדה ריק לא נשלחת", async () => {
+  const t = setup();
+  try {
+    t.pub.setList(PHONE, 1, [G(1)]);
+    const job = t.pub.start(PHONE, { text: "שמש ים 50 ₪\nריש לקיש 12" });
+    await tick();
+    t.pub.onGroupMessage(PHONE, { ...reply("M1"), groupJid: G(1).id, senderPhone: "972533333331" });
+    t.pub.setSettings(PHONE, {
+      feeMode: "percent", percent: 10, pay: { bit: "050-1234567", paybox: "" },
+      template: "היי {שם}, הנסיעה {נסיעה} עלתה {מחיר}.\nתעביר לי {עמלה} ({אחוז}).\nביט: {ביט}\nפייבוקס: {פייבוקס}\n{לא קיים}",
+    });
+    await t.pub.sendThanks(PHONE, job.id, 1);
+    assert.equal(t.sent.at(-1).text,
+      "היי יוסי, הנסיעה שמש ים 50 ₪ עלתה 50 ₪.\nתעביר לי 5 ₪ (10%).\nביט: 050-1234567\n{לא קיים}");
+    // ריק = חזרה להודעה המוכנה
+    t.pub.setSettings(PHONE, { template: "" });
+    assert.match(t.pub.thanksText(PHONE, job.id, 1), /תודה יוסי על הנסיעה/);
+    // נקודת התחלה לעריכה, עם שדות
+    assert.match(t.pub.defaultTemplate(PHONE), /\{עמלה\}/);
+    assert.throws(() => t.pub.setSettings(PHONE, { template: "x".repeat(1600) }), /ארוכה מדי/);
   } finally {
     t.cleanup();
   }

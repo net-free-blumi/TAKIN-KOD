@@ -2659,6 +2659,26 @@ async function handlePublishCommand(sock, jid, rawPhone, text, norm) {
       await reply(settingsCard());
       return true;
     }
+    // כל הודעת החיוב בנוסח משלך: "נוסח הודעה" ואחריו ההודעה, עם שדות כמו {שם} {עמלה} {ביט}
+    if ((m = raw.match(/^נוסח הודעה[\s:]*([\s\S]*)$/))) {
+      const body = m[1].trim();
+      if (!body) {
+        const s = publisher.getSettings(phone);
+        await reply(ui.publishTemplateCard({ template: s.template || publisher.defaultTemplate(phone), custom: Boolean(s.template), fields: publisher.templateFields }));
+        return true;
+      }
+      publisher.setSettings(phone, { template: /^(מחק|רגיל|ברירת מחדל)$/.test(body) ? "" : body });
+      await reply(settingsCard());
+      return true;
+    }
+    // שם משלך לרשימה: "שם להפצה ירושלים", "שם להפצה ב צפון". "מחק" מחזיר לשם הרגיל
+    if ((m = raw.match(/^שם להפצה(?:\s+([בג])(?=\s))?\s+(.{1,30})$/))) {
+      const no = m[1] === "ב" ? 2 : m[1] === "ג" ? 3 : 1;
+      const title = m[2].trim();
+      publisher.setListTitle(phone, no, /^(מחק|רגיל)$/.test(title) ? "" : title);
+      await reply(ui.publishListsCard({ publish: { lists: publisher.getLists(phone) } }));
+      return true;
+    }
     if ((m = norm.match(/^(הוסף ל|הסר מ)הפצה(?: ([בג]))? ([\d\s]+)$/))) {
       const no = m[2] === "ב" ? 2 : m[2] === "ג" ? 3 : 1;
       const nums = m[3].trim().split(/\s+/).map(Number).filter((n) => n > 0);

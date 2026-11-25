@@ -675,6 +675,16 @@ try {
     r = await tap(DRIVER, `מחק הפצה ${jobId}`);
     r = await type(DRIVER, "ההפצות שלי");
     check("הפצה: אחרי מחיקה מהרשימה היא לא מופיעה", /אין לך הפצות/.test(textOf(r)), textOf(r));
+
+    // נוסח משלך להודעת החיוב, ושם משלך לרשימה
+    r = await type(DRIVER, "נוסח הודעה");
+    check("הפצה: נוסח הודעה מציג את ההודעה והשדות", /\{עמלה\}/.test(textOf(r)) && /ההודעה המוכנה/.test(textOf(r)), textOf(r));
+    r = await type(DRIVER, "נוסח הודעה\nהיי {שם}, {עמלה} בביט {ביט}");
+    check("הפצה: נוסח משלך נשמר ומוצג בדוגמה", /היי יוסי, 18 ₪ בביט 050-1234567/.test(textOf(r)), textOf(r));
+    r = await type(DRIVER, "שם להפצה ירושלים מהיר");
+    check("הפצה: שם משלך לרשימה", /ירושלים מהיר\* \(2\)/.test(textOf(r)) && /בוואטסאפ: הפצה/.test(textOf(r)), textOf(r));
+    r = await type(DRIVER, "הפץ שמש ים 200");
+    check("הפצה: השם החדש בכפתור הבחירה", r.some((m) => m.buttons.some((b) => /ירושלים מהיר/.test(b.p.display_text || ""))), JSON.stringify(r.map((m) => m.buttons)));
   }
 
   // ---------- ניתוק מהטלפון ----------

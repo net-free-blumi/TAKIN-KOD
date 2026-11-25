@@ -432,6 +432,9 @@ export function createDriverApp({
       limits: { maxGroups: 25, perHour: 6 },
       settings: p.getSettings(phone),
       thanksPreview: p.previewThanks(phone),
+      // לעריכת ההודעה: נקודת התחלה עם שדות, ורשימת השדות
+      defaultTemplate: p.defaultTemplate(phone),
+      templateFields: p.templateFields,
     };
   }
 
@@ -498,6 +501,7 @@ export function createDriverApp({
     "POST /report": report,
     "GET /publish": ({ device }) => viaPublisher(() => publishState(device.phone)),
     "POST /publish/list": ({ device, body }) => viaPublisher((p) => ({ list: p.setList(device.phone, Number(body.no), body.groups, "app") })),
+    "POST /publish/list-title": ({ device, body }) => viaPublisher((p) => ({ list: p.setListTitle(device.phone, Number(body.no), body.title) })),
     "POST /publish/start": ({ device, body }) => viaPublisher((p) => ({
       job: p.start(device.phone, { text: String(body.text ?? ""), list: Number(body.list) || 1, customerPhone: body.customerPhone }),
     })),
@@ -522,8 +526,10 @@ export function createDriverApp({
       settings: p.setSettings(device.phone, {
         feeMode: body.feeMode, fee: body.fee, percent: body.percent,
         pay: body.pay && typeof body.pay === "object" ? body.pay : undefined, thanks: body.thanks,
+        template: body.template === undefined ? undefined : String(body.template),
       }),
       thanksPreview: p.previewThanks(device.phone),
+      defaultTemplate: p.defaultTemplate(device.phone),
     })),
     "POST /filters": ({ device, body }) => {
       const data = store.driver(device.phone);

@@ -329,6 +329,25 @@ window.createPublish = function createPublish(ctx) {
     });
     const extra = h('input', { value: s.thanks || '', maxLength: 200, placeholder: 'משפט נוסף להודעה (לא חובה)' });
     extra.setAttribute('aria-label', 'תוספת להודעה');
+
+    // כל ההודעה בנוסח משלך. השדות בסוגריים מתמלאים לבד, ושורה עם שדה ריק לא נשלחת
+    let custom = Boolean(s.template);
+    const template = h('textarea', { id: 'publish-template', rows: 10, maxLength: 1500, value: s.template || data.defaultTemplate || '' });
+    template.setAttribute('aria-label', 'נוסח ההודעה');
+    template.oninput = () => { custom = true; };
+    const insert = (field) => {
+      const at = template.selectionStart ?? template.value.length;
+      template.value = `${template.value.slice(0, at)}{${field}}${template.value.slice(template.selectionEnd ?? at)}`;
+      custom = true;
+      template.focus();
+    };
+    const fields = h('div', { className: 'chips' }, (data.templateFields || []).map((f) => button(`{${f}}`, () => insert(f), 'chip')));
+    const resetTemplate = button('חזרה להודעה המוכנה', () => {
+      template.value = data.defaultTemplate || '';
+      custom = false;
+      toast('ההודעה המוכנה תישלח');
+    }, 'link');
+
     sheet(
       h('h2', null, 'תשלום ועמלה'),
       h('p', { className: 'muted' }, 'אחרי שנהג ביצע נסיעה שנתת לו, הוא מקבל ממך הודעת תודה עם הסכום ואיך לשלם.'),
@@ -339,14 +358,22 @@ window.createPublish = function createPublish(ctx) {
       inputs.map(([, label, el]) => [h('label', { className: 'muted' }, label), el]),
       h('h3', null, 'תוספת להודעה'),
       extra,
+      h('h3', null, 'נוסח ההודעה'),
+      h('p', { className: 'muted' }, 'אפשר לכתוב את כל ההודעה בדיוק כמו שתרצה. לחיצה על שדה מכניסה אותו, והוא מתמלא לבד בכל נסיעה. שורה עם שדה ריק (למשל פייבוקס שלא מילאת) לא נשלחת.'),
+      fields,
+      template,
+      resetTemplate,
       button('שמור', async () => {
         const n = Number(amount.value) || 0;
         const pay = Object.fromEntries(inputs.map(([key, , el]) => [key, el.value]));
+        // ההודעה המוכנה נשמרת כריקה, כדי שתתעדכן לבד כשמשנים עמלה או אמצעי תשלום
+        const text = custom && template.value.trim() !== (data.defaultTemplate || '').trim() ? template.value : '';
         const result = await api('POST', '/publish/settings', mode === 'percent'
-          ? { feeMode: 'percent', percent: n, pay, thanks: extra.value }
-          : { feeMode: 'fixed', fee: n, pay, thanks: extra.value });
+          ? { feeMode: 'percent', percent: n, pay, thanks: extra.value, template: text }
+          : { feeMode: 'fixed', fee: n, pay, thanks: extra.value, template: text });
         data.settings = result.settings;
         data.thanksPreview = result.thanksPreview;
+        data.defaultTemplate = result.defaultTemplate || data.defaultTemplate;
         closeSheet();
         toast('נשמר');
         await load();
@@ -402,6 +429,13 @@ window.createPublish = function createPublish(ctx) {
     if (!groups) return [h('p', { className: 'muted' }, 'טוען את הקבוצות שלך...')];
     // קבוצות שברשימה אבל כבר לא בוואטסאפ: נשארות עם השם השמור
     const all = [...groups, ...list.groups.filter((g) => !groups.some((x) => x.id === g.id))];
+    // שם משלך לרשימה, מוצג באפליקציה ובבוט. הסנכרון מוואטסאפ ממשיך לפי השם הרגיל
+    const title = h('input', { id: 'publish-list-title', maxLength: 24, value: list.name === list.syncName ? '' : list.name, placeholder: `שם לרשימה (עכשיו: ${list.syncName})` });
+    title.setAttribute('aria-label', 'שם הרשימה');
+    const titleBox = h('div', { className: 'list-title' },
+      h('label', { className: 'muted', htmlFor: 'publish-list-title' }, 'שם הרשימה'),
+      title,
+      h('p', { className: 'muted' }, `בוואטסאפ הרשימה נשארת בשם "${list.syncName}".`));
     const count = h('p', { className: 'notice' });
     const updateCount = () => { count.textContent = `נבחרו ${picked.size} מתוך עד ${max} קבוצות`; };
     const box = h('div', { className: 'group-list' });
@@ -425,6 +459,7 @@ window.createPublish = function createPublish(ctx) {
     updateCount();
     draw();
     return [
+      titleBox,
       list.source === 'whatsapp'
         ? h('p', { className: 'notice' }, 'הרשימה הזו מסונכרנת מוואטסאפ. שינוי כאן יחזור למה שבוואטסאפ ברגע שתשנה שם את הרשימה.')
         : null,
@@ -433,6 +468,10 @@ window.createPublish = function createPublish(ctx) {
       box,
       button('שמור', async () => {
         const chosen = all.filter((g) => picked.has(g.id)).map((g) => ({ id: g.id, name: g.name }));
+        const newTitle = title.value.trim();
+        if (newTitle !== (list.name === list.syncName ? '' : list.name)) {
+          await api('POST', '/publish/list-title', { no: page.list, title: newTitle });
+        }
         await act('/publish/list', { no: page.list, groups: chosen }, 'הרשימה נשמרה');
         page = null;
         ctx.render();
