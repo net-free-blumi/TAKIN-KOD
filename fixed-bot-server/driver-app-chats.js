@@ -88,7 +88,7 @@ export function describeMessage(message) {
   return text ? { text } : null;
 }
 
-export function createDriverChats({ dir, isActiveDevice, getSession, getBotPhone, getRide, quoteForRide, onIncoming = () => {}, extraOps = {}, onError, now = Date.now }) {
+export function createDriverChats({ dir, isActiveDevice, getSession, getBotPhone, getRide, quoteForRide, getPublishContact = () => null, onIncoming = () => {}, extraOps = {}, onError, now = Date.now }) {
   const pairings = new Map(); // device id -> { phone, key, code, expiresAt }
   const drivers = new Map();
   const dirty = new Set();
@@ -406,6 +406,21 @@ export function createDriverChats({ dir, isActiveDevice, getSession, getBotPhone
       const chat = chatOf(d, id);
       chat.at = now();
       if (!chat.name && ride.dispatcher) chat.name = ride.dispatcher;
+      trim(d);
+      changed(device.phone);
+      return { chat: id };
+    },
+
+    // פתיחת צ'אט עם מי שביקש נסיעה שהנהג עצמו הפיץ
+    async openPerson({ device, args }) {
+      const contact = getPublishContact(device.phone, String(args.jobId || ""), Number(args.n));
+      const jid = contact && privateJid(contact.jid);
+      if (!jid) throw new AppError(404, "אין מספר של המבקש");
+      const d = data(device.phone);
+      const id = d.aliases[jid] || jid;
+      const chat = chatOf(d, id);
+      chat.at = now();
+      if (!chat.name && contact.name) chat.name = String(contact.name).slice(0, 60);
       trim(d);
       changed(device.phone);
       return { chat: id };

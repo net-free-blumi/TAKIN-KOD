@@ -130,6 +130,14 @@ export function createDriverApp({
     getSession,
     getBotPhone,
     getRide: (phone, id) => store.driver(phone).rides.find((r) => r.id === id),
+    // מבקש של נסיעה שהנהג הפיץ: לפתוח איתו צ'אט באפליקציה
+    getPublishContact: (phone, jobId, n) => {
+      try {
+        return getPublisher()?.contactOf(phone, jobId, n) || null;
+      } catch {
+        return null;
+      }
+    },
     quoteForRide,
     onIncoming: (phone) => {
       for (const waiter of [...waiters.values()]) if (waiter.phone === phone) waiter.finish();
@@ -422,6 +430,8 @@ export function createDriverApp({
       jobs: p.jobs(phone),
       connected: getSession(phone)?.status === "connected",
       limits: { maxGroups: 25, perHour: 6 },
+      settings: p.getSettings(phone),
+      thanksPreview: p.previewThanks(phone),
     };
   }
 
@@ -494,6 +504,21 @@ export function createDriverApp({
     "POST /publish/continue": ({ device, body }) => viaPublisher((p) => ({ job: p.resume(device.phone, String(body.id ?? "")) })),
     "POST /publish/stop": ({ device, body }) => viaPublisher((p) => ({ job: p.stop(device.phone, String(body.id ?? "")) })),
     "POST /publish/give": ({ device, body }) => viaPublisher(async (p) => ({ job: await p.give(device.phone, String(body.id ?? ""), Number(body.n)) })),
+    "POST /publish/outcome": ({ device, body }) => viaPublisher((p) => ({
+      job: p.setOutcome(device.phone, String(body.id ?? ""), Number(body.n), String(body.status ?? "")),
+    })),
+    "POST /publish/thanks": ({ device, body }) => viaPublisher(async (p) => ({ job: await p.sendThanks(device.phone, String(body.id ?? ""), Number(body.n)) })),
+    "POST /publish/republish": ({ device, body }) => viaPublisher((p) => ({ job: p.republish(device.phone, String(body.id ?? "")) })),
+    "POST /publish/edit": ({ device, body }) => viaPublisher((p) => p.edit(device.phone, String(body.id ?? ""), {
+      text: body.text === undefined ? undefined : String(body.text),
+      customerPhone: body.customerPhone === undefined ? undefined : String(body.customerPhone),
+    })),
+    "POST /publish/remove": ({ device, body }) => viaPublisher((p) => p.removeFromGroups(device.phone, String(body.id ?? ""))),
+    "POST /publish/delete": ({ device, body }) => viaPublisher((p) => p.archive(device.phone, String(body.id ?? ""))),
+    "POST /publish/settings": ({ device, body }) => viaPublisher((p) => ({
+      settings: p.setSettings(device.phone, { fee: body.fee, payInfo: body.payInfo, thanks: body.thanks }),
+      thanksPreview: p.previewThanks(device.phone),
+    })),
     "POST /filters": ({ device, body }) => {
       const data = store.driver(device.phone);
       data.filters = checked(() => parseFilters(body, data.filters));

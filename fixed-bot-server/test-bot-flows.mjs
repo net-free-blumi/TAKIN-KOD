@@ -190,7 +190,7 @@ try {
   // ---------- חיפושים ----------
   r = await type(DRIVER, "תפריט");
   const menuIds = ids(r);
-  check("בתפריט אין כפתורי נסיעות", !menuIds.some((id) => /פנוי|^פ /.test(id)) && menuIds.length === 7 && menuIds.includes("הפצה"), menuIds.join()); // כולל "הפצה" ו"רשימות הפצה"
+  check("בתפריט אין כפתורי נסיעות", !menuIds.some((id) => /פנוי|^פ /.test(id)) && menuIds.length === 8 && menuIds.includes("הפצה"), menuIds.join()); // כולל הפצה, ההפצות שלי ורשימות הפצה
   r = await type(DRIVER, "פנוי שמש");
   check("חיפוש בהקלדה", um.getUserSearch(DRIVER).active && ids(r).includes("תפוס"));
   r = await type(DRIVER, "פנוי ים");
@@ -628,6 +628,43 @@ try {
       given.length === 1 && given[0].jid === "972533333333@s.whatsapp.net" && /0543128890/.test(given[0].content.text), JSON.stringify(given));
     r = await type(DRIVER, "שלח הפצה 1");
     check("הפצה: אין טיוטה שנייה לשלוח", /אין נסיעה שמחכה/.test(textOf(r)), textOf(r));
+
+    // אחרי "תן לו": ביצע / לא לקח, ואז תודה עם עמלה
+    const jobId = giveId.split(" ")[2];
+    r = await tap(DRIVER, `לא לקח ${jobId} 1`);
+    check("הפצה: לא לקח - אפשר להמשיך להפיץ", ids(r).some((id) => id === `המשך הפצה ${jobId}`), ids(r).join());
+    r = await tap(DRIVER, `ביצע ${jobId} 1`);
+    check("הפצה: ביצע - כפתור תודה ועמלה", ids(r).includes(`שלח תודה ${jobId} 1`), ids(r).join());
+    r = await type(DRIVER, "עמלה 6");
+    r = await type(DRIVER, "תשלום ביט 050-1234567");
+    check("הפצה: הגדרות עמלה ותשלום עם דוגמה", /עמלה: 6 ₪/.test(textOf(r)) && /ביט 050-1234567/.test(textOf(r)), textOf(r));
+    const beforeThanks = driverOut.length;
+    r = await tap(DRIVER, `שלח תודה ${jobId} 1`);
+    const thanks = driverOut.slice(beforeThanks);
+    check("הפצה: הודעת תודה ועמלה מהוואטסאפ של הנהג",
+      thanks.length === 1 && thanks[0].jid === "972533333333@s.whatsapp.net" && /עמלה: 6 ₪/.test(thanks[0].content.text) && /שמש ים 180/.test(thanks[0].content.text),
+      JSON.stringify(thanks));
+
+    // מישהו כתב לנהג בפרטי, עם ציטוט ההודעה בקבוצה ("השב בפרטי")
+    mark = out.length;
+    await bot.__handle(dsock, { messages: [{
+      key: { remoteJid: "972544444444@s.whatsapp.net", id: "PRIV1", fromMe: false },
+      pushName: "אבי", messageTimestamp: Math.floor(Date.now() / 1000),
+      message: { extendedTextMessage: { text: "אני יכול", contextInfo: { stanzaId: "D", remoteJid: G1 } } },
+    }] }, { isMainBot: false, driverPhone: DRIVER });
+    await sleep(200);
+    r = out.slice(mark);
+    check("הפצה: השב בפרטי מגיע לנהג כמבקש", r.some((m) => /מבקש בפרטי/.test(m.text) && /אבי/.test(m.text) && /054-444-4444/.test(m.text)), textOf(r));
+
+    r = await type(DRIVER, "ההפצות שלי");
+    check("הפצה: ההפצות שלי עם תפריט לפתיחה", ids(r).includes(`הפצה ${jobId}`), ids(r).join());
+    r = await tap(DRIVER, `הפצה ${jobId}`);
+    check("הפצה: כרטיס הפצה עם המבקשים והמצב", /יוסי ביצע/.test(textOf(r)) && /אבי/.test(textOf(r)) && ids(r).includes(`מחק הפצה ${jobId}`), textOf(r));
+    r = await type(DRIVER, `ערוך הפצה ${jobId}\nשמש ים 200`);
+    check("הפצה: עריכה בבוט", /הנוסח עודכן/.test(textOf(r)) && /שמש ים 200/.test(textOf(r)), textOf(r));
+    r = await tap(DRIVER, `מחק הפצה ${jobId}`);
+    r = await type(DRIVER, "ההפצות שלי");
+    check("הפצה: אחרי מחיקה מהרשימה היא לא מופיעה", /אין לך הפצות/.test(textOf(r)), textOf(r));
   }
 
   // ---------- ניתוק מהטלפון ----------

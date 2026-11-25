@@ -468,6 +468,18 @@ window.createChats = function createChats(ctx) {
   return {
     screen, update, setActive, refresh, openRide, back, reset, confirmOff, customerFor,
     // מהתראה על הודעה חדשה
+    // צ'אט באפליקציה עם מי שביקש נסיעה שהפצת
+    async openPerson(jobId, n) {
+      ctx.goChats();
+      if (!paired() || !s.ready) {
+        update();
+        toast('חבר את הצ\'אטים כדי לדבר איתו מהאפליקציה');
+        return;
+      }
+      run++;
+      const body = await secure('openPerson', { jobId, n });
+      show(body.chat);
+    },
     openChat(id) {
       ctx.goChats();
       if (id && paired() && s.ready) show(id);

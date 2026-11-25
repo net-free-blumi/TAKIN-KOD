@@ -37,6 +37,16 @@ export const CMD = {
   publishResume: "המשך הפצה",
   publishStop: "עצור הפצה",
   publishGive: "תן נסיעה",
+  publishJob: "הפצה",
+  myJobs: "ההפצות שלי",
+  publishAgain: "הפץ שוב",
+  publishEdit: "ערוך הפצה",
+  publishRemove: "מחק מהקבוצות",
+  publishDelete: "מחק הפצה",
+  publishDone: "ביצע",
+  publishCancelled: "לא לקח",
+  publishThanks: "שלח תודה",
+  publishSettings: "הגדרות הפצה",
   listAnswer: "רשימה",
 };
 
@@ -88,6 +98,7 @@ export const MAIN_MENU = {
       title: "הפצת נסיעה",
       rows: [
         row(CMD.publish, "📣 הפצת נסיעה", "שולחים נסיעה לקבוצות שלך"),
+        row(CMD.myJobs, "🗂️ ההפצות שלי", "מי ביקש, למי נתת, המשך ועצירה"),
         row(CMD.publishLists, "📋 רשימות הפצה", "לאילו קבוצות זה יוצא"),
       ],
     },
@@ -575,10 +586,12 @@ export function howPublishCard() {
       `*2. מפיצים.* כותבים *הפץ* ואחריו הנסיעה, ובוחרים רשימה.\n` +
       `שורה *לקוח: 05...* לא תפורסם. היא נשמרת רק לך, ונשלחת למי שתיתן לו את הנסיעה.\n\n` +
       `*3. מחכים.* הבוט שולח מהוואטסאפ שלך, קבוצה כל 8–15 שניות.\n` +
-      `כשמישהו עונה על הנסיעה *בציטוט*, השליחה לשאר הקבוצות נעצרת ותקבל כאן את השם, הטלפון, הקבוצה ומה כתב. תשובה בלי ציטוט לא עוצרת.\n\n` +
-      `*4. נותנים.* *🤝 תן לו* שולח לו בפרטי את הנסיעה ואת מספר הלקוח. אף אחד לא מתאים? *▶️ המשך* שולח רק לקבוצות שעוד לא קיבלו.\n\n` +
+      `כשמישהו עונה על הנסיעה *בציטוט* (בקבוצה, או "השב בפרטי"), השליחה לשאר הקבוצות נעצרת ותקבל כאן את השם, הטלפון, הקבוצה ומה כתב. תשובה בלי ציטוט בקבוצה לא עוצרת. הודעה בפרטי כמו "ת" בחצי השעה הראשונה מגיעה אליך כמבקש, בלי לעצור.\n\n` +
+      `*4. נותנים.* *🤝 תן לו* שולח לו בפרטי את הנסיעה ואת מספר הלקוח. אחר כך מסמנים *✅ ביצע* או *❌ לא לקח*. לא לקח? נותנים לאחר, או *▶️ המשך* לקבוצות שעוד לא קיבלו.\n\n` +
+      `*5. תודה ועמלה.* אחרי *ביצע*: *💰 שלח תודה ועמלה* שולח לו הודעה מסודרת עם הסכום ופרטי התשלום. קובעים ב*הגדרות הפצה*.\n\n` +
+      `*הכול ב🗂️ ההפצות שלי:* עצירה, המשך, *הפץ שוב*, עריכה (*ערוך הפצה* ואז הנוסח החדש, גם בקבוצות שכבר קיבלו עד 15 דקות), *מחק מהקבוצות* ו*מחק מהרשימה*. אפשר כמה הפצות: חדשה מחכה בתור ויוצאת כשהקודמת מסתיימת.\n\n` +
       `🛡️ כדי שוואטסאפ לא יחסום את המספר שלך: עד 25 קבוצות ברשימה ועד 6 הפצות בשעה.`,
-    buttons: [{ id: CMD.publishLists, text: "📋 רשימות הפצה" }, BTN.menu],
+    buttons: [{ id: CMD.myJobs, text: "🗂️ ההפצות שלי" }, { id: CMD.publishSettings, text: "⚙️ הגדרות הפצה" }, BTN.menu],
   };
 }
 
@@ -620,32 +633,188 @@ export function publishCancelledCard() {
 }
 
 export function publishStartedCard({ job }) {
-  const minutes = Math.max(1, Math.round(((job.groups.length - 1) * 11.5) / 60));
+  if (job.state === "queued") {
+    return {
+      text: `⏳ *ההפצה בתור* · ${job.groups.length} קבוצות ברשימה *${LIST_LABELS[job.list - 1]}*\n\nהיא תצא מיד כשההפצה הקודמת תסתיים.`,
+      buttons: [{ id: `${CMD.publishStop} ${job.id}`, text: "⏹️ בטל" }, { id: CMD.myJobs, text: "🗂️ ההפצות שלי" }],
+    };
+  }
+  const minutes = Math.max(1, Math.round(((job.pending || job.groups.length) - 1) * 11.5 / 60));
   return {
     text:
-      `🚀 *ההפצה התחילה* · ${job.groups.length} קבוצות ברשימה *${LIST_LABELS[job.list - 1]}*\n\n` +
-      `קבוצה כל 8–15 שניות, בערך ${minutes} דק'.\nכשמישהו יענה על הנסיעה בציטוט, אעצור ואשלח לך אותו כאן.`,
-    buttons: [{ id: `${CMD.publishStop} ${job.id}`, text: "⏹️ עצור" }],
+      `🚀 *ההפצה יצאה* · ${job.pending || job.groups.length} קבוצות ברשימה *${LIST_LABELS[job.list - 1]}*\n\n` +
+      `קבוצה כל 8–15 שניות, בערך ${minutes} דק'.\nכשמישהו יענה על הנסיעה בציטוט (בקבוצה או בפרטי), אעצור ואשלח לך אותו כאן.`,
+    buttons: [{ id: `${CMD.publishStop} ${job.id}`, text: "⏹️ עצור" }, { id: `${CMD.publishJob} ${job.id}`, text: "📋 ההפצה" }],
   };
 }
 
+const STATUS_MARK = { given: "🤝 קיבל ממך", done: "✅ ביצע", cancelled: "❌ לא לקח" };
+const requesterLine = (r) =>
+  `${r.n}. *${r.name}*${r.phone ? ` ${localPhone(r.phone)}` : ""}` +
+  `${r.private ? " · בפרטי" : r.group ? ` · ${r.group}` : ""}${r.status ? ` · ${STATUS_MARK[r.status]}` : ""}${r.thanked ? " · 💰" : ""}`;
+
 export function publishRequestCard({ job, requester }) {
-  let text = `🙋 *מבקש לנסיעה שלך*\n\n👤 ${requester.name}\n`;
+  const title = requester.private ? "🙋 *מבקש בפרטי*" : "🙋 *מבקש לנסיעה שלך*";
+  let text = `${title}\n\n👤 ${requester.name}\n`;
   if (requester.phone) text += `📞 ${localPhone(requester.phone)}\n`;
-  if (requester.group) text += `👥 ${requester.group}\n`;
+  if (requester.group) text += `👥 ${requester.group}${requester.private ? " (השיב לך בפרטי)" : ""}\n`;
   if (requester.text) text += `💬 "${requester.text}"\n`;
-  if (requester.n === 1 && job.stopReason === "request") text += `\n⏸️ עצרתי את השליחה לשאר הקבוצות.`;
+  if (requester.private && !requester.quoted) text += `\nℹ️ כתב לך בפרטי בלי ציטוט. ודא שזה על הנסיעה הזו.`;
+  text += `\n🚕 ${firstLine(job.text)}`;
+  if (requester.n === 1 && job.stopReason === "request") text += `\n\n⏸️ עצרתי את השליחה לשאר הקבוצות.`;
   const buttons = [];
-  if (!job.givenTo) buttons.push({ id: `${CMD.publishGive} ${job.id} ${requester.n}`, text: "🤝 תן לו" });
+  if (!job.doneBy) buttons.push({ id: `${CMD.publishGive} ${job.id} ${requester.n}`, text: job.givenTo ? "🤝 תן לו במקום" : "🤝 תן לו" });
+  buttons.push({ id: `${CMD.publishJob} ${job.id}`, text: "📋 ההפצה" });
   if (requester.phone) buttons.push({ text: "💬 צ'אט איתו", url: `https://wa.me/${requester.phone}` });
   return { text, buttons };
 }
 
+const firstLine = (text) => String(text || "").split("\n").map((l) => l.trim()).filter(Boolean)[0] || "";
+
 export function publishGivenCard({ job }) {
   const r = job.requesters[job.givenTo - 1];
   return {
-    text: `🤝 *שלחתי ל${r?.name || "נהג"} בפרטי* את הנסיעה${job.customerPhone ? " ואת מספר הלקוח" : ""}.`,
+    text:
+      `🤝 *שלחתי ל${r?.name || "נהג"} בפרטי* את הנסיעה${job.customerPhone ? " ואת מספר הלקוח" : ""}.\n\n` +
+      `עדכן אותי מה קרה: הוא *ביצע*, או *לא לקח* (ואז אפשר לתת לאחר או להמשיך להפיץ).`,
+    buttons: [
+      { id: `${CMD.publishDone} ${job.id} ${job.givenTo}`, text: "✅ ביצע" },
+      { id: `${CMD.publishCancelled} ${job.id} ${job.givenTo}`, text: "❌ לא לקח" },
+      { id: `${CMD.publishRemove} ${job.id}`, text: "🗑️ מחק מהקבוצות" },
+    ],
+  };
+}
+
+export function publishOutcomeCard({ job, n }) {
+  const r = job.requesters[n - 1];
+  if (r?.status === "done") {
+    return {
+      text: `✅ *${r.name} ביצע את הנסיעה.*\n\nלשלוח לו הודעת תודה${"" /* העמלה בהגדרות */}? אפשר לקבוע עמלה ופרטי תשלום ב*הגדרות הפצה*.`,
+      buttons: [
+        { id: `${CMD.publishThanks} ${job.id} ${n}`, text: "💰 שלח תודה ועמלה" },
+        { id: `${CMD.publishRemove} ${job.id}`, text: "🗑️ מחק מהקבוצות" },
+        { id: CMD.publishSettings, text: "⚙️ הגדרות הפצה" },
+      ],
+    };
+  }
+  const buttons = [{ id: `${CMD.publishJob} ${job.id}`, text: "🤝 לתת לאחר" }];
+  if (job.pending) buttons.unshift({ id: `${CMD.publishResume} ${job.id}`, text: `▶️ המשך להפיץ (${job.pending})` });
+  else buttons.unshift({ id: `${CMD.publishAgain} ${job.id}`, text: "🔁 הפץ שוב" });
+  return { text: `❌ *סימנתי ש${r?.name || "הוא"} לא לקח.*\nהנסיעה פנויה שוב.`, buttons };
+}
+
+export function publishThanksSentCard({ job, n, text }) {
+  const r = job.requesters[n - 1];
+  return { text: `💰 *נשלח ל${r?.name || "נהג"}:*\n\n${text}`, buttons: [{ id: CMD.myJobs, text: "🗂️ ההפצות שלי" }, BTN.menu] };
+}
+
+const JOB_STATE = {
+  queued: "⏳ בתור",
+  sending: "🚀 בשליחה",
+  done: "✅ נשלחה לכל הקבוצות",
+  stopped: "⏸️ נעצרה",
+  paused: "⚠️ מושהית",
+};
+
+function jobStateText(job) {
+  const done = job.requesters[job.doneBy - 1];
+  const given = job.requesters[job.givenTo - 1];
+  if (done) return `✅ ${done.name} ביצע`;
+  if (given?.status === "given") return `🤝 אצל ${given.name}`;
+  if (job.stopReason === "request" && job.state === "stopped") return "⏸️ נעצרה: מישהו ביקש";
+  if (job.stopReason === "disconnected") return "⚠️ מושהית: הוואטסאפ התנתק";
+  if (job.stopReason === "restart") return "⚠️ מושהית: השרת עלה מחדש";
+  return JOB_STATE[job.state] || job.state;
+}
+
+// כרטיס של הפצה אחת, עם כל הפעולות בתפריט
+export function publishJobCard({ job }) {
+  const total = job.groups.length;
+  const failed = job.groups.filter((g) => g.status === "failed").length;
+  let text = `📋 *הפצה ${job.id}* · ${jobStateText(job)}\n\n${job.text}\n\n`;
+  text += `📤 נשלחה ל-${job.sent} מתוך ${total} קבוצות`;
+  if (job.removed) text += ` · נמחקה מ-${job.removed}`;
+  if (failed) text += ` · ${failed} לא קיבלו`;
+  if (job.customerPhone) text += `\n📞 לקוח: ${localPhone(job.customerPhone)}`;
+  text += job.requesters.length ? `\n\n🙋 *ביקשו:*\n${job.requesters.map(requesterLine).join("\n")}` : `\n\nעוד אף אחד לא ביקש.`;
+  text += `\n\n✏️ לעריכה: *ערוך הפצה ${job.id}* ואחריו הנוסח החדש.`;
+
+  const rows = [];
+  if (job.state === "sending" || job.state === "queued") rows.push(row(`${CMD.publishStop} ${job.id}`, "⏹️ עצור", "השליחה לשאר הקבוצות נעצרת"));
+  else if (job.pending) rows.push(row(`${CMD.publishResume} ${job.id}`, "▶️ המשך לשאר", `${job.pending} קבוצות שעוד לא קיבלו`));
+  for (const r of job.requesters.slice(0, 5)) {
+    if (r.status === "given") {
+      rows.push(row(`${CMD.publishDone} ${job.id} ${r.n}`, `✅ ${r.name} ביצע`.slice(0, 24)));
+      rows.push(row(`${CMD.publishCancelled} ${job.id} ${r.n}`, `❌ ${r.name} לא לקח`.slice(0, 24)));
+    } else if (r.status === "done" && !r.thanked) {
+      rows.push(row(`${CMD.publishThanks} ${job.id} ${r.n}`, "💰 שלח תודה ועמלה", r.name));
+    } else if (!job.doneBy && r.status !== "given") {
+      rows.push(row(`${CMD.publishGive} ${job.id} ${r.n}`, `🤝 תן ל${r.name}`.slice(0, 24), r.status === "cancelled" ? "לא לקח קודם" : r.group || "בפרטי"));
+    }
+  }
+  rows.push(row(`${CMD.publishAgain} ${job.id}`, "🔁 הפץ שוב", "הודעה חדשה לכל הרשימה"));
+  if (job.sent) rows.push(row(`${CMD.publishRemove} ${job.id}`, "🗑️ מחק מהקבוצות", "ההודעה נמחקת מהקבוצות"));
+  rows.push(row(`${CMD.publishDelete} ${job.id}`, "🧹 מחק מהרשימה שלי", "לא נוגע בקבוצות"));
+  return {
+    text,
+    buttons: [{ id: CMD.myJobs, text: "🗂️ ההפצות שלי" }],
+    menu: { label: "⚙️ פעולות", sections: [{ title: "מה לעשות?", rows: rows.slice(0, 10) }] },
+  };
+}
+
+export function myJobsCard({ jobs }) {
+  if (!jobs.length) {
+    return {
+      text: "🗂️ *אין לך הפצות.*\nכתוב *הפץ* ואחריו הנסיעה.",
+      buttons: [{ id: CMD.howPublish, text: "📖 איך מפיצים" }, BTN.menu],
+    };
+  }
+  const shown = jobs.slice(0, 8);
+  return {
+    text: `🗂️ *ההפצות שלך*\n\n${shown.map((j, i) => `${i + 1}. ${firstLine(j.text)}\n    ${jobStateText(j)} · ${j.sent}/${j.groups.length} קבוצות · 🙋 ${j.requesters.length}`).join("\n")}`,
+    menu: {
+      label: "📋 פתח הפצה",
+      sections: [{ title: "בחר הפצה", rows: shown.map((j, i) => row(`${CMD.publishJob} ${j.id}`, `${i + 1}. ${firstLine(j.text)}`.slice(0, 24), jobStateText(j).slice(0, 72))) }],
+    },
     buttons: [BTN.menu],
+  };
+}
+
+export function publishEditedCard({ job, edited, tooOld }) {
+  let text = `✏️ *הנוסח עודכן.*\n\n${job.text}`;
+  if (edited) text += `\n\n✅ עודכן גם ב-${edited} קבוצות שכבר קיבלו.`;
+  if (tooOld) text += `\n⚠️ ב-${tooOld} קבוצות ההודעה ישנה מ-15 דקות, ושם וואטסאפ לא מאפשר לערוך.`;
+  if (job.pending) text += `\nהקבוצות שעוד לא קיבלו יקבלו את הנוסח החדש.`;
+  return { text, buttons: [{ id: `${CMD.publishJob} ${job.id}`, text: "📋 ההפצה" }] };
+}
+
+export function publishEditHintCard({ job }) {
+  return {
+    text: `✏️ *עריכת הפצה ${job.id}*\n\nהנוסח עכשיו:\n${job.text}\n\nשלח *ערוך הפצה ${job.id}* ואחריו הנוסח החדש (אפשר בכמה שורות). שורה *לקוח: 05...* מעדכנת את מספר הלקוח.`,
+    buttons: [{ id: `${CMD.publishJob} ${job.id}`, text: "📋 ההפצה" }],
+  };
+}
+
+export function publishRemovedCard({ job, removed, failed }) {
+  let text = removed ? `🗑️ *ההודעה נמחקה מ-${removed} קבוצות.*` : "ℹ️ לא היה מה למחוק.";
+  if (failed) text += `\n⚠️ ב-${failed} קבוצות לא הצלחתי למחוק.`;
+  return { text, buttons: [{ id: `${CMD.publishJob} ${job.id}`, text: "📋 ההפצה" }, { id: CMD.myJobs, text: "🗂️ ההפצות שלי" }] };
+}
+
+export function publishArchivedCard() {
+  return { text: "🧹 ההפצה נמחקה מהרשימה שלך.", buttons: [{ id: CMD.myJobs, text: "🗂️ ההפצות שלי" }, BTN.menu] };
+}
+
+export function publishSettingsCard({ settings, preview }) {
+  return {
+    text:
+      `⚙️ *הגדרות הפצה*\n\n` +
+      `💰 עמלה: ${settings.fee ? `${settings.fee} ₪` : "ללא"}\n` +
+      `💳 פרטי תשלום: ${settings.payInfo || "לא הוגדרו"}\n` +
+      `📝 תוספת להודעת התודה: ${settings.thanks || "אין"}\n\n` +
+      `*לשנות:*\n• *עמלה 6* (או *עמלה 0* בלי עמלה)\n• *תשלום ביט 050-1234567*\n• *נוסח תודה* ואחריו מה להוסיף\n\n` +
+      `*כך תיראה הודעת התודה:*\n${preview}`,
+    buttons: [{ id: CMD.myJobs, text: "🗂️ ההפצות שלי" }, BTN.menu],
   };
 }
 
@@ -658,15 +827,18 @@ export function publishFinishedCard({ job }) {
   else if (job.stopReason === "request") text = `⏸️ *ההפצה נעצרה כי מישהו ביקש.* נשלחה ל-${job.sent} מתוך ${total} קבוצות.`;
   else if (job.stopReason === "given") text = `🤝 *נתת את הנסיעה.* נשלחה ל-${job.sent} מתוך ${total} קבוצות.`;
   else if (job.stopReason === "disconnected") text = `⚠️ *הוואטסאפ שלך התנתק באמצע ההפצה.* נשלחה ל-${job.sent} מתוך ${total} קבוצות.`;
+  else if (job.stopReason === "restart") text = `⚠️ *ההפצה הושהתה כי השרת עלה מחדש.* נשלחה ל-${job.sent} מתוך ${total} קבוצות.`;
   else text = `⏹️ *עצרת את ההפצה.* נשלחה ל-${job.sent} מתוך ${total} קבוצות.`;
   if (failed) text += `\n🚫 ${failed} קבוצות לא קיבלו (אולי רק מנהלים כותבים בהן).`;
   text += requests ? `\n🙋 ביקשו: ${requests}` : `\nעוד אף אחד לא ביקש.`;
-  if (job.state !== "done" && job.pending) text += `\n\nמבקשים חדשים ימשיכו להגיע לכאן.`;
+  if (job.state !== "done" && job.pending) text += `\n\nמבקשים חדשים ימשיכו להגיע לכאן. אפשר להמשיך את השליחה מתי שתרצה.`;
   const buttons = [];
-  if (job.state !== "done" && job.pending && !job.givenTo) {
+  // המשך תמיד אפשרי כשנשארו קבוצות, גם אחרי עצירה ידנית וגם אחרי שנתת למישהו
+  if (job.state !== "done" && job.pending && !job.doneBy) {
     buttons.push({ id: `${CMD.publishResume} ${job.id}`, text: `▶️ המשך לשאר (${job.pending})` });
   }
-  buttons.push(BTN.menu);
+  buttons.push({ id: `${CMD.publishJob} ${job.id}`, text: "📋 ההפצה" });
+  if (buttons.length < 3) buttons.push({ id: CMD.myJobs, text: "🗂️ ההפצות שלי" });
   return { text, buttons };
 }
 

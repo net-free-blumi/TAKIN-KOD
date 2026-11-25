@@ -85,6 +85,8 @@ export default function App() {
   const [telegramModalOpen, setTelegramModalOpen] = useState(false);
   const [telegramTargetPhone, setTelegramTargetPhone] = useState<string>('');
   const [broadcastModalOpen, setBroadcastModalOpen] = useState(false);
+  // 'app' = נפתח עם הודעה מוכנה וקישור קבוע להורדת אפליקציית הנהגים
+  const [broadcastPreset, setBroadcastPreset] = useState<'app' | null>(null);
   const [analyticsModalOpen, setAnalyticsModalOpen] = useState(false);
   const [bugModalOpen, setBugModalOpen] = useState(false);
   const [radarModalOpen, setRadarModalOpen] = useState(false);
@@ -414,7 +416,8 @@ export default function App() {
           setTelegramTargetPhone(selectedDriverPhone || approvedUsersList[0]?.phone || '');
           setTelegramModalOpen(true);
         }}
-        onOpenBroadcastModal={() => setBroadcastModalOpen(true)}
+        onOpenBroadcastModal={() => { setBroadcastPreset(null); setBroadcastModalOpen(true); }}
+        onOpenAppLinkBroadcast={() => { setBroadcastPreset('app'); setBroadcastModalOpen(true); }}
         onOpenAnalyticsModal={() => setAnalyticsModalOpen(true)}
         onOpenBugModal={() => setBugModalOpen(true)}
         onOpenLegalModal={handleOpenLegalTab}
@@ -622,6 +625,7 @@ export default function App() {
       <BroadcastModal
         isOpen={broadcastModalOpen}
         onClose={() => setBroadcastModalOpen(false)}
+        preset={broadcastPreset}
         approvedUsers={approvedUsersList}
         activeSessionsCount={status?.stats?.totalConnectedDrivers ?? approvedUsersList.filter(u => u.connectionStatus === 'connected').length}
         onSendBroadcast={handleSendBroadcast}

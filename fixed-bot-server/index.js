@@ -123,7 +123,7 @@ import { describeRoute } from "./driver-app-route.js";
 import { CONFIRM_RE } from "./driver-app-secure.js";
 import { createDriverApp } from "./driver-app.js";
 import { normalizeMobile } from "./driver-app-auth.js";
-import { createRidePublisher, PublishError, splitCustomerPhone, LIMITS as PUBLISH_LIMITS } from "./ride-publisher.js";
+import { createRidePublisher, PublishError, splitCustomerPhone, quotedIdOf, LIMITS as PUBLISH_LIMITS } from "./ride-publisher.js";
 
 const DEBUG_FILTER = true;
 const DEDUPE_MINUTES = 15;
@@ -1584,6 +1584,14 @@ async function handleIncomingMessage(sock, upsert, sessionContext) {
 
     const text = extractMessageText(m);
     if (!text) continue;
+    // הודעה פרטית לנהג על נסיעה שהפיץ ("השב בפרטי", או "ת" בפרטי): מגיעה אליו כמבקש
+    if (!isGroup && !sessionContext.isMainBot && sessionContext.driverPhone && !m.key.fromMe) {
+      try {
+        await notePrivatePublishReply(sock, m, jid, text, cleanPhone(sessionContext.driverPhone));
+      } catch (err) {
+        recordError("publish_private", err);
+      }
+    }
     // צ'אט AI של המנהל: זיהוי לפי jid מדויק בלבד, לפני כל מיפוי LID. העבודה רצה ברקע
     if (!isGroup && sessionContext.isMainBot && !m.key.fromMe) {
       if (adminAi.maybeHandle({ key: m.key, text, send: (t) => (getMainBotSock() || sock).sendMessage(jid, { text: t }) })) continue;
@@ -2472,6 +2480,38 @@ setDriverLabelHandler(async (driverPhone, kind, data) => {
   }
 });
 
+// הודעה פרטית בוואטסאפ של הנהג: אולי מבקש לנסיעה שהפיץ. ההחלטה ב-publisher.onPrivateMessage
+async function notePrivatePublishReply(sock, m, jid, text, owner) {
+  if (!jid.endsWith("@s.whatsapp.net") && !jid.endsWith("@lid")) return;
+  // בדיקה זולה לפני כל מיפוי מספר: יש ציטוט, או הודעה קצרה
+  if (!quotedIdOf(m.message) && String(text).trim().length > 60) return;
+  const bot = cleanPhone(loadUsersData().botPhone || getMainBotStatus().phone);
+  let senderPhone = "";
+  for (const candidate of [jid, m.key.remoteJidAlt, m.key.senderPn, m.key.senderPN]) {
+    if (String(candidate || "").endsWith("@s.whatsapp.net")) {
+      senderPhone = cleanPhone(candidate);
+      break;
+    }
+  }
+  if (!senderPhone && jid.endsWith("@lid")) {
+    try {
+      senderPhone = cleanPhone(await sock.signalRepository?.lidMapping?.getPNForLID(jid)) || "";
+    } catch (e) {}
+  }
+  if (senderPhone && (senderPhone === bot || senderPhone === owner || isLid(senderPhone))) {
+    if (isLid(senderPhone)) senderPhone = "";
+    else return;
+  }
+  publisher.onPrivateMessage(owner, {
+    message: m.message,
+    msgKey: m.key,
+    chatJid: jid,
+    senderPhone,
+    senderName: m.pushName || "",
+    text,
+  });
+}
+
 async function sendToDriver(phone, card, quoted = null) {
   const mainSock = getMainBotSock();
   if (!mainSock || !getMainBotStatus().connected) return null;
@@ -2508,6 +2548,22 @@ async function handlePublishCommand(sock, jid, rawPhone, text, norm) {
   const phone = cleanPhone(rawPhone);
   const reply = (card) => sendCard(sock, jid, card);
   try {
+    let m;
+    // לפני "הפץ <נסיעה>": "הפץ שוב 12345" היא פקודה ולא נסיעה
+    if ((m = norm.match(/^הפץ שוב (\d{4,})$/))) {
+      await reply(ui.publishStartedCard({ job: publisher.republish(phone, m[1]) }));
+      return true;
+    }
+    // עריכה: "ערוך הפצה 12345" ואחריו הנוסח החדש (אפשר בכמה שורות)
+    const editMatch = String(text || "").match(/^\s*ערוך הפצה\s+(\d{4,})\s*([\s\S]*)$/);
+    if (editMatch) {
+      if (editMatch[2].trim().length < 3) {
+        await reply(ui.publishEditHintCard({ job: publisher.job(phone, editMatch[1]) }));
+        return true;
+      }
+      await reply(ui.publishEditedCard(await publisher.edit(phone, editMatch[1], { text: editMatch[2] })));
+      return true;
+    }
     const draft = String(text || "").match(/^\s*(?:הפץ|פרסם)[\s:]+([\s\S]{3,})$/);
     if (draft) {
       const { text: body, customerPhone } = splitCustomerPhone(draft[1]);
@@ -2516,7 +2572,6 @@ async function handlePublishCommand(sock, jid, rawPhone, text, norm) {
       await reply(ui.publishPreviewCard({ text: body, customerPhone, lists: publisher.getLists(phone) }));
       return true;
     }
-    let m;
     if ((m = norm.match(/^שלח הפצה ([123])$/))) {
       const pending = pendingPublish.get(phone);
       if (!pending || Date.now() - pending.at > PUBLISH_DRAFT_MS) {
@@ -2542,6 +2597,58 @@ async function handlePublishCommand(sock, jid, rawPhone, text, norm) {
     }
     if ((m = norm.match(/^תן נסיעה (\d+) (\d+)$/))) {
       await reply(ui.publishGivenCard({ job: await publisher.give(phone, m[1], m[2]) }));
+      return true;
+    }
+    if ((m = norm.match(/^(ביצע|לא לקח) (\d{4,}) (\d+)$/))) {
+      const n = Number(m[3]);
+      const job = publisher.setOutcome(phone, m[2], n, m[1] === "ביצע" ? "done" : "cancelled");
+      await reply(ui.publishOutcomeCard({ job, n }));
+      return true;
+    }
+    if ((m = norm.match(/^שלח תודה (\d{4,}) (\d+)$/))) {
+      const n = Number(m[2]);
+      const text = publisher.thanksText(phone, m[1], n);
+      const job = await publisher.sendThanks(phone, m[1], n);
+      await reply(ui.publishThanksSentCard({ job, n, text }));
+      return true;
+    }
+    if ((m = norm.match(/^הפצה (\d{4,})$/))) {
+      await reply(ui.publishJobCard({ job: publisher.job(phone, m[1]) }));
+      return true;
+    }
+    if (norm === "ההפצות שלי" || norm === "הפצות") {
+      await reply(ui.myJobsCard({ jobs: publisher.jobs(phone) }));
+      return true;
+    }
+    if ((m = norm.match(/^מחק מהקבוצות (\d{4,})$/))) {
+      await reply(ui.publishRemovedCard(await publisher.removeFromGroups(phone, m[1])));
+      return true;
+    }
+    if ((m = norm.match(/^מחק הפצה (\d{4,})$/))) {
+      publisher.archive(phone, m[1]);
+      await reply(ui.publishArchivedCard());
+      return true;
+    }
+    // הגדרות העמלה והודעת התודה
+    const settingsCard = () => ui.publishSettingsCard({ settings: publisher.getSettings(phone), preview: publisher.previewThanks(phone) });
+    if (norm === "הגדרות הפצה" || norm === "עמלה") {
+      await reply(settingsCard());
+      return true;
+    }
+    if ((m = norm.match(/^עמלה (\d{1,3})$/))) {
+      publisher.setSettings(phone, { fee: Number(m[1]) });
+      await reply(settingsCard());
+      return true;
+    }
+    const raw = String(text || "").trim();
+    if ((m = raw.match(/^תשלום[\s:]+([\s\S]{2,120})$/))) {
+      publisher.setSettings(phone, { payInfo: m[1] });
+      await reply(settingsCard());
+      return true;
+    }
+    if ((m = raw.match(/^נוסח תודה[\s:]*([\s\S]{0,200})$/))) {
+      publisher.setSettings(phone, { thanks: m[1] });
+      await reply(settingsCard());
       return true;
     }
     if ((m = norm.match(/^(הוסף ל|הסר מ)הפצה(?: ([בג]))? ([\d\s]+)$/))) {

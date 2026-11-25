@@ -452,3 +452,15 @@ button.sticky { position: sticky; bottom: 8px; }
 .quick-replies { flex: none; display: flex; gap: 6px; padding: 6px 8px 0; overflow-x: auto; background: var(--wall); }
 .quick-replies:empty, .quick-replies[hidden] { display: none; }
 .quick-replies button.chip { flex: none; min-height: 36px; padding: 4px 12px; border-radius: 18px; white-space: nowrap; font-size: .9rem; }
+.req-state { padding: 1px 8px; border-radius: 8px; background: var(--bg); font-size: .82rem; font-weight: bold; }
+.req-state.done { color: var(--ok); }
+.req-state.cancelled { color: var(--bad); }
+.requester.cancelled { opacity: .75; }
+.requester.done { background: var(--ok-soft); }
+.thanks-preview { padding: 10px 12px; border-radius: 12px; background: var(--soft); font-size: 1rem; }
+#publish-edit {
+  width: 100%; min-height: 110px; max-height: 240px; margin: 8px 0; padding: 12px 14px;
+  border: 1px solid var(--line); border-radius: 14px; line-height: 1.5;
+}
+.sheet label { display: block; margin-top: 10px; margin-bottom: 4px; }
+.sheet input { margin-bottom: 4px; }

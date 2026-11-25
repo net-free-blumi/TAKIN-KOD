@@ -1066,6 +1066,8 @@
       const km = native.distance(ride.pickup.lat, ride.pickup.lng);
       return km >= 0 ? etaMinutes(km) : null;
     },
+    // צ'אט באפליקציה עם מי שביקש נסיעה שהפצת (לא בוואטסאפ החיצוני)
+    openPerson: (jobId, n) => chats.openPerson(jobId, n),
     isTab: (tab) => state.tab === tab && !state.hidden && Boolean(root.querySelector('.shell')),
     // מסך של לשונית מתעדכן רק כשהיא פתוחה ולא באמצע הקלדה
     refreshTab(tab) {

@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { 
   X, 
   Send, 
@@ -22,6 +22,8 @@ import { ApprovedUser } from '../types.ts';
 interface BroadcastModalProps {
   isOpen: boolean;
   onClose: () => void;
+  // 'app': ההודעה עם הקישור להורדת האפליקציה, לכל הנהגים
+  preset?: 'app' | null;
   approvedUsers: ApprovedUser[];
   activeSessionsCount: number;
   onSendBroadcast: (message: string, targetType: 'all' | 'connected') => Promise<{
@@ -32,7 +34,18 @@ interface BroadcastModalProps {
   }>;
 }
 
+// הקישור הקבוע לדף ההורדה. תמיד מוריד את הגרסה האחרונה
+const appLinkMessage = () =>
+  `📲 *אפליקציית הנהגים - הגרסה האחרונה*\n\n` +
+  `נסיעות מהקבוצות שלך עם התראה והקראה, מרחק וזמן הגעה, צ'אט עם הסדרן, ו*הפצת נסיעות* שלך לקבוצות.\n\n` +
+  `⬇️ *להורדה:*\n${typeof window !== 'undefined' ? window.location.origin : 'https://nsiot.vercel.app'}/app\n\n` +
+  `נכנסים עם מספר הטלפון ועם הקוד שהבוט שולח כאן. כבר מותקנת? מתקינים מעליה, שום דבר לא נמחק.`;
+
 const PRESET_TEMPLATES = [
+  {
+    title: '📲 קישור לאפליקציה',
+    text: appLinkMessage(),
+  },
   {
     title: '📢 עדכון גרסה ושדרוג',
     text: `🚕 *שלום לכל נהגי נסיעות בוט!*\n\nביצענו שדרוג מקיף בשרת הבוט:\n• סינון משופר ומדויק יותר של נסיעות\n• הוספת עשרות מוקדים ושכונות חדשות\n• מניעה מוחלטת של הודעות לא רלוונטיות\n\nלהפעלת חיפוש חדש: שלח למשל *פנוי שמש* או *שמש צמצם*.\nנסיעה בטוחה ומפרנסת! 🍀`
@@ -56,7 +69,8 @@ export const BroadcastModal: React.FC<BroadcastModalProps> = ({
   onClose,
   approvedUsers,
   activeSessionsCount,
-  onSendBroadcast
+  onSendBroadcast,
+  preset = null
 }) => {
   const [message, setMessage] = useState('');
   const [targetType, setTargetType] = useState<'all' | 'connected'>('connected');
@@ -68,6 +82,15 @@ export const BroadcastModal: React.FC<BroadcastModalProps> = ({
     error?: string;
   } | null>(null);
   const [copied, setCopied] = useState(false);
+
+  // נפתח מכפתור "קישור לאפליקציה": ההודעה מוכנה ונשלחת לכל הנהגים המאושרים
+  useEffect(() => {
+    if (isOpen && preset === 'app') {
+      setMessage(appLinkMessage());
+      setTargetType('all');
+      setSendResult(null);
+    }
+  }, [isOpen, preset]);
 
   // חישוב כמות נמענים צפויה
   const recipientCount = useMemo(() => {

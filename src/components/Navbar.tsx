@@ -46,6 +46,7 @@ interface NavbarProps {
   onOpenUsersModal: () => void;
   onOpenTelegramModal?: () => void;
   onOpenBroadcastModal?: () => void;
+  onOpenAppLinkBroadcast?: () => void;
   onOpenBugModal?: () => void;
   onOpenLegalModal?: (tab?: 'about' | 'accessibility' | 'terms' | 'privacy') => void;
   onLogout: () => void;
@@ -74,6 +75,7 @@ export const Navbar: React.FC<NavbarProps> = ({
   onOpenUsersModal,
   onOpenTelegramModal,
   onOpenBroadcastModal,
+  onOpenAppLinkBroadcast,
   onOpenBugModal,
   onOpenLegalModal,
   onLogout,
@@ -220,6 +222,18 @@ export const Navbar: React.FC<NavbarProps> = ({
             <Megaphone className="w-3.5 h-3.5 text-emerald-400" />
             <span className="hidden sm:inline">שידור לנהגים</span>
           </button>
+
+          {/* קישור קבוע להורדת אפליקציית הנהגים, לשליחה לכל הנהגים */}
+          {onOpenAppLinkBroadcast && (
+            <button
+              onClick={onOpenAppLinkBroadcast}
+              className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-semibold bg-amber-950/40 hover:bg-amber-900/50 border border-amber-500/40 text-amber-300 hover:text-amber-200 transition-colors cursor-pointer"
+              title="שליחת קישור להורדת אפליקציית הנהגים לכל הנהגים"
+            >
+              <span aria-hidden="true">📲</span>
+              <span className="hidden sm:inline">קישור לאפליקציה</span>
+            </button>
+          )}
 
           {/* Telegram Connection Button */}
           {onOpenTelegramModal && (

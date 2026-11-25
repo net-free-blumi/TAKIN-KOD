@@ -9,6 +9,7 @@ window.createPublish = function createPublish(ctx) {
     done: 'נשלחה לכל הקבוצות',
     stopped: 'נעצרה',
     paused: 'מושהית',
+    queued: 'בתור',
   };
   const STOP_LABEL = {
     request: 'נעצרה: מישהו ביקש',
@@ -16,6 +17,7 @@ window.createPublish = function createPublish(ctx) {
     given: 'נתת את הנסיעה',
     disconnected: 'הוואטסאפ התנתק',
     error: 'נעצרה בגלל תקלה',
+    restart: 'מושהית: השרת עלה מחדש',
   };
 
   let data = null;
@@ -33,7 +35,7 @@ window.createPublish = function createPublish(ctx) {
     const d = String(p || '').replace(/\D/g, '');
     return d.startsWith('972') ? `0${d.slice(3)}` : d;
   };
-  const sending = () => Boolean(data?.jobs?.some((j) => j.state === 'sending'));
+  const sending = () => Boolean(data?.jobs?.some((j) => j.state === 'sending' || j.state === 'queued'));
   const recent = () => Boolean(data?.jobs?.some((j) => Date.now() - j.createdAt < 30 * 60 * 1000));
 
   async function load() {
@@ -113,56 +115,131 @@ window.createPublish = function createPublish(ctx) {
       h('p', { className: 'muted' }, 'כשמישהו עונה על הנסיעה בציטוט באחת הקבוצות, השליחה לשאר נעצרת והוא מופיע כאן.'));
   }
 
+  const REQ_STATUS = { given: '🤝 קיבל ממך', done: '✅ ביצע', cancelled: '❌ לא לקח' };
+
+  function confirmSheet(title, note, yes, action) {
+    sheet(
+      h('h2', null, title),
+      note ? h('p', { className: 'muted' }, note) : null,
+      button(yes, async () => {
+        await action();
+        closeSheet();
+      }, 'primary wide'),
+      button('ביטול', closeSheet, 'wide'));
+  }
+
   function requesterRow(job, r) {
     const tools = [];
-    if (!job.givenTo) {
-      tools.push(button('🤝 תן לו', () => {
+    const free = !job.doneBy;
+    if (free && (r.status === '' || r.status === 'cancelled')) {
+      tools.push(button(job.givenTo ? '🤝 תן לו במקום' : '🤝 תן לו', () => confirmSheet(
+        `לתת את הנסיעה ל${r.name}?`,
+        (job.customerPhone ? 'הוא יקבל ממך בפרטי את פרטי הנסיעה ואת מספר הלקוח.' : 'הוא יקבל ממך בפרטי את פרטי הנסיעה.') +
+          (job.givenTo ? ' מי שקיבל קודם יסומן "לא לקח".' : ''),
+        'כן, לתת',
+        () => act('/publish/give', { id: job.id, n: r.n }, `נשלח ל${r.name}`)), 'primary'));
+    }
+    if (r.status === 'given') {
+      tools.push(button('✅ ביצע', () => act('/publish/outcome', { id: job.id, n: r.n, status: 'done' }, `${r.name} ביצע`), 'primary'));
+      tools.push(button('❌ לא לקח', () => act('/publish/outcome', { id: job.id, n: r.n, status: 'cancelled' }, 'הנסיעה פנויה שוב')));
+    }
+    if (r.status === 'done' && !r.thanked) {
+      const fee = data.settings?.fee;
+      tools.push(button(fee ? `💰 תודה ועמלה ${fee} ₪` : '💰 שלח תודה', () => {
         sheet(
-          h('h2', null, `לתת את הנסיעה ל${r.name}?`),
-          h('p', { className: 'muted' }, job.customerPhone
-            ? 'הוא יקבל ממך בפרטי את פרטי הנסיעה ואת מספר הלקוח.'
-            : 'הוא יקבל ממך בפרטי את פרטי הנסיעה.'),
-          button('כן, לתת', async () => {
-            await act('/publish/give', { id: job.id, n: r.n }, `נשלח ל${r.name}`);
+          h('h2', null, `לשלוח ל${r.name}?`),
+          h('p', { className: 'ride-text thanks-preview' }, (data.thanksPreview || '').replace('יוסי', r.name).replace('שמש ים 180', job.text.split('\n')[0])),
+          fee ? null : h('p', { className: 'muted' }, 'אפשר לקבוע עמלה ופרטי תשלום למטה, ב"תודה ועמלה".'),
+          button('שלח', async () => {
+            await act('/publish/thanks', { id: job.id, n: r.n }, 'ההודעה נשלחה');
             closeSheet();
           }, 'primary wide'),
           button('ביטול', closeSheet, 'wide'));
       }, 'primary'));
     }
-    if (r.phone) {
-      tools.push(button(icon('chat'), () => native.whatsapp(r.phone), 'more', `צ'אט עם ${r.name}`));
-      tools.push(button(icon('phone'), () => native.dial(local(r.phone)), 'more', `חייג ל${r.name}`));
-    }
-    return h('div', { className: `requester${r.given ? ' given' : ''}` },
+    if (r.canChat) tools.push(button(icon('chat'), () => ctx.openPerson(job.id, r.n), 'more', `צ'אט עם ${r.name}`));
+    if (r.phone) tools.push(button(icon('phone'), () => native.dial(local(r.phone)), 'more', `חייג ל${r.name}`));
+    const where = r.private ? (r.group ? `בפרטי, על ${r.group}` : 'בפרטי') : r.group;
+    return h('div', { className: `requester ${r.status || 'new'}` },
       h('div', { className: 'requester-head' },
-        h('strong', null, r.given ? `✅ ${r.name}` : r.name),
-        r.phone ? h('span', { className: 'muted' }, local(r.phone)) : null),
-      h('div', { className: 'muted' }, [r.group, ctx.clock(r.at)].filter(Boolean).join(' · ')),
+        h('strong', null, r.name),
+        r.status ? h('span', { className: `req-state ${r.status}` }, REQ_STATUS[r.status] + (r.thanked ? ' · 💰' : '')) : null),
+      h('div', { className: 'muted' }, [r.phone ? local(r.phone) : '', where, ctx.clock(r.at)].filter(Boolean).join(' · ')),
       r.text ? h('div', { className: 'requester-text' }, `"${r.text}"`) : null,
+      r.private && !r.quoted ? h('div', { className: 'muted' }, 'כתב בפרטי בלי ציטוט. ודא שזה על הנסיעה הזו.') : null,
       tools.length ? h('div', { className: 'actions' }, tools) : null);
+  }
+
+  function jobLabel(job) {
+    const done = job.requesters[job.doneBy - 1];
+    const given = job.requesters.find((r) => r.status === 'given');
+    if (done) return { text: `✅ ${done.name} ביצע`, cls: 'done' };
+    if (given) return { text: `🤝 אצל ${given.name}`, cls: 'done' };
+    if (job.state === 'queued') return { text: '⏳ בתור', cls: '' };
+    if (job.state === 'sending') return { text: '🚀 בשליחה', cls: '' };
+    if (job.state === 'done') return { text: 'נשלחה לכל הקבוצות', cls: 'done' };
+    return { text: STOP_LABEL[job.stopReason] || STATE_LABEL[job.state] || job.state, cls: '' };
+  }
+
+  function editSheet(job) {
+    const text = h('textarea', { id: 'publish-edit', rows: 5, maxLength: 1000, value: job.text });
+    const customer = h('input', { type: 'tel', inputMode: 'tel', value: job.customerPhone || '', placeholder: 'טלפון הלקוח (לא חובה)' });
+    customer.setAttribute('aria-label', 'טלפון הלקוח');
+    sheet(
+      h('h2', null, 'עריכת ההפצה'),
+      text,
+      customer,
+      h('p', { className: 'muted' }, 'הודעות שנשלחו ב-15 הדקות האחרונות מתעדכנות גם בקבוצות. קבוצות שעוד לא קיבלו יקבלו את הנוסח החדש.'),
+      button('שמור', async () => {
+        const result = await api('POST', '/publish/edit', { id: job.id, text: text.value, customerPhone: customer.value });
+        closeSheet();
+        toast(result.edited ? `עודכן גם ב-${result.edited} קבוצות` : 'נשמר');
+        await load();
+      }, 'primary wide'),
+      button('ביטול', closeSheet, 'wide'));
+  }
+
+  function moreSheet(job) {
+    sheet(
+      h('h2', null, 'פעולות'),
+      button('✏️ עריכת הנוסח ומספר הלקוח', () => editSheet(job), 'wide'),
+      button('🔁 הפץ שוב לכל הרשימה', () => confirmSheet('להפיץ שוב?', 'הודעה חדשה תצא לכל הקבוצות ברשימה.', 'כן, להפיץ',
+        () => act('/publish/republish', { id: job.id }, 'ההפצה יצאה שוב')), 'wide'),
+      job.sent ? button('🗑️ מחק מהקבוצות', () => confirmSheet('למחוק את ההודעה מהקבוצות?', 'ההודעה תימחק מכל הקבוצות שקיבלו אותה, והשליחה לשאר תיעצר.', 'כן, למחוק',
+        async () => {
+          const result = await api('POST', '/publish/remove', { id: job.id });
+          toast(result.removed ? `נמחקה מ-${result.removed} קבוצות` : 'לא היה מה למחוק');
+          await load();
+        }), 'wide danger') : null,
+      button('🧹 מחק מהרשימה שלי', () => confirmSheet('למחוק את ההפצה מהרשימה?', 'ההודעות בקבוצות נשארות. מבקשים חדשים כבר לא יגיעו.', 'כן, למחוק',
+        () => act('/publish/delete', { id: job.id }, 'נמחקה')), 'wide danger'),
+      button('סגור', closeSheet, 'wide'));
   }
 
   function jobCard(job) {
     const total = job.groups.length;
     const failed = job.groups.filter((g) => g.status === 'failed').length;
-    const given = job.givenTo ? job.requesters.find((r) => r.n === job.givenTo) : null;
-    const label = given ? `נתת ל${given.name}`
-      : job.state === 'stopped' || job.state === 'paused' ? STOP_LABEL[job.stopReason] || STATE_LABEL[job.state] : STATE_LABEL[job.state];
+    const label = jobLabel(job);
     const bar = h('div', { className: 'progress' }, h('span', { style: `width:${Math.round((job.sent / Math.max(1, total)) * 100)}%` }));
     const tools = [];
-    if (job.state === 'sending') tools.push(button('⏹️ עצור', () => act('/publish/stop', { id: job.id }, 'ההפצה נעצרה')));
-    if (job.state !== 'sending' && job.pending && !job.givenTo && Date.now() - job.createdAt < 3 * 60 * 60 * 1000) {
+    if (job.state === 'sending' || job.state === 'queued') {
+      tools.push(button('⏹️ עצור', () => act('/publish/stop', { id: job.id }, 'ההפצה נעצרה')));
+    } else if (job.pending && !job.doneBy && Date.now() - job.createdAt < 3 * 60 * 60 * 1000) {
       tools.push(button(`▶️ המשך לשאר (${job.pending})`, () => act('/publish/continue', { id: job.id }, 'ממשיך לשאר הקבוצות'), 'primary'));
     }
+    tools.push(button(icon('more'), () => moreSheet(job), 'more', 'פעולות'));
+    const info = [`נשלחה ל-${job.sent} מתוך ${total}`];
+    if (job.removed) info.push(`נמחקה מ-${job.removed}`);
+    if (failed) info.push(`${failed} לא קיבלו`);
+    if (job.customerPhone) info.push(`לקוח ${job.customerPhone}`);
     return h('div', { className: `ride publish-job ${job.state}` },
       h('div', { className: 'publish-head' },
-        h('span', { className: `state ${job.state === 'done' || job.givenTo ? 'done' : ''}` }, label),
-        h('span', { className: 'muted' }, ctx.clock(job.createdAt))),
+        h('span', { className: `state ${label.cls}` }, label.text),
+        h('span', { className: 'muted' }, `${job.listName} · ${ctx.clock(job.createdAt)}`)),
       h('div', { className: 'ride-text clamp' }, job.text),
       bar,
-      h('div', { className: 'muted' },
-        `נשלחה ל-${job.sent} מתוך ${total} קבוצות` + (failed ? ` · ${failed} לא קיבלו` : '') + (job.customerPhone ? ` · לקוח ${job.customerPhone}` : '')),
-      tools.length ? h('div', { className: 'actions' }, tools) : null,
+      h('div', { className: 'muted' }, info.join(' · ')),
+      h('div', { className: 'actions' }, tools),
       job.requesters.length
         ? h('div', { className: 'requesters' }, h('h3', null, `🙋 ביקשו (${job.requesters.length})`), job.requesters.map((r) => requesterRow(job, r)))
         : job.state === 'done' || job.state === 'sending' ? h('p', { className: 'muted' }, 'עוד אף אחד לא ביקש.') : null);
@@ -181,14 +258,47 @@ window.createPublish = function createPublish(ctx) {
       h('p', { className: 'muted' }, `עד ${data.limits?.maxGroups || 25} קבוצות ברשימה ועד ${data.limits?.perHour || 6} הפצות בשעה, כדי שוואטסאפ לא יחסום את המספר שלך.`));
   }
 
+  // הודעת תודה ועמלה למי שביצע נסיעה שנתת
+  function settingsSection() {
+    const s = data.settings || { fee: 0, payInfo: '', thanks: '' };
+    const edit = () => {
+      const fee = h('input', { type: 'number', inputMode: 'numeric', className: 'number', value: s.fee || '', placeholder: '0 = בלי עמלה' });
+      fee.setAttribute('aria-label', 'עמלה בשקלים');
+      const pay = h('input', { value: s.payInfo, maxLength: 120, placeholder: 'לדוגמה: ביט 050-1234567' });
+      pay.setAttribute('aria-label', 'פרטי תשלום');
+      const extra = h('input', { value: s.thanks, maxLength: 200, placeholder: 'משפט נוסף (לא חובה)' });
+      extra.setAttribute('aria-label', 'תוספת להודעה');
+      sheet(
+        h('h2', null, 'תודה ועמלה'),
+        h('label', { className: 'muted' }, 'עמלה (₪)'), fee,
+        h('label', { className: 'muted' }, 'פרטי תשלום'), pay,
+        h('label', { className: 'muted' }, 'תוספת להודעה'), extra,
+        button('שמור', async () => {
+          const result = await api('POST', '/publish/settings', { fee: Number(fee.value) || 0, payInfo: pay.value, thanks: extra.value });
+          data.settings = result.settings;
+          data.thanksPreview = result.thanksPreview;
+          closeSheet();
+          toast('נשמר');
+          ctx.refreshTab('publish');
+        }, 'primary wide'),
+        button('ביטול', closeSheet, 'wide'));
+    };
+    return h('section', { className: 'section' },
+      h('h2', null, 'תודה ועמלה'),
+      h('p', { className: 'muted' }, 'אחרי שמסמנים "ביצע", כפתור אחד שולח לו מהוואטסאפ שלך הודעת תודה מסודרת, עם העמלה ופרטי התשלום.'),
+      button([h('div', null, h('strong', null, s.fee ? `עמלה ${s.fee} ₪` : 'בלי עמלה'), h('span', null, s.payInfo || 'אין פרטי תשלום')), icon('edit')], edit, 'field'),
+      h('details', null, h('summary', null, 'איך ההודעה נראית'), h('p', { className: 'ride-text thanks-preview' }, data.thanksPreview || '')));
+  }
+
   function mainScreen() {
     if (error && !data) return [h('p', { className: 'banner' }, error), button('נסה שוב', load, 'wide')];
     if (!data) return [h('p', { className: 'muted' }, 'טוען...')];
     return [
       data.connected ? null : h('p', { className: 'banner' }, 'הוואטסאפ שלך לא מחובר, ולכן אי אפשר להפיץ. חבר אותו דרך הבוט ("חבר אותי").'),
-      data.jobs.length ? h('section', { className: 'section' }, h('h2', null, 'ההפצות שלי'), data.jobs.slice(0, 5).map(jobCard)) : null,
+      data.jobs.length ? h('section', { className: 'section' }, h('h2', null, 'ההפצות שלי'), data.jobs.slice(0, 8).map(jobCard)) : null,
       composer(),
       listsSection(),
+      settingsSection(),
     ];
   }
 
