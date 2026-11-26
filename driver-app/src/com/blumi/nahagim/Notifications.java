@@ -14,8 +14,11 @@ final class Notifications {
     private static final String RIDES = "rides";
     private static final String RIDES_SPOKEN = "rides_spoken";
     private static final String RIDES_QUIET = "rides_quiet";
+    private static final String RIDES_SILENT = "rides_silent";
+    static final String ACTION_SOUND = "com.blumi.nahagim.SOUND";
     private static final android.os.Handler MAIN = new android.os.Handler(android.os.Looper.getMainLooper());
-    private static final String STATUS = "status";
+    private static final String OLD_STATUS = "status";
+    private static final String STATUS = "status_quiet";
     private static final String CHATS = "chats";
     private static final int CHAT_ID = 20;
     static final String EXTRA_RIDE = "ride";
@@ -47,6 +50,13 @@ final class Notifications {
         chats.setLockscreenVisibility(Notification.VISIBILITY_PRIVATE);
         manager.createNotificationChannel(chats);
 
+        // "🔇 השתק": the ride still pops up, without sound or vibration
+        NotificationChannel silent = new NotificationChannel(RIDES_SILENT, "נסיעות בלי קול", NotificationManager.IMPORTANCE_HIGH);
+        silent.setSound(null, null);
+        silent.enableVibration(false);
+        silent.setLockscreenVisibility(Notification.VISIBILITY_PRIVATE);
+        manager.createNotificationChannel(silent);
+
         // Same ride after its pop-up time: stays in the list without popping up again
         NotificationChannel quiet = new NotificationChannel(RIDES_QUIET, "נסיעות ברשימה", NotificationManager.IMPORTANCE_DEFAULT);
         quiet.setSound(null, null);
@@ -54,8 +64,14 @@ final class Notifications {
         quiet.setLockscreenVisibility(Notification.VISIBILITY_PRIVATE);
         manager.createNotificationChannel(quiet);
 
-        NotificationChannel status = new NotificationChannel(STATUS, "חיבור להתראות", NotificationManager.IMPORTANCE_LOW);
+        // The "connected" line must never pop up or make a sound. Some phones raised the old channel,
+        // and a channel's importance can't be lowered after it exists, so it moves to a new one
+        manager.deleteNotificationChannel(OLD_STATUS);
+        NotificationChannel status = new NotificationChannel(STATUS, "חיבור להתראות (שקט)", NotificationManager.IMPORTANCE_MIN);
         status.setShowBadge(false);
+        status.setSound(null, null);
+        status.enableVibration(false);
+        status.enableLights(false);
         manager.createNotificationChannel(status);
     }
 
@@ -80,12 +96,15 @@ final class Notifications {
     }
 
     static Notification status(Context context, boolean online) {
-        return base(context, STATUS,
+        Notification.Builder builder = base(context, STATUS,
                 online ? "מחובר, ממתין לנסיעות" : "מתחבר לשרת...",
                 "כך ההתראות מגיעות גם כשהאפליקציה סגורה")
                 .setOngoing(true)
                 .setOnlyAlertOnce(true)
-                .build();
+                .setShowWhen(false)
+                .setCategory(Notification.CATEGORY_SERVICE);
+        // No pop-up, sound or vibration: the new MIN channel ("status_quiet") has none
+        return builder.build();
     }
 
     static void updateStatus(Context context, boolean online) {
@@ -97,7 +116,8 @@ final class Notifications {
     }
 
     static void ride(Context context, String id, String title, String text, boolean spoken) {
-        post(context, id, title, text, spoken ? RIDES_SPOKEN : RIDES);
+        boolean muted = new Settings(context).soundMuted();
+        post(context, id, title, text, muted ? RIDES_SILENT : spoken ? RIDES_SPOKEN : RIDES);
         int seconds = new Settings(context).popupSeconds();
         if (seconds <= 0 || id.isEmpty()) return;
         Context app = context.getApplicationContext();
@@ -105,6 +125,11 @@ final class Notifications {
         MAIN.postDelayed(() -> {
             if (showing(app, id)) post(app, id, title, text, RIDES_QUIET);
         }, seconds * 1000L);
+    }
+
+    /** After "🔇" / "🔊": the same ride again in the list, quietly, with the other button */
+    static void repostQuiet(Context context, String id, String title, String text) {
+        if (!id.isEmpty() && showing(context, id)) post(context, id, title, text, RIDES_QUIET);
     }
 
     private static boolean showing(Context context, String id) {
@@ -122,6 +147,18 @@ final class Notifications {
             // Opens the ride for a deliberate tap on "ת". Never sends by itself
             builder.setContentIntent(open).addAction(new Notification.Action.Builder(
                     Icon.createWithResource(context, R.drawable.ic_notify), "✋ לבקשת הנסיעה", open).build());
+            // Mute or bring back the ride sound without opening the app or stopping the search
+            boolean muted = new Settings(context).soundMuted();
+            Intent sound = new Intent(context, SoundReceiver.class)
+                    .setAction(ACTION_SOUND + "." + id)
+                    .putExtra("mute", !muted)
+                    .putExtra("id", id)
+                    .putExtra("title", title)
+                    .putExtra("text", text);
+            PendingIntent toggle = PendingIntent.getBroadcast(context, 1, sound,
+                    PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
+            builder.addAction(new Notification.Action.Builder(
+                    Icon.createWithResource(context, R.drawable.ic_notify), muted ? "🔊 החזר קול" : "🔇 השתק", toggle).build());
         }
         Notification notification = builder
                 .setStyle(new Notification.BigTextStyle().bigText(text))

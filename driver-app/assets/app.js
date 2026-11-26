@@ -385,6 +385,13 @@
 
   // הקראה
   function toggleSpeech() {
+    // הושתק מההתראה ("🔇 השתק"): הלחיצה מחזירה את הקול
+    if (device().soundMuted && native.setSoundMuted) {
+      native.setSoundMuted(false);
+      toast('הקול של הנסיעות חזר');
+      render();
+      return;
+    }
     const on = !device().speech;
     native.setSpeech(on);
     if (on) {
@@ -741,7 +748,8 @@
       h('div', { className: 'status-head' },
         mainSwitch,
         label,
-        button(icon(info.speech ? 'speak' : 'quiet'), toggleSpeech, info.speech ? 'round on' : 'round', 'הקראה'),
+        button(icon(info.speech && !info.soundMuted ? 'speak' : 'quiet'), toggleSpeech,
+          info.speech && !info.soundMuted ? 'round on' : 'round', info.soundMuted ? 'הקול מושתק. לחץ להחזרה' : 'הקראה'),
         button(icon(compact ? 'down' : 'up'), fold, 'round', compact ? 'הרחב' : 'הקטן')),
       compact ? null : h('div', { className: 'chips' },
         list.map((s) => button([icon('close'), searchLabel(s)], () => removeSearch(s), 'chip', `הסר ${searchLabel(s)}`)),
@@ -761,7 +769,11 @@
     const free = currentSearches().length > 0;
     const rides = freshRides();
     const hidden = claimable().length - rides.length;
+    const billing = state.me?.billing;
     return [
+      billing?.blocked ? h('div', { className: 'notice' },
+        h('strong', null, '🔄 המנוי הסתיים'), h('p', null, `כדי לקבל שוב נסיעות: ${billing.price} ₪ לחודש, ביט או פייבוקס ל-${billing.payPhone}.`),
+        button('לחידוש המנוי', () => { state.tab = 'settings'; settings.go('subscription'); }, 'primary wide')) : null,
       warnings(),
       state.me ? statusPanel() : null,
       hidden ? h('p', { className: 'notice' }, `${hidden} נסיעות הוסתרו לפי מרחק`) : null,

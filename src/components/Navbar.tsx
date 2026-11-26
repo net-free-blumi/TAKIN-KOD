@@ -47,6 +47,7 @@ interface NavbarProps {
   onOpenTelegramModal?: () => void;
   onOpenBroadcastModal?: () => void;
   onOpenAppLinkBroadcast?: () => void;
+  onOpenBillingModal?: () => void;
   onOpenBugModal?: () => void;
   onOpenLegalModal?: (tab?: 'about' | 'accessibility' | 'terms' | 'privacy') => void;
   onLogout: () => void;
@@ -76,6 +77,7 @@ export const Navbar: React.FC<NavbarProps> = ({
   onOpenTelegramModal,
   onOpenBroadcastModal,
   onOpenAppLinkBroadcast,
+  onOpenBillingModal,
   onOpenBugModal,
   onOpenLegalModal,
   onLogout,
@@ -232,6 +234,18 @@ export const Navbar: React.FC<NavbarProps> = ({
             >
               <span aria-hidden="true">📲</span>
               <span className="hidden sm:inline">קישור לאפליקציה</span>
+            </button>
+          )}
+
+          {/* מנויים ותשלומים */}
+          {onOpenBillingModal && (
+            <button
+              onClick={onOpenBillingModal}
+              className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-semibold bg-emerald-950/40 hover:bg-emerald-900/50 border border-emerald-500/40 text-emerald-300 hover:text-emerald-200 transition-colors cursor-pointer"
+              title="מנויים: הגדרות, נהגים, תשלומים והודעת פתיחה"
+            >
+              <span aria-hidden="true">💳</span>
+              <span className="hidden sm:inline">מנויים</span>
             </button>
           )}
 

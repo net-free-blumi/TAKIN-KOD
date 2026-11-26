@@ -106,7 +106,7 @@ final class Speech {
 
     /** When true, the ride notification is silent because the beep and the voice replace its sound. */
     boolean willRead() {
-        return settings.speech() && !"missing".equals(voice) && power.isInteractive() && !quietNow() && !muted();
+        return settings.speech() && !settings.soundMuted() && !"missing".equals(voice) && power.isInteractive() && !quietNow() && !muted();
     }
 
     /** Starts over, so a voice or engine the driver just installed is picked up. */
@@ -157,7 +157,7 @@ final class Speech {
     }
 
     void announce(JSONObject ride) {
-        if (!settings.speech() || !power.isInteractive()) return;
+        if (!settings.speech() || settings.soundMuted() || !power.isInteractive()) return;
         boolean checked = ride.optBoolean("checked");
         String mode = settings.speechMode();
         double price = checked && settings.speakPrice() ? ride.optDouble("price", 0) : 0;

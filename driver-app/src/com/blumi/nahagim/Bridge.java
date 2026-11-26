@@ -140,6 +140,7 @@ final class Bridge {
                 .put("notifications", activity.notificationsAllowed())
                 .put("battery", activity.batteryUnrestricted())
                 .put("speech", settings.speech())
+                .put("soundMuted", settings.soundMuted())
                 .put("speechMode", settings.speechMode())
                 .put("speakPrice", settings.speakPrice())
                 .put("speechRate", settings.speechRate())
@@ -171,6 +172,12 @@ final class Bridge {
         if (key != null && json != null && key.matches(PREFS) && json.length() < 10000) {
             settings.setPage(key, json);
         }
+    }
+
+    @JavascriptInterface
+    public void setSoundMuted(boolean on) {
+        settings.setSoundMuted(on);
+        if (on) Speech.get(activity).stop();
     }
 
     @JavascriptInterface

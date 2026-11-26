@@ -27,6 +27,15 @@ final class Settings {
         prefs.edit().putBoolean("speech", on).commit();
     }
 
+    /** "🔇 השתק" from a ride notification: no voice and no ride sound, rides still pop up. The search keeps running */
+    boolean soundMuted() {
+        return prefs.getBoolean("soundMuted", false);
+    }
+
+    void setSoundMuted(boolean on) {
+        prefs.edit().putBoolean("soundMuted", on).commit();
+    }
+
     String speechMode() {
         // Address, neighbourhood and destination by default: the drivers asked not to hear whole messages
         return prefs.getString("speechMode", "detail");

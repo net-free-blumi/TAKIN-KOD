@@ -962,3 +962,92 @@ export async function getTelegramStatusApi(phone: string): Promise<{
 }
 
 
+
+// ===== מנויים (billing.js בשרת): הגדרות, נהגים, תשלומים, צילומים לאישור והודעת פתיחה =====
+export type BillingStatus = 'free' | 'trial' | 'active' | 'expired' | 'exempt';
+export interface BillingPayment {
+  id: string;
+  at: number;
+  amount: number;
+  method: string;
+  months: number;
+  by: string;
+  note: string;
+  until: number;
+  phone?: string;
+  name?: string;
+}
+export interface BillingDriver {
+  phone: string;
+  name: string;
+  connected: boolean;
+  plan: BillingStatus;
+  status: BillingStatus;
+  label: string;
+  start: number | null;
+  end: number | null;
+  endText: string;
+  daysLeft: number;
+  price: number;
+  customPrice: number | null;
+  blocked: boolean;
+  lastPayment: BillingPayment | null;
+  paymentsCount: number;
+  note: string;
+  pendingClaim: number | null;
+}
+export interface BillingClaim {
+  id: number;
+  phone: string;
+  name: string;
+  source: 'whatsapp' | 'app';
+  at: number;
+  state: 'pending' | 'approved' | 'rejected';
+  count: number;
+  by?: string;
+}
+export interface BillingSettings {
+  enabled: boolean;
+  price: number;
+  trialDays: number;
+  payPhone: string;
+  remindDays: number;
+  texts: Record<string, string>;
+  customTexts: string[];
+  enabledAt: number | null;
+}
+export interface BillingData {
+  ok: boolean;
+  settings: BillingSettings;
+  defaults: Record<string, string>;
+  textTitles: Record<string, string>;
+  textFields: string[];
+  methods: Record<string, string>;
+  summary: { counts: Record<BillingStatus, number>; monthIncome: number; pending: number };
+  drivers: BillingDriver[];
+  claims: BillingClaim[];
+  payments: BillingPayment[];
+  notice?: string;
+  trial?: { changed: number; skipped: number; endText: string };
+  broadcast?: { sentCount: number; failedCount: number } | null;
+}
+
+export async function getBilling(): Promise<BillingData> {
+  return await request<BillingData>('/api/billing');
+}
+
+export async function saveBillingSettings(patch: Partial<Omit<BillingSettings, 'customTexts' | 'enabledAt'>>): Promise<BillingData> {
+  return await request<BillingData>('/api/billing/settings', { method: 'POST', body: JSON.stringify(patch) });
+}
+
+export async function billingDriverAction(body: { phone: string; action: string; [key: string]: unknown }): Promise<BillingData> {
+  return await request<BillingData>('/api/billing/driver', { method: 'POST', body: JSON.stringify(body) });
+}
+
+export async function billingClaimDecision(id: number, decision: 'approve' | 'reject', amount?: number): Promise<BillingData> {
+  return await request<BillingData>('/api/billing/claim', { method: 'POST', body: JSON.stringify({ id, decision, amount }) });
+}
+
+export async function billingAnnounce(body: { endDate: string; message: string; enable: boolean; send: boolean; targetType: 'all' | 'connected' }): Promise<BillingData> {
+  return await request<BillingData>('/api/billing/announce', { method: 'POST', body: JSON.stringify(body) });
+}

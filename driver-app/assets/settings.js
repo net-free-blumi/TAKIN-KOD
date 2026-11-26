@@ -7,7 +7,12 @@ window.createSettings = function createSettings(ctx) {
     filters: 'נסיעות וסינון', groups: 'קבוצות', claim: 'בקשת נסיעה', location: 'מיקום ומרחק',
     speech: 'הקראה קולית', alerts: 'התראות', display: 'תצוגה', help: 'מדריכים', telegram: 'טלגרם', colors: 'צבעים', chatMute: 'התראות מצ\'אטים',
     tgGroups: 'קבוצות וערוצים בטלגרם', report: 'דיווח על תקלה',
+    subscription: 'מנוי ותשלום', week: 'השבוע שלי', style: 'נוסח ההודעות',
   };
+  // נטען מהשרת כשנכנסים למסך
+  let weekData = null;
+  let styleData = null;
+  let styleDraft = {};
   // מזהה קבוצה: וואטסאפ נגמר ב-@g.us, טלגרם מתחיל ב-tg:
   const isTelegramId = (id) => id.startsWith('tg:');
   const SOURCES = {
@@ -57,7 +62,137 @@ window.createSettings = function createSettings(ctx) {
     groupFilter = '';
     if (name === 'groups') loadGroups('wa');
     if (name === 'tgGroups') loadGroups('tg');
+    if (name === 'week') loadWeek();
+    if (name === 'style') loadStyle();
+    if (name === 'subscription') ctx.load();
     ctx.render();
+  }
+
+  async function loadWeek() {
+    weekData = null;
+    try {
+      weekData = await api('GET', '/week');
+    } catch (err) {
+      weekData = { error: err.message };
+    }
+    if (page === 'week') ctx.render();
+  }
+
+  async function loadStyle() {
+    styleData = null;
+    styleDraft = {};
+    try {
+      styleData = (await api('GET', '/style')).style;
+    } catch (err) {
+      styleData = { error: err.message };
+    }
+    if (page === 'style') ctx.render();
+  }
+
+  async function copyText(text) {
+    try {
+      await navigator.clipboard.writeText(text);
+      toast(`הועתק: ${text}`);
+    } catch {
+      toast(text);
+    }
+  }
+
+  // ---------- מנוי ----------
+  function subscriptionScreen() {
+    const b = ctx.me()?.billing;
+    if (!b) return [h('p', { className: 'muted' }, 'אין חיבור לשרת. נסה שוב.')];
+    if (!b.enabled) return [section(h('p', null, 'כרגע אין מנוי בתשלום. הבוט והאפליקציה פתוחים לכולם 🚖'))];
+    if (b.status === 'exempt') return [section(h('p', null, '✅ החשבון שלך פטור מתשלום.'))];
+    const tone = b.blocked ? 'bad' : b.daysLeft && b.daysLeft <= 3 ? 'warn' : 'ok';
+    return [
+      section(
+        h('h2', null, b.blocked ? '🔄 המנוי הסתיים' : `מנוי: ${b.label}`),
+        h('p', { className: tone }, b.blocked
+          ? 'כדי לקבל שוב נסיעות צריך לחדש.'
+          : b.endText ? `בתוקף עד ${b.endText}${b.daysLeft ? ` (עוד ${b.daysLeft} ימים)` : ''}` : ''),
+        b.lastPayment ? h('p', { className: 'muted' }, `תשלום אחרון: ${b.lastPayment.amount} ₪`) : null),
+      section(
+        h('h2', null, `💰 ${b.price} ₪ לחודש`),
+        h('p', null, 'משלמים בביט או בפייבוקס למספר:'),
+        button(`📲 ${b.payPhone} (העתק)`, () => copyText(b.payPhone), 'wide'),
+        h('p', { className: 'muted' }, 'אחרי התשלום: לחץ "שילמתי", ושלח לבוט בוואטסאפ צילום מסך של התשלום. החשבון נפתח מיד עם האישור.'),
+        b.pending
+          ? h('p', { className: 'ok' }, '⏳ התשלום מחכה לאישור. נעדכן בוואטסאפ.')
+          : button('✅ שילמתי', async () => {
+            const body = await api('POST', '/billing/paid', {});
+            const me = ctx.me();
+            if (me) me.billing = body.billing;
+            toast('נשלח למנהל. שלח גם צילום מסך לבוט בוואטסאפ');
+            ctx.render();
+          }, 'primary wide')),
+    ];
+  }
+
+  // ---------- השבוע ----------
+  const statBox = (title, value) => h('div', { className: 'stat' }, h('strong', null, String(value)), h('span', null, title));
+  function weekBlock(title, w) {
+    if (!w) return null;
+    const r = w.rides || {};
+    const p = w.publish || {};
+    return section(
+      h('h2', null, `${title} · ${w.range}`),
+      h('div', { className: 'stats' },
+        statBox('הגיעו', r.received || 0), statBox('ביקשת', r.requested || 0), statBox('ביצעת', r.done || 0), statBox('הכנסה ₪', r.income || 0)),
+      p.published ? h('div', { className: 'stats' },
+        statBox('הפצת', p.published), statBox('מבקשים', p.requesters || 0), statBox('נתת', p.given || 0)) : null);
+  }
+  function weekScreen() {
+    if (!weekData) return [h('p', { className: 'muted' }, 'טוען...')];
+    if (weekData.error) return [h('p', { className: 'bad' }, weekData.error)];
+    const off = Boolean(weekData.weeklyOff);
+    return [
+      weekBlock('השבוע', weekData.week),
+      weekBlock('שבוע שעבר', weekData.lastWeek),
+      section(item('סיכום שבועי בוואטסאפ', 'כל יום ראשון בבוקר, הודעה קצרה מהבוט',
+        toggle(!off, async () => {
+          const body = await api('POST', '/week/settings', { off: !off });
+          weekData.weeklyOff = body.weeklyOff;
+          ctx.render();
+        }, 'סיכום שבועי בוואטסאפ'))),
+    ];
+  }
+
+  // ---------- נוסח ההודעות ----------
+  function styleEditor(key, title, note) {
+    const s = styleData;
+    const value = styleDraft[key] ?? (s[key] || s.defaults[key]);
+    const area = h('textarea', { id: `style-${key}`, rows: 9, maxLength: 1000, value, dir: 'rtl' });
+    area.setAttribute('aria-label', title);
+    area.oninput = () => { styleDraft[key] = area.value; };
+    return section(
+      h('h2', null, title),
+      h('p', { className: 'muted' }, note),
+      area,
+      h('p', { className: 'muted' }, `שדות: ${s.fields[key].map((f) => `{${f}}`).join(' ')}. חובה {נסיעה}. שורה עם שדה ריק לא נשלחת.`),
+      h('p', { className: 'muted' }, s[key] ? 'כך זה נראה עכשיו (הנוסח שלך):' : 'כך זה נראה עכשיו (המראה הרגיל):'),
+      h('pre', { className: 'preview' }, s.preview[key]),
+      button('שמור', async () => {
+        const body = await api('POST', '/style', { [key]: area.value === s.defaults[key] ? '' : area.value });
+        styleData = body.style;
+        delete styleDraft[key];
+        toast('נשמר. מעכשיו כך זה ייראה');
+        ctx.render();
+      }, 'primary wide'),
+      s[key] ? button('חזרה למראה הרגיל', async () => {
+        styleData = (await api('POST', '/style', { [key]: '' })).style;
+        delete styleDraft[key];
+        ctx.render();
+      }, 'link wide') : null);
+  }
+  function styleScreen() {
+    if (!styleData) return [h('p', { className: 'muted' }, 'טוען...')];
+    if (styleData.error) return [h('p', { className: 'bad' }, styleData.error)];
+    return [
+      h('p', { className: 'notice' }, 'כותבים פעם אחת, וזה נשמר לתמיד. אפשר גם בבוט: "נוסח התראה" או "נוסח פרסום".'),
+      styleEditor('alert', 'התראה על נסיעה', 'איך נראית נסיעה שהבוט שולח לך בוואטסאפ.'),
+      styleEditor('post', 'נסיעה שאתה מפיץ', 'איך נראית בקבוצות נסיעה שאתה מפיץ.'),
+    ];
   }
 
   function ask(title, note, value, props, done) {
@@ -637,6 +772,10 @@ window.createSettings = function createSettings(ctx) {
       return [telegramScreen()];
     },
 
+    subscription: subscriptionScreen,
+    week: weekScreen,
+    style: styleScreen,
+
     colors() {
       const PALETTE = ['#f5c542', '#ff8a00', '#e53935', '#d81b60', '#8e24aa', '#3949ab', '#1e88e5', '#229ed9',
         '#00897b', '#2e7d32', '#7cb342', '#6d4c41', '#546e7a', '#18222f', '#ffffff'];
@@ -686,6 +825,9 @@ window.createSettings = function createSettings(ctx) {
         h('p', { className: 'muted' }, me ? local(me.phone) : ''),
         me ? h('p', { className: me.whatsappLinked ? 'ok' : 'bad' },
           me.whatsappLinked ? 'הוואטסאפ מקושר' : 'הוואטסאפ לא מקושר') : null),
+      me?.billing?.enabled ? link('subscription', me.billing.blocked ? '⚠️ המנוי הסתיים. לחידוש'
+        : me.billing.status === 'exempt' ? 'פטור' : `${me.billing.label} עד ${me.billing.endText} · ${me.billing.price} ₪ לחודש`) : null,
+      me?.features?.week ? link('week', `סיכום ההכנסות והנסיעות${me.weeklyOff ? '' : ' · סיכום בוואטסאפ פועל'}`) : null,
       link('filters', 'קבוצות, מחיר, משלוחים, רכב, זמן ומילים'),
       link('claim', me?.filters ? `נשלח: ${me.filters.claimText}` : 'נוסח וזמן הגעה'),
       me?.features?.publish ? button([
@@ -696,6 +838,7 @@ window.createSettings = function createSettings(ctx) {
       link('speech', info.speech ? 'פועלת, רק כשהמסך דלוק' : 'כבויה'),
       link('alerts', info.alerts ? 'פועלות' : 'כבויות'),
       link('display', 'מצב כהה, גודל טקסט, מרחק וזמן'),
+      me?.features?.style ? link('style', 'איך נראות ההתראות והנסיעות שאתה מפיץ') : null,
       link('colors', 'צבע לכל כפתור ולנסיעות טלגרם'),
       link('telegram', ctx.me()?.telegram?.connected ? 'מחובר · קבוצות, בוט וניתוק' : 'חיבור הקבוצות והבוט מכאן'),
       link('help', 'מדריך לכל נושא'),

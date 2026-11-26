@@ -42,6 +42,7 @@ import { AiHandoffModal } from './components/AiHandoffModal.tsx';
 import { UsersManagementModal } from './components/UsersManagementModal.tsx';
 import { BugTrackerModal } from './components/BugTrackerModal.tsx';
 import { BroadcastModal } from './components/BroadcastModal.tsx';
+import { BillingModal } from './components/BillingModal.tsx';
 import { AnalyticsModal } from './components/AnalyticsModal.tsx';
 import { MainScreenAnalytics } from './components/MainScreenAnalytics.tsx';
 import { LoginScreen } from './components/LoginScreen.tsx';
@@ -85,6 +86,7 @@ export default function App() {
   const [telegramModalOpen, setTelegramModalOpen] = useState(false);
   const [telegramTargetPhone, setTelegramTargetPhone] = useState<string>('');
   const [broadcastModalOpen, setBroadcastModalOpen] = useState(false);
+  const [billingModalOpen, setBillingModalOpen] = useState(false);
   // 'app' = נפתח עם הודעה מוכנה וקישור קבוע להורדת אפליקציית הנהגים
   const [broadcastPreset, setBroadcastPreset] = useState<'app' | null>(null);
   const [analyticsModalOpen, setAnalyticsModalOpen] = useState(false);
@@ -418,6 +420,7 @@ export default function App() {
         }}
         onOpenBroadcastModal={() => { setBroadcastPreset(null); setBroadcastModalOpen(true); }}
         onOpenAppLinkBroadcast={() => { setBroadcastPreset('app'); setBroadcastModalOpen(true); }}
+        onOpenBillingModal={() => setBillingModalOpen(true)}
         onOpenAnalyticsModal={() => setAnalyticsModalOpen(true)}
         onOpenBugModal={() => setBugModalOpen(true)}
         onOpenLegalModal={handleOpenLegalTab}
@@ -629,6 +632,11 @@ export default function App() {
         approvedUsers={approvedUsersList}
         activeSessionsCount={status?.stats?.totalConnectedDrivers ?? approvedUsersList.filter(u => u.connectionStatus === 'connected').length}
         onSendBroadcast={handleSendBroadcast}
+      />
+
+      <BillingModal
+        isOpen={billingModalOpen}
+        onClose={() => setBillingModalOpen(false)}
       />
 
       {/* Analytics & Graphs Modal */}

@@ -472,3 +472,9 @@ button.sticky { position: sticky; bottom: 8px; }
 .list-title { margin-bottom: 12px; }
 .list-title p { margin-top: 4px; }
 .list-pick button.chip.selected { background: var(--btn-main); border-color: var(--btn-main); color: var(--btn-main-text); font-weight: bold; }
+/* השבוע שלי ונוסח ההודעות */
+.stats .stat { padding: 10px 8px; text-align: center; }
+.stats .stat strong { font-size: 1.35rem; }
+.stats .stat span { display: block; color: var(--muted); font-size: .8rem; }
+.warn { color: #e0a100; }
+pre.preview { white-space: pre-wrap; word-break: break-word; font-family: inherit; margin: 6px 0 10px; padding: 10px 12px; border-radius: 12px; background: var(--soft); font-size: .9rem; line-height: 1.45; }
