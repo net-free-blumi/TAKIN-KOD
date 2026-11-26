@@ -61,6 +61,87 @@ const reply = (stanzaId, { participant = "111@lid", name = "יוסי", text = "�
   text,
 });
 
+test("סדר הקבוצות: העליונה מקבלת ראשונה, ראשונה / מקום / סוף, הוספה, הסרה והעברה לרשימה אחרת", async () => {
+  const env = setup();
+  const { pub } = env;
+  try {
+    pub.setList(PHONE, 1, [G(1), G(2), G(3), G(4)]);
+    pub.moveGroup(PHONE, 1, G(3).id, "first");
+    assert.deepEqual(pub.getLists(PHONE)[0].groups.map((g) => g.name), ["קבוצה 3", "קבוצה 1", "קבוצה 2", "קבוצה 4"]);
+    pub.moveGroup(PHONE, 1, G(3).id, "last");
+    pub.moveGroup(PHONE, 1, G(4).id, 2);
+    assert.deepEqual(pub.getLists(PHONE)[0].groups.map((g) => g.name), ["קבוצה 1", "קבוצה 4", "קבוצה 2", "קבוצה 3"]);
+    // השליחה הולכת לפי הסדר
+    const job = pub.start(PHONE, { text: "שמש ים 180" });
+    await tick();
+    assert.equal(env.sent[0].jid, G(1).id);
+    await env.wake();
+    assert.equal(env.sent[1].jid, G(4).id);
+    pub.stop(PHONE, job.id);
+    // הוספה של כמה בבת אחת, בלי כפילויות
+    pub.addGroups(PHONE, 1, [G(2), G(5), G(6)]);
+    assert.equal(pub.getLists(PHONE)[0].groups.length, 6);
+    assert.throws(() => pub.addGroups(PHONE, 1, [G(5)]), /לא נבחרו קבוצות חדשות/);
+    // העברה לרשימה ב
+    pub.transferGroup(PHONE, 1, G(6).id, 2);
+    assert.deepEqual(pub.listsOfGroup(PHONE, G(6).id), [{ no: 2, name: "הפצה ב" }]);
+    pub.removeGroup(PHONE, 1, G(5).id);
+    assert.equal(pub.getLists(PHONE)[0].groups.length, 4);
+    assert.throws(() => pub.moveGroup(PHONE, 1, G(9).id, "first"), /לא ברשימה/);
+  } finally {
+    env.cleanup();
+  }
+});
+
+test("היסטוריית שינויים: כל שינוי נרשם, ואפשר להחזיר פעם אחת", () => {
+  const env = setup();
+  const { pub } = env;
+  try {
+    pub.setList(PHONE, 1, [G(1), G(2)]);
+    pub.addGroups(PHONE, 1, [G(3), G(4), G(5)]);
+    pub.transferGroup(PHONE, 1, G(1).id, 2);
+    const h = pub.history(PHONE);
+    assert.match(h[0].text, /"קבוצה 1" הועברה מ"הפצה" ל"הפצה ב"/);
+    assert.match(h[1].text, /נוספו 3 קבוצות ל"הפצה"/);
+    // החזרת ההעברה: שתי הרשימות חוזרות
+    pub.undo(PHONE, h[0].id);
+    assert.equal(pub.getLists(PHONE)[0].groups[0].id, G(1).id);
+    assert.equal(pub.getLists(PHONE)[1].groups.length, 0);
+    assert.throws(() => pub.undo(PHONE, h[0].id), /כבר הוחזר/);
+    // החזרת ההוספה
+    pub.undo(PHONE, h[1].id);
+    assert.equal(pub.getLists(PHONE)[0].groups.length, 2);
+    assert.equal(pub.history(PHONE)[0].text.startsWith("הוחזר:"), true);
+  } finally {
+    env.cleanup();
+  }
+});
+
+test("מהירות הפצה: רגיל כמו תמיד, מהיר וטורבו עד 50 קבוצות ופחות הפסקה", async () => {
+  const env = setup({ limits: { minGapMs: 8000, maxGapMs: 15000 } });
+  const { pub } = env;
+  try {
+    const many = Array.from({ length: 30 }, (_, i) => G(10 + i));
+    assert.throws(() => pub.setList(PHONE, 1, many), /עד 25 קבוצות.*מהיר/);
+    assert.equal(pub.getSettings(PHONE).speed, "normal");
+    pub.setList(PHONE, 1, [G(1), G(2)]);
+    pub.start(PHONE, { text: "שמש ים 180" });
+    await tick();
+    assert.ok(env.sleeps.at(-1) >= 8000 && env.sleeps.at(-1) <= 15000, `רגיל: ${env.sleeps.at(-1)}`);
+    await env.wake();
+    pub.setSettings(PHONE, { speed: "turbo" });
+    pub.setList(PHONE, 1, many);
+    assert.equal(pub.getLists(PHONE)[0].groups.length, 30);
+    pub.start(PHONE, { text: "שמש ים 200" });
+    await tick();
+    await tick();
+    assert.ok(env.sleeps.at(-1) < 2000, `טורבו: ${env.sleeps.at(-1)}`);
+    assert.throws(() => pub.setSettings(PHONE, { speed: "rocket" }), /מהירות לא תקינה/);
+  } finally {
+    env.cleanup();
+  }
+});
+
 test("שמות רשימות: הפצה / הפצה ב / הפצה ג, ושם אחר לא נחשב", () => {
   assert.equal(listNoForName("הפצה"), 1);
   assert.equal(listNoForName(" הפצה  ב' "), 2);

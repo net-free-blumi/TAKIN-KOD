@@ -29,6 +29,13 @@ export const LIMITS = {
 
 const JOB_STATES = new Set(["sending", "stopped", "done", "paused"]);
 
+// מהירות הפצה. "רגיל" לוקח את LIMITS (כמו תמיד). השאר: יותר קבוצות ופחות הפסקה, יותר סיכון שוואטסאפ יחסום
+export const SPEEDS = {
+  normal: { label: "רגיל", note: "עד 25 קבוצות, הפסקה של 8–15 שניות בין קבוצה לקבוצה. הכי בטוח למספר שלך." },
+  fast: { label: "מהיר", maxGroups: 50, minGapMs: 3000, maxGapMs: 6000, note: "⚠️ עד 50 קבוצות, 3–6 שניות בין קבוצות. יותר סיכון שוואטסאפ יחסום את המספר." },
+  turbo: { label: "טורבו", maxGroups: 50, minGapMs: 700, maxGapMs: 1500, note: "⚠️ עד 50 קבוצות, כמעט בלי הפסקה. הסיכון לחסימה הכי גבוה, על אחריותך." },
+};
+
 // "הפצה" -> 1, "הפצה ב" / "הפצה ב'" -> 2, "הפצה ג" -> 3. כל שם אחר -> 0
 export function listNoForName(name) {
   const clean = String(name || "")
@@ -212,7 +219,20 @@ export function createRidePublisher({
     return getLists(phone)[no - 1];
   }
 
-  function cleanGroups(groups) {
+  // ---------- מהירות הפצה ----------
+  // רגיל = כמו תמיד (עד 25, הפסקה של 8–15 שניות). מהיר / טורבו: יותר קבוצות ופחות הפסקה, יותר סיכון לחסימה
+  function speedOf(phone) {
+    const s = state.drivers[phone]?.settings?.speed;
+    return SPEEDS[s] ? s : "normal";
+  }
+  function speedLimits(phone) {
+    const speed = speedOf(phone);
+    if (speed === "normal") return { speed, maxGroups: limits.maxGroups, minGapMs: limits.minGapMs, maxGapMs: limits.maxGapMs };
+    return { speed, ...SPEEDS[speed] };
+  }
+  const maxGroupsFor = (phone) => Math.max(limits.maxGroups, speedLimits(phone).maxGroups);
+
+  function cleanGroups(groups, max = limits.maxGroups) {
     if (!Array.isArray(groups)) throw new PublishError(400, "רשימת קבוצות לא תקינה");
     const seen = new Set();
     const out = [];
@@ -222,16 +242,106 @@ export function createRidePublisher({
       seen.add(id);
       out.push({ id, name: String(g?.name || "קבוצה").slice(0, 100) });
     }
-    if (out.length > limits.maxGroups) throw new PublishError(400, `אפשר עד ${limits.maxGroups} קבוצות ברשימה`);
+    if (out.length > max) {
+      throw new PublishError(400, max < 50
+        ? `אפשר עד ${max} קבוצות ברשימה. במהירות "מהיר" או "טורבו" אפשר עד 50.`
+        : `אפשר עד ${max} קבוצות ברשימה`);
+    }
     return out;
   }
 
-  function setList(phone, no, groups, source = "app") {
+  // ---------- היסטוריית שינויים ברשימות (עם החזרה) ----------
+  const HISTORY_MAX = 30;
+  function remember(phone, nos, text) {
+    const d = driver(phone);
+    const before = {};
+    for (const no of nos) before[no] = (d.lists[no]?.groups || []).map((g) => ({ ...g }));
+    d.historySeq = (d.historySeq || 0) + 1;
+    d.history = [...(d.history || []), { id: `h${d.historySeq}`, at: now(), text, before }].slice(-HISTORY_MAX);
+  }
+  function history(phone) {
+    return [...(driver(phone).history || [])].reverse().map(({ id, at, text, undone }) => ({ id, at, text, undone: Boolean(undone) }));
+  }
+  // מחזיר את הרשימות למצב שלפני השינוי
+  function undo(phone, id) {
+    const d = driver(phone);
+    const entry = (d.history || []).find((h) => h.id === String(id));
+    if (!entry) throw new PublishError(404, "השינוי לא נמצא");
+    if (entry.undone) throw new PublishError(409, "השינוי הזה כבר הוחזר");
+    remember(phone, Object.keys(entry.before).map(Number), `הוחזר: ${entry.text}`);
+    for (const [no, groups] of Object.entries(entry.before)) d.lists[no] = { groups, source: "app", updatedAt: now() };
+    entry.undone = true;
+    changed(phone);
+    return { lists: getLists(phone), history: history(phone) };
+  }
+
+  function setList(phone, no, groups, source = "app", note = "") {
     if (!validListNo(no)) throw new PublishError(400, "רשימה לא קיימת");
     const d = driver(phone);
-    d.lists[no] = { groups: cleanGroups(groups), source, updatedAt: now() };
+    const clean = cleanGroups(groups, source === "whatsapp" ? Math.max(maxGroupsFor(phone), 50) : maxGroupsFor(phone));
+    remember(phone, [no], note || `הרשימה "${getLists(phone)[no - 1].name}" נשמרה (${clean.length} קבוצות)`);
+    d.lists[no] = { groups: clean, source, updatedAt: now() };
     changed(phone);
     return getLists(phone)[no - 1];
+  }
+
+  // ---------- סדר הקבוצות ברשימה: העליונה מקבלת ראשונה ----------
+  function listGroups(phone, no) {
+    if (!validListNo(no)) throw new PublishError(400, "רשימה לא קיימת");
+    return [...(driver(phone).lists[no]?.groups || [])];
+  }
+  function groupIndex(groups, id) {
+    const i = groups.findIndex((g) => g.id === String(id));
+    if (i < 0) throw new PublishError(404, "הקבוצה לא ברשימה");
+    return i;
+  }
+  const listName = (phone, no) => getLists(phone)[no - 1].name;
+
+  /** to: "first" | "last" | מקום (1 = ראשונה) */
+  function moveGroup(phone, no, id, to) {
+    const groups = listGroups(phone, no);
+    const from = groupIndex(groups, id);
+    const [g] = groups.splice(from, 1);
+    let pos = to === "first" ? 0 : to === "last" ? groups.length : Number(to) - 1;
+    if (!Number.isInteger(pos) || pos < 0) throw new PublishError(400, "מקום לא תקין");
+    pos = Math.min(pos, groups.length);
+    groups.splice(pos, 0, g);
+    return setList(phone, no, groups, "app", `"${g.name}" הוזזה למקום ${pos + 1} ב"${listName(phone, no)}"`);
+  }
+
+  function addGroups(phone, no, add) {
+    const groups = listGroups(phone, no);
+    const fresh = cleanGroups(add, 1000).filter((g) => !groups.some((x) => x.id === g.id));
+    if (!fresh.length) throw new PublishError(400, "לא נבחרו קבוצות חדשות");
+    return setList(phone, no, [...groups, ...fresh], "app",
+      `${fresh.length === 1 ? `"${fresh[0].name}" נוספה` : `נוספו ${fresh.length} קבוצות`} ל"${listName(phone, no)}"`);
+  }
+
+  function removeGroup(phone, no, id) {
+    const groups = listGroups(phone, no);
+    const [g] = groups.splice(groupIndex(groups, id), 1);
+    return setList(phone, no, groups, "app", `"${g.name}" הוסרה מ"${listName(phone, no)}"`);
+  }
+
+  /** העברה לרשימה אחרת (לסוף שלה) */
+  function transferGroup(phone, no, id, toNo) {
+    if (!validListNo(toNo) || Number(toNo) === Number(no)) throw new PublishError(400, "בחר רשימה אחרת");
+    const from = listGroups(phone, no);
+    const [g] = from.splice(groupIndex(from, id), 1);
+    const target = listGroups(phone, toNo).filter((x) => x.id !== g.id);
+    const max = maxGroupsFor(phone);
+    if (target.length >= max) throw new PublishError(400, `ב"${listName(phone, toNo)}" כבר ${max} קבוצות`);
+    const d = driver(phone);
+    remember(phone, [Number(no), Number(toNo)], `"${g.name}" הועברה מ"${listName(phone, no)}" ל"${listName(phone, toNo)}"`);
+    d.lists[no] = { groups: from, source: "app", updatedAt: now() };
+    d.lists[toNo] = { groups: [...target, g], source: "app", updatedAt: now() };
+    changed(phone);
+    return getLists(phone);
+  }
+
+  /** באילו רשימות הקבוצה נמצאת (לתווית "כבר ב: ...") */
+  function listsOfGroup(phone, id) {
+    return getLists(phone).filter((l) => l.groups.some((g) => g.id === id)).map((l) => ({ no: l.no, name: l.name }));
   }
 
   // הוספה / הסרה לפי מספרים ברשימת כל הקבוצות (לבוט)
@@ -395,7 +505,9 @@ export function createRidePublisher({
         if (job.state !== "sending") break;
         if (group.status !== "pending") continue;
         if (sentNow > 0) {
-          const gap = limits.minGapMs + Math.floor(random() * (limits.maxGapMs - limits.minGapMs + 1));
+          // ההפסקה לפי המהירות שהנהג בחר (רגיל = כמו תמיד)
+          const sp = speedLimits(job.phone);
+          const gap = sp.minGapMs + Math.floor(random() * (sp.maxGapMs - sp.minGapMs + 1));
           await Promise.race([sleep(gap), new Promise((r) => wakers.set(job.id, r))]);
           wakers.delete(job.id);
           if (job.state !== "sending") break;
@@ -676,10 +788,11 @@ export function createRidePublisher({
       pay,
       thanks: s.thanks || "",
       template: s.template || "",
+      speed: SPEEDS[s.speed] ? s.speed : "normal",
     };
   }
 
-  function setSettings(phone, { feeMode, fee, percent, pay, payInfo, thanks, template } = {}) {
+  function setSettings(phone, { feeMode, fee, percent, pay, payInfo, thanks, template, speed } = {}) {
     const d = driver(phone);
     const current = getSettings(phone);
     if (feeMode !== undefined) {
@@ -706,6 +819,10 @@ export function createRidePublisher({
       const text = String(template ?? "").replace(/\r\n/g, "\n").trim();
       if (text.length > 1500) throw new PublishError(400, "ההודעה ארוכה מדי (עד 1500 תווים)");
       current.template = text;
+    }
+    if (speed !== undefined) {
+      if (!SPEEDS[speed]) throw new PublishError(400, "מהירות לא תקינה");
+      current.speed = speed;
     }
     d.settings = { ...current };
     delete d.settings.payInfo;
@@ -890,7 +1007,7 @@ export function createRidePublisher({
       emit(phone, { type: "list-ask-merge", no, name: LIST_NAMES[no - 1], botCount: existing.length, waCount: fromWa.length });
       return;
     }
-    d.lists[no] = { groups: fromWa.slice(0, limits.maxGroups), source: "whatsapp", labelId, updatedAt: now() };
+    d.lists[no] = { groups: fromWa.slice(0, maxGroupsFor(phone)), source: "whatsapp", labelId, updatedAt: now() };
     changed(phone);
     emit(phone, { type: "list-synced", no, name: LIST_NAMES[no - 1], linked: true, added: [], removed: [],
       overflow: fromWa.length > limits.maxGroups, groups: d.lists[no].groups });
@@ -967,11 +1084,11 @@ export function createRidePublisher({
     const list = d.lists[no] || { groups: [] };
     if (kind === "merge") {
       const fromWa = labelGroups(d, ask.labelId, groupNames);
-      if (choice === "replace") d.lists[no] = { groups: fromWa.slice(0, limits.maxGroups), source: "whatsapp", labelId: ask.labelId, updatedAt: now() };
+      if (choice === "replace") d.lists[no] = { groups: fromWa.slice(0, maxGroupsFor(phone)), source: "whatsapp", labelId: ask.labelId, updatedAt: now() };
       else if (choice === "add") {
         const merged = [...list.groups];
         for (const g of fromWa) if (!merged.some((x) => x.id === g.id)) merged.push(g);
-        d.lists[no] = { groups: merged.slice(0, limits.maxGroups), source: "whatsapp", labelId: ask.labelId, updatedAt: now() };
+        d.lists[no] = { groups: merged.slice(0, maxGroupsFor(phone)), source: "whatsapp", labelId: ask.labelId, updatedAt: now() };
       } else {
         // לא לגעת: הרשימה בבוט נשארת, ושינויים בוואטסאפ לא יעדכנו אותה
         d.lists[no] = { ...list, labelId: `ignored:${ask.labelId}` };
@@ -992,6 +1109,7 @@ export function createRidePublisher({
 
   return {
     getLists, setList, setListTitle, editList,
+    moveGroup, addGroups, removeGroup, transferGroup, listsOfGroup, history, undo, speedLimits, maxGroupsFor,
     start, republish, resume, stop, give, setOutcome, edit, setPrice, archive,
     getSettings, setSettings, sendThanks, thanksText: (phone, id, n) => {
       const job = findJob(phone, id);

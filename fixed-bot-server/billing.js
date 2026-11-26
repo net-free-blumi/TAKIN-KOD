@@ -16,7 +16,7 @@ export const PLAN_LABELS = { free: "חינם", trial: "ניסיון", active: "�
 export const METHODS = { bit: "ביט", paybox: "פייבוקס", cash: "מזומן", bank: "העברה", other: "אחר" };
 const MAX_PAYMENTS = 200; // לכל נהג
 const MAX_CLAIMS = 500;
-const CLAIM_MERGE_MS = 10 * 60 * 1000; // כמה צילומים ברצף = בקשה אחת
+const CLAIM_MERGE_MS = 24 * 60 * 60 * 1000; // "שילמתי" וצילומים באותו יום = בקשה אחת
 const INTENT_MS = 48 * 60 * 60 * 1000;
 
 // השדות שמתמלאים בנוסחים: {שם} {מחיר} {מספר} {תאריך} {ימים} {מצב}
@@ -465,11 +465,14 @@ export function createBilling({ file, now = Date.now, onError = console.error } 
     return v.status === "expired" || (v.end && v.daysLeft <= Math.max(state.settings.remindDays, 1));
   }
 
-  function addClaim(raw, { source = "whatsapp", note = "", name = "" } = {}) {
+  // kind: "image" = צילום מסך, "said" = כתב / לחץ "שילמתי" בלי צילום
+  function addClaim(raw, { source = "whatsapp", note = "", name = "", kind = "image" } = {}) {
     const phone = phoneOf(raw);
-    const open = state.claims.find((c) => c.phone === phone && c.state === "pending" && now() - c.at < CLAIM_MERGE_MS && c.source === source);
+    // בקשה פתוחה מאותו נהג (גם "שילמתי" ואחריו צילום): הכול נכנס לאותה בקשה
+    const open = state.claims.find((c) => c.phone === phone && c.state === "pending" && now() - c.at < CLAIM_MERGE_MS);
     if (open) {
       open.count = (open.count || 1) + 1;
+      if (source === "whatsapp" && kind === "image") open.hasImage = true;
       save();
       return { claim: { ...open }, isNew: false };
     }
@@ -482,6 +485,7 @@ export function createBilling({ file, now = Date.now, onError = console.error } 
       at: now(),
       state: "pending",
       count: 1,
+      hasImage: source === "whatsapp" && kind === "image",
     };
     state.claims.push(claim);
     if (state.claims.length > MAX_CLAIMS) state.claims.splice(0, state.claims.length - MAX_CLAIMS);

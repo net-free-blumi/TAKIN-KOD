@@ -689,6 +689,41 @@ try {
     check("הפצה: מוצגות רק רשימות בשימוש ועוד אחת חדשה", /הפצה ד/.test(textOf(r)) && /רשימה חדשה\* \(הפצה ב\)/.test(textOf(r)) && !/הפצה ה/.test(textOf(r)), textOf(r));
     r = await type(DRIVER, "הפץ שמש ים 200");
     check("הפצה: השם החדש בכפתור הבחירה", r.some((m) => m.buttons.some((b) => /ירושלים מהיר/.test(b.p.display_text || ""))), JSON.stringify(r.map((m) => m.buttons)));
+
+    // סדר, שינויים והחזרה, מהירות, חסימה ומועדפים
+    r = await type(DRIVER, "סדר הפצה");
+    check("סדר הפצה: רשימה ממוספרת", /1\. נהגי שמש\n2\. נסיעות ים/.test(textOf(r)), textOf(r));
+    r = await type(DRIVER, "העבר בהפצה 2 ל 1");
+    check("העבר בהפצה: הסדר התחלף", /1\. נסיעות ים\n2\. נהגי שמש/.test(textOf(r)), textOf(r));
+    r = await type(DRIVER, "שינויים בהפצה");
+    check("שינויים בהפצה: ההזזה רשומה", /1\. "נסיעות ים" הוזזה למקום 1/.test(textOf(r)), textOf(r));
+    r = await type(DRIVER, "החזר שינוי 1");
+    r = await type(DRIVER, "סדר הפצה");
+    check("החזר שינוי: הסדר חזר", /1\. נהגי שמש\n2\. נסיעות ים/.test(textOf(r)), textOf(r));
+    r = await type(DRIVER, "מהירות הפצה טורבו");
+    check("מהירות הפצה: טורבו עם אזהרה", /מהירות הפצה: טורבו/.test(textOf(r)) && /על אחריותך/.test(textOf(r)), textOf(r));
+    await type(DRIVER, "מהירות הפצה רגיל");
+    r = await type(DRIVER, "חסום קבוצה 1");
+    check("חסום קבוצה: לא מקבלים, הפרסום ממשיך", /לא תקבל נסיעות מ"נהגי שמש"/.test(textOf(r)) && /הפרסום אליה ממשיך/.test(textOf(r)), textOf(r));
+    r = await type(DRIVER, "סדר הפצה");
+    check("סדר הפצה: קבוצה חסומה מסומנת", /נהגי שמש 🚫/.test(textOf(r)), textOf(r));
+    await type(DRIVER, "פתח קבוצה 1");
+    r = await type(DRIVER, "מועדף 0544444444");
+    check("מועדף: נוסף", /נוסף למועדפים/.test(textOf(r)), textOf(r));
+    r = await type(DRIVER, "מועדפים");
+    check("מועדפים: ברשימה", /054-4444444/.test(textOf(r)), textOf(r));
+    // נסיעה מהסדרן המועדף מגיעה מסומנת ⭐
+    um.stopUserSearch(DRIVER);
+    await type(DRIVER, "פנוי שמש");
+    mark = out.length;
+    await bot.__handle(dsock, { messages: [{
+      key: { remoteJid: G1, id: "FAV1", fromMe: false, participant: "972544444444@s.whatsapp.net" },
+      pushName: "משה", messageTimestamp: Math.floor(Date.now() / 1000), message: { conversation: "פנימי שמש 45\nמרמה ג לנחל צאלים\n0544444444" },
+    }] }, { isMainBot: false, driverPhone: DRIVER });
+    await sleep(100);
+    check("מועדף: ההתראה מסומנת ⭐", out.slice(mark).some((x) => x.jid.startsWith(DRIVER) && x.text.startsWith("⭐ *סדרן מועדף*")), textOf(out.slice(mark)));
+    r = await type(DRIVER, "הסר מועדף 0544444444");
+    check("הסר מועדף", /הוסר מהמועדפים/.test(textOf(r)), textOf(r));
   }
 
   // ---------- מראה ההתראה, מנוי וסיכום שבועי ----------
@@ -734,13 +769,21 @@ try {
     check("מנוי: פרטי תשלום עם ביט/פייבוקס וכפתור שילמתי", /0515157166/.test(textOf(r)) && /25 ₪/.test(textOf(r)) && ids(r).includes("שילמתי"), textOf(r));
     check("מנוי: נהג קיים קיבל ניסיון", billing.get(DRIVER).status === "trial");
 
-    // צילום מסך: מגיע למנהל עם אשר / דחה, והנהג מקבל אישור קבלה
+    // "שילמתי": המנהל מקבל מיד עם אשר / דחה, והנהג מתבקש לשלוח צילום
+    mark = out.length;
+    r = await tap(DRIVER, "שילמתי");
+    const claimId = billing.claims({ pendingOnly: true })[0]?.id;
+    let toAdmin = out.slice(mark).filter((m) => m.jid.startsWith(ADMIN));
+    check("שילמתי: למנהל מיד עם אשר / דחה", claimId && ids(toAdmin).includes(`אשר תשלום ${claimId}`) && /כתב "שילמתי"/.test(textOf(toAdmin)), textOf(out.slice(mark)));
+    check("שילמתי: הנהג מתבקש צילום מסך", r.some((m) => m.jid.startsWith(DRIVER) && /צילום מסך/.test(m.text)), textOf(r));
+
+    // צילום מסך אחרי: מצטרף לאותה בקשה, מגיע למנהל עם אשר / דחה, והנהג מקבל אישור קבלה
     mark = out.length;
     r = await receive(DRIVER, { imageMessage: { mimetype: "image/jpeg" } });
     const all = out.slice(mark);
-    const toAdmin = all.filter((m) => m.jid.startsWith(ADMIN));
-    const claimId = billing.claims({ pendingOnly: true })[0]?.id;
-    check("צילום: למנהל עם כפתורי אשר / דחה", claimId && ids(toAdmin).includes(`אשר תשלום ${claimId}`) && ids(toAdmin).includes(`דחה תשלום ${claimId}`), textOf(all));
+    toAdmin = all.filter((m) => m.jid.startsWith(ADMIN));
+    check("צילום: אותה בקשה", billing.claims({ pendingOnly: true }).length === 1 && billing.claims({ pendingOnly: true })[0].id === claimId);
+    check("צילום: למנהל עם כפתורי אשר / דחה", ids(toAdmin).includes(`אשר תשלום ${claimId}`) && ids(toAdmin).includes(`דחה תשלום ${claimId}`) && /הצילום בהודעה למעלה/.test(textOf(toAdmin)), textOf(all));
     check("צילום: הנהג קיבל 'קיבלנו'", all.some((m) => m.jid.startsWith(DRIVER) && /קיבלנו/.test(m.text)), textOf(all));
 
     // המנוי הסתיים: אין התראות, ופקודה מקבלת "המנוי הסתיים"

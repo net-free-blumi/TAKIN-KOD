@@ -8,6 +8,7 @@ import { createDriverAppStore } from "./driver-app-store.js";
 import { AppError, createDriverAuth, normalizeMobile } from "./driver-app-auth.js";
 import { createDriverLog, israelDate, summarize } from "./driver-app-log.js";
 import { rangeText, rideWeekStats, weekDays } from "./weekly-summary.js";
+import { SPEEDS } from "./ride-publisher.js";
 import { ALERT_FIELDS, DEFAULT_ALERT_TEMPLATE, DEFAULT_POST_TEMPLATE, POST_FIELDS, buildPostText, buildRideAlertText, cleanTemplate } from "./ride-alert-text.js";
 import { MAX_REPORT_TEXT, buildReport, cleanDeviceInfo, createReportLimiter } from "./driver-app-report.js";
 
@@ -275,6 +276,7 @@ export function createDriverApp({
       if (!phone || !isApproved(phone)) return null;
       const ride = store.addRide(phone, {
         ...describeRide(rideData),
+        favorite: isFavorite(phone, rideData),
         id: crypto.randomBytes(9).toString("base64url"),
         at: now(),
         status: "new",
@@ -441,8 +443,12 @@ export function createDriverApp({
       lists: p.getLists(phone),
       jobs: p.jobs(phone),
       connected: getSession(phone)?.status === "connected",
-      limits: { maxGroups: 25, perHour: 6 },
+      limits: { maxGroups: p.maxGroupsFor ? p.maxGroupsFor(phone) : 25, perHour: 6 },
       settings: p.getSettings(phone),
+      // מהירות הפצה, היסטוריית שינויים, וקבוצות שחסומות לקבלת נסיעות (הפרסום אליהן ממשיך)
+      speeds: Object.entries(SPEEDS).map(([id, s]) => ({ id, label: s.label, note: s.note })),
+      history: p.history ? p.history(phone) : [],
+      blockedGroups: readFilters(store.driver(phone).filters).blockedGroups.filter((id) => id.endsWith("@g.us")),
       thanksPreview: p.previewThanks(phone),
       // לעריכת ההודעה: נקודת התחלה עם שדות, ורשימת השדות
       defaultTemplate: p.defaultTemplate(phone),
@@ -531,6 +537,48 @@ export function createDriverApp({
         post: buildPostText({ text: "שמש ים 180\nריש לקיש 12", name, phone, id: "4821" }, style.post),
       },
     };
+  }
+
+  // ---------- חסימת קבוצה לקבלת נסיעות ----------
+  function setGroupBlocked(rawPhone, id, blocked) {
+    const phone = normalizeMobile(rawPhone);
+    if (!phone || !/^[\d-]{5,40}@g\.us$/.test(id)) throw new AppError(400, "קבוצה לא תקינה");
+    const data = store.driver(phone);
+    const current = readFilters(data.filters).blockedGroups.filter((g) => g !== id);
+    data.filters = checked(() => parseFilters({ blockedGroups: blocked ? [...current, id] : current }, data.filters));
+    store.changed(phone);
+    store.flush();
+    return data.filters.blockedGroups.includes(id);
+  }
+
+  // ---------- סדרנים מועדפים: הנסיעות שלהם מגיעות מסומנות ⭐ ----------
+  const MAX_FAVORITES = 50;
+  function favoritesOf(rawPhone) {
+    const phone = normalizeMobile(rawPhone);
+    return phone ? [...(store.driver(phone).favorites || [])] : [];
+  }
+  function setFavorite(rawPhone, dispatcher, on = true, name = "") {
+    const phone = normalizeMobile(rawPhone);
+    const who = normalizeMobile(dispatcher);
+    if (!phone || !who) throw new AppError(400, "מספר הסדרן לא תקין");
+    const data = store.driver(phone);
+    const list = (data.favorites || []).filter((f) => f.phone !== who);
+    if (on) {
+      if (list.length >= MAX_FAVORITES) throw new AppError(400, `עד ${MAX_FAVORITES} סדרנים מועדפים`);
+      list.push({ phone: who, name: String(name || "").replace(/\s+/g, " ").trim().slice(0, 40), at: now() });
+    }
+    data.favorites = list;
+    store.changed(phone);
+    store.flush();
+    return [...list];
+  }
+  // הנסיעה מסדרן מועדף: לפי המספר של השולח, או המספר שכתוב בנסיעה
+  function isFavorite(rawPhone, rideData = {}) {
+    const favs = favoritesOf(rawPhone);
+    if (!favs.length) return false;
+    const text = String(rideData.rawText || rideData.cleanedText || "");
+    const numbers = [rideData.senderPhone, ...(text.match(/(?:\+?972|0)5\d[-\s]?\d{3}[-\s]?\d{4}/g) || [])].map(normalizeMobile).filter(Boolean);
+    return favs.some((f) => numbers.includes(f.phone));
   }
 
   // ---------- מנוי ----------
@@ -669,10 +717,21 @@ export function createDriverApp({
         feeMode: body.feeMode, fee: body.fee, percent: body.percent,
         pay: body.pay && typeof body.pay === "object" ? body.pay : undefined, thanks: body.thanks,
         template: body.template === undefined ? undefined : String(body.template),
+        speed: body.speed === undefined ? undefined : String(body.speed),
       }),
       thanksPreview: p.previewThanks(device.phone),
       defaultTemplate: p.defaultTemplate(device.phone),
     })),
+    // סדר הקבוצות ברשימה: העליונה מקבלת ראשונה
+    "POST /publish/list/move": ({ device, body }) => viaPublisher((p) => ({ list: p.moveGroup(device.phone, Number(body.no), String(body.id ?? ""), body.to) })),
+    "POST /publish/list/add": ({ device, body }) => viaPublisher((p) => ({ list: p.addGroups(device.phone, Number(body.no), Array.isArray(body.groups) ? body.groups : []) })),
+    "POST /publish/list/remove": ({ device, body }) => viaPublisher((p) => ({ list: p.removeGroup(device.phone, Number(body.no), String(body.id ?? "")) })),
+    "POST /publish/list/transfer": ({ device, body }) => viaPublisher((p) => ({ lists: p.transferGroup(device.phone, Number(body.no), String(body.id ?? ""), Number(body.toNo)) })),
+    "POST /publish/undo": ({ device, body }) => viaPublisher((p) => p.undo(device.phone, String(body.id ?? ""))),
+    // חסימה לקבלת נסיעות מקבוצה (לא עוצר את הפרסום אליה)
+    "POST /publish/block": ({ device, body }) => ({ blocked: setGroupBlocked(device.phone, String(body.id ?? ""), body.blocked === true) }),
+    "GET /favorites": ({ device }) => ({ favorites: favoritesOf(device.phone) }),
+    "POST /favorites": ({ device, body }) => ({ favorites: setFavorite(device.phone, body.phone, body.on !== false, String(body.name ?? "")) }),
     "POST /filters": ({ device, body }) => {
       const data = store.driver(device.phone);
       data.filters = checked(() => parseFilters(body, data.filters));
@@ -795,5 +854,5 @@ export function createDriverApp({
     detectApproval(upsert, phone);
   }
 
-  return { handle, addRide, linkAlert, markRequested, filterRide, ingestChats, groupMessage, publishEvent, publishChanged, shutdown, weekStats, isWeeklyOff, setWeeklyOff, getStyle, setStyle, styleState };
+  return { handle, addRide, linkAlert, markRequested, filterRide, ingestChats, groupMessage, publishEvent, publishChanged, shutdown, weekStats, isWeeklyOff, setWeeklyOff, getStyle, setStyle, styleState, favoritesOf, setFavorite, isFavorite, setGroupBlocked, blockedGroupsOf: (p) => { const phone = normalizeMobile(p); return phone ? readFilters(store.driver(phone).filters).blockedGroups : []; } };
 }

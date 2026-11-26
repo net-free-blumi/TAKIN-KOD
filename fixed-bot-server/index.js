@@ -123,6 +123,7 @@ import { describeRoute } from "./driver-app-route.js";
 import { CONFIRM_RE } from "./driver-app-secure.js";
 import { createDriverApp } from "./driver-app.js";
 import { normalizeMobile } from "./driver-app-auth.js";
+import { SPEEDS as PUBLISH_SPEEDS } from "./ride-publisher.js";
 import { createRidePublisher, PublishError, splitCustomerPhone, quotedIdOf, listNoForLetter, LIMITS as PUBLISH_LIMITS } from "./ride-publisher.js";
 import { createBilling, BillingError, normalizePhone as billingPhone, localPhone as billingLocal, METHODS as PAY_METHOD_LABELS } from "./billing.js";
 import { buildWeeklySummaryText } from "./weekly-summary.js";
@@ -921,9 +922,14 @@ async function deliverToMessengers(driverSock, driverPhone, rideData, originalMs
   try {
     template = driverApp.getStyle(driverPhone).alert;
   } catch (e) {}
-  const alertMsg = rideData.customAlertText || buildRideAlertText(rideData, { rideNo, template });
+  // סדרן מועדף של הנהג: שורה בולטת בראש ההתראה
+  let star = "";
+  try {
+    if (driverApp.isFavorite(driverPhone, rideData)) star = "⭐ *סדרן מועדף*\n";
+  } catch (e) {}
+  const alertMsg = rideData.customAlertText || star + buildRideAlertText(rideData, { rideNo, template });
   // עם כפתור "✋ ת": אותה הודעה, וההוראה מזכירה את הכפתור
-  const buttonsMsg = rideData.customAlertText || buildRideAlertText(rideData, { rideNo, buttons: true, template });
+  const buttonsMsg = rideData.customAlertText || star + buildRideAlertText(rideData, { rideNo, buttons: true, template });
   // בניית רשימת יעדי שליחה עם גיבוי:
   // 1. יעד ראשי (LID או מזהה מותאם)
   // 2. יעד טלפון ישיר רגיל (@s.whatsapp.net) כגיבוי בטוח אם ה-LID נכשל או מנותק!
@@ -2000,6 +2006,8 @@ async function handleIncomingMessage(sock, upsert, sessionContext) {
 
       // הפצת נסיעה: הפץ / שלח הפצה / המשך / עצור / תן לו / עריכת רשימות
       if (await handlePublishCommand(sock, jid, senderPhone, text, norm)) continue;
+      // סדר הקבוצות, מהירות, שינויים והחזרה, חסימת קבוצה, סדרנים מועדפים
+      if (await handleListTools(sock, jid, senderPhone, norm, m)) continue;
 
       // 0. מענה על כפתור תפיסת נסיעה / תגובה "תן" / "ת" על הודעת נסיעה
       const quotedStanzaId =
@@ -2788,7 +2796,9 @@ function claimAdminCard(claim) {
     `👤 ${claim.name || driverName(claim.phone)} · ${billingLocal(claim.phone)}`,
     `📋 ${v.label}${v.endText ? ` · עד ${v.endText}` : ""}`,
     `💰 ${v.price} ₪`,
-    claim.source === "app" ? "📱 סימן באפליקציה \"שילמתי\" (בלי צילום)" : "📸 הצילום בהודעה למעלה",
+    claim.hasImage ? "📸 הצילום בהודעה למעלה"
+      : claim.source === "app" ? "📱 לחץ \"שילמתי\" באפליקציה. ביקשתי ממנו צילום מסך"
+        : "💬 כתב \"שילמתי\". ביקשתי ממנו צילום מסך",
     "",
     "✅ אישור מאריך בחודש מהמאוחר מבין היום לסוף המנוי.",
   ];
@@ -2820,16 +2830,10 @@ async function notifyAdminOfClaim(claim, forwardMsg = null) {
 
 async function handlePaymentImage(sock, m, jid, senderPhone, pushName) {
   if (!billing.expectsPayment(senderPhone)) return false;
-  const { claim, isNew } = billing.addClaim(senderPhone, { name: driverName(senderPhone) || pushName });
-  // כל צילום עובר למנהל. הכרטיס עם הכפתורים רק פעם אחת לבקשה
-  if (isNew) {
-    await notifyAdminOfClaim(claim, m);
-  } else {
-    try {
-      await sock.sendMessage(adminJid(), { forward: m });
-    } catch (e) {}
-  }
-  if (isNew) await sendCard(sock, jid, { text: billing.text("received", senderPhone) });
+  const { claim, isNew } = billing.addClaim(senderPhone, { name: driverName(senderPhone) || pushName, kind: "image" });
+  // כל צילום עובר למנהל מיד, עם אשר / דחה (גם כשהבקשה נפתחה ב"שילמתי")
+  await notifyAdminOfClaim(claim, m);
+  if (isNew || claim.count === 2) await sendCard(sock, jid, { text: billing.text("received", senderPhone) });
   return true;
 }
 
@@ -2848,10 +2852,16 @@ async function handleBillingDriverCommand(sock, jid, phone, norm, pushName) {
     await sendCard(sock, jid, billingCard("payInfo", phone));
     return true;
   }
-  if (["שילמתי", "שילמתי מנוי", "העברתי", "שלמתי"].includes(norm)) {
+  if (["שילמתי", "שילמתי מנוי", "העברתי", "שלמתי", "שולם"].includes(norm)) {
     if (!billing.settings().enabled) return false;
-    billing.markIntent(phone);
-    await sendCard(sock, jid, { text: "📸 מעולה! שלחו לכאן *צילום מסך* של התשלום, ונאשר בהקדם." });
+    if (billing.get(phone).status === "exempt") {
+      await sendCard(sock, jid, { text: "✅ החשבון שלך פטור מתשלום. נסיעות טובות 🚖" });
+      return true;
+    }
+    // המנהל מקבל מיד, עם אשר / דחה. הצילום שיגיע אחר כך מצטרף לאותה בקשה
+    const { claim, isNew } = billing.addClaim(phone, { name: driverName(phone) || pushName, kind: "said" });
+    if (isNew) await notifyAdminOfClaim(claim);
+    await sendCard(sock, jid, { text: "📸 תודה! עכשיו שלחו לכאן *צילום מסך* של התשלום. המנהל כבר קיבל הודעה, ונאשר בהקדם." });
     return true;
   }
   if (["בלי סיכום", "בטל סיכום", "הפסק סיכום", "בלי סיכום שבועי"].includes(norm)) {
@@ -3030,10 +3040,121 @@ cron.schedule("0 9 * * 0", async () => {
   recordEvent("system", `סיכום שבועי נשלח ל-${sent} נהגים`);
 }, { timezone: "Asia/Jerusalem" });
 
+// ==========================================
+// כלים לרשימות ההפצה בבוט (הכול זמין גם באפליקציה):
+// "סדר הפצה ב" · "העבר בהפצה ב 5 ל 1" · "העבר 3 מהפצה להפצה ב" · "מהירות הפצה מהיר"
+// "שינויים בהפצה" · "החזר שינוי 2" · "חסום קבוצה 4" / "פתח קבוצה 4" · "מועדף 050..." / "מועדפים"
+// ==========================================
+const LETTER = "([בגדהוזחטי])";
+async function handleListTools(sock, jid, rawPhone, norm, m) {
+  const phone = cleanPhone(rawPhone);
+  const reply = (text) => sendCard(sock, jid, { text });
+  const listLine = (no) => publisher.getLists(phone)[no - 1];
+  const orderText = (no) => {
+    const list = listLine(no);
+    const blocked = new Set(driverApp.blockedGroupsOf(phone));
+    if (!list.groups.length) return `📋 *${list.name}* ריקה. מוסיפים: *הוסף להפצה${no > 1 ? ` ${LIST_LETTERS_UI[no - 1]}` : ""} 1 2 3* (המספרים מ"הקבוצות שלי").`;
+    return `📋 *סדר ההפצה: ${list.name}*\nהעליונה מקבלת ראשונה.\n\n` +
+      list.groups.map((g, i) => `${i + 1}. ${g.name}${blocked.has(g.id) ? " 🚫" : ""}`).join("\n") +
+      `\n\nלהזזה: *העבר ב${list.syncName} 5 ל 1*\nלרשימה אחרת: *העבר 5 מ${list.syncName} להפצה ב*`;
+  };
+  try {
+    let mm;
+    if ((mm = norm.match(new RegExp(`^סדר (?:ה)?הפצה(?: ${LETTER})?$`)))) {
+      await reply(orderText(listNoForLetter(mm[1])));
+      return true;
+    }
+    if ((mm = norm.match(new RegExp(`^העבר ב?הפצה(?: ${LETTER})? (\\d{1,2}) ל ?(\\d{1,2}|ראש|סוף)$`)))) {
+      const no = listNoForLetter(mm[1]);
+      const g = listLine(no).groups[Number(mm[2]) - 1];
+      if (!g) throw new PublishError(404, "אין קבוצה במקום הזה");
+      const to = mm[3] === "ראש" ? "first" : mm[3] === "סוף" ? "last" : Number(mm[3]);
+      publisher.moveGroup(phone, no, g.id, to);
+      await reply(`✅ הוזז.\n\n${orderText(no)}`);
+      return true;
+    }
+    if ((mm = norm.match(new RegExp(`^העבר (\\d{1,2}) מ ?הפצה(?: ${LETTER})? ל ?הפצה(?: ${LETTER})?$`)))) {
+      const from = listNoForLetter(mm[2]);
+      const to = listNoForLetter(mm[3]);
+      const g = listLine(from).groups[Number(mm[1]) - 1];
+      if (!g) throw new PublishError(404, "אין קבוצה במקום הזה");
+      publisher.transferGroup(phone, from, g.id, to);
+      await reply(`✅ "${g.name}" עברה ל"${listLine(to).name}".`);
+      return true;
+    }
+    if ((mm = norm.match(/^מהירות(?: הפצה)?(?: (רגיל|רגילה|מהיר|מהירה|טורבו))?$/))) {
+      const ids = { "רגיל": "normal", "רגילה": "normal", "מהיר": "fast", "מהירה": "fast", "טורבו": "turbo" };
+      if (mm[1]) publisher.setSettings(phone, { speed: ids[mm[1]] });
+      const current = publisher.getSettings(phone).speed;
+      await reply(`⚡ *מהירות הפצה: ${PUBLISH_SPEEDS[current].label}*\n${PUBLISH_SPEEDS[current].note}\n\n` +
+        Object.values(PUBLISH_SPEEDS).map((s) => `• *מהירות הפצה ${s.label}*`).join("\n"));
+      return true;
+    }
+    if (norm === "שינויים בהפצה" || norm === "היסטוריית הפצה" || norm === "שינויים") {
+      const h = publisher.history(phone).slice(0, 10);
+      await reply(h.length
+        ? `🕓 *שינויים אחרונים ברשימות*\n\n${h.map((x, i) => `${i + 1}. ${x.undone ? "~" : ""}${x.text}${x.undone ? "~ (הוחזר)" : ""}`).join("\n")}\n\nלהחזרה: *החזר שינוי 1*`
+        : "🕓 עוד אין שינויים ברשימות.");
+      return true;
+    }
+    if ((mm = norm.match(/^החזר שינוי (\d{1,2})$/))) {
+      const entry = publisher.history(phone)[Number(mm[1]) - 1];
+      if (!entry) throw new PublishError(404, "אין שינוי במספר הזה");
+      publisher.undo(phone, entry.id);
+      await reply(`↩️ הוחזר: ${entry.text}`);
+      return true;
+    }
+    if ((mm = norm.match(/^(חסום|פתח) קבוצה (\d{1,3})$/))) {
+      const groups = await listDriverGroups(phone);
+      if (!groups) throw new PublishError(409, "אי אפשר לקרוא את הקבוצות כרגע. ודא שהוואטסאפ מחובר.");
+      const g = groups[Number(mm[2]) - 1];
+      if (!g) throw new PublishError(404, "אין קבוצה במספר הזה. המספרים ב\"הקבוצות שלי\".");
+      driverApp.setGroupBlocked(phone, g.id, mm[1] === "חסום");
+      await reply(mm[1] === "חסום"
+        ? `🚫 לא תקבל נסיעות מ"${g.name}". אם היא ברשימת הפצה, הפרסום אליה ממשיך.`
+        : `✅ "${g.name}" פתוחה שוב לקבלת נסיעות.`);
+      return true;
+    }
+    // סדרנים מועדפים. "מועדף" בציטוט של התראה = הסדרן של הנסיעה
+    if ((mm = norm.match(/^(הסר )?מועדף(?: ([0-9 ]{9,15}))?$/))) {
+      let target = mm[2] ? mm[2].replace(/\s+/g, "") : "";
+      let name = "";
+      if (!target) {
+        const quoted = m?.message?.extendedTextMessage?.contextInfo?.stanzaId;
+        const info = quoted ? sentAlertsCache.get(quoted) : null;
+        target = info?.senderPhone || "";
+        name = info?.senderName || "";
+        if (!target) throw new PublishError(400, "כתוב *מועדף* ומספר, או השב *מועדף* בציטוט של התראה על נסיעה.");
+      }
+      const list = driverApp.setFavorite(phone, target, !mm[1], name);
+      await reply(mm[1] ? `✅ הוסר מהמועדפים. נשארו ${list.length}.` : `⭐ נוסף למועדפים. נסיעות ממנו יגיעו מסומנות ⭐.\nכל המועדפים: *מועדפים*`);
+      return true;
+    }
+    if (norm === "מועדפים" || norm === "סדרנים מועדפים") {
+      const list = driverApp.favoritesOf(phone);
+      await reply(list.length
+        ? `⭐ *הסדרנים המועדפים שלך*\n\n${list.map((f, i) => `${i + 1}. ${f.name ? `${f.name} · ` : ""}${formatIsraeliPhone(f.phone)}`).join("\n")}\n\nלהסרה: *הסר מועדף 050...*`
+        : "⭐ אין לך עדיין סדרנים מועדפים.\nלהוספה: *מועדף 0501234567*, או השב *מועדף* בציטוט של התראה.");
+      return true;
+    }
+    return false;
+  } catch (err) {
+    if (!(err instanceof PublishError) && !err?.status) recordError("list_tools", err);
+    await reply(`⚠️ ${err?.message || "משהו השתבש. נסה שוב."}`);
+    return true;
+  }
+}
+const LIST_LETTERS_UI = ["", "ב", "ג", "ד", "ה", "ו", "ז", "ח", "ט", "י"];
+
 // אפליקציית הנהגים: הבוט הראשי שולח את קוד הכניסה
 const driverApp = createDriverApp({
   billing,
-  notifyPaid: (phone, claim) => notifyAdminOfClaim(claim),
+  // "שילמתי" באפליקציה: המנהל מקבל מיד, והנהג מתבקש בוואטסאפ לשלוח צילום מסך
+  notifyPaid: async (phone, claim) => {
+    const ok = await notifyAdminOfClaim(claim);
+    if (ok) await sendToDriver(phone, { text: "📸 קיבלנו שלחצת \"שילמתי\". שלחו לכאן *צילום מסך* של התשלום, ונאשר בהקדם." }).catch(() => null);
+    return ok;
+  },
   dir: path.join(__dirname, "driver-app-data"),
   isApproved: (phone) => phone !== cleanPhone(loadUsersData().botPhone) && isUserApproved(phone),
   getProfile: (phone) => {
