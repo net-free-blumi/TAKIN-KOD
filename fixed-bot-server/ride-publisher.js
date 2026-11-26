@@ -11,8 +11,7 @@ import path from "node:path";
 
 // עד 10 רשימות. בוואטסאפ: "הפצה", "הפצה ב" ... "הפצה י"
 export const LIST_LETTERS = "אבגדהוזחטי";
-// בינתיים 3 רשימות. להרחבה ל-10: להסיר את slice ולעדכן את הבוט והאפליקציה (שלח הפצה, הוסף להפצה, תצוגת הרשימות)
-export const LIST_NAMES = [...LIST_LETTERS.slice(0, 3)].map((l, i) => (i === 0 ? "הפצה" : `הפצה ${l}`));
+export const LIST_NAMES = [...LIST_LETTERS].map((l, i) => (i === 0 ? "הפצה" : `הפצה ${l}`));
 // "ב" -> 2. בלי אות -> 1
 export const listNoForLetter = (letter) => (letter ? LIST_LETTERS.indexOf(letter) + 1 : 1);
 const validListNo = (no) => Number.isInteger(Number(no)) && Number(no) >= 1 && Number(no) <= LIST_NAMES.length;
@@ -173,7 +172,9 @@ export function createRidePublisher({
     // name = השם שהנהג בחר (מוצג באפליקציה ובבוט). syncName = שם הרשימה בוואטסאפ לסנכרון
     return LIST_NAMES.map((name, i) => {
       const list = d.lists[i + 1] || { groups: [] };
-      return { no: i + 1, name: d.titles?.[i + 1] || name, syncName: name, groups: list.groups || [], source: list.source || "", updatedAt: list.updatedAt || 0 };
+      const groups = list.groups || [];
+      // used = יש בה קבוצות או שם משלך. מוצגות רק הרשימות שבשימוש, ועוד אחת ריקה להוספה
+      return { no: i + 1, name: d.titles?.[i + 1] || name, syncName: name, groups, used: Boolean(groups.length || d.titles?.[i + 1]), source: list.source || "", updatedAt: list.updatedAt || 0 };
     });
   }
 

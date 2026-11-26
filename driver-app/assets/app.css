@@ -471,3 +471,4 @@ button.sticky { position: sticky; bottom: 8px; }
 }
 .list-title { margin-bottom: 12px; }
 .list-title p { margin-top: 4px; }
+.list-pick button.chip.selected { background: var(--btn-main); border-color: var(--btn-main); color: var(--btn-main-text); font-weight: bold; }

@@ -491,6 +491,28 @@ test("עמלה באחוזים: מחיר מהטקסט, חישוב 10% ואמצע�
   }
 });
 
+test("עד 10 רשימות: הפצה ד עד הפצה י, ומעבר לזה לא", async () => {
+  const t = setup();
+  try {
+    assert.equal(listNoForName("הפצה ד"), 4);
+    assert.equal(listNoForName("הפצה י"), 10);
+    assert.equal(listNoForName("הפצה כ"), 0);
+    assert.equal(t.pub.getLists(PHONE).length, 10);
+    t.pub.setList(PHONE, 10, [G(1)]);
+    assert.equal(t.pub.getLists(PHONE)[9].used, true);
+    assert.equal(t.pub.getLists(PHONE)[3].used, false);
+    assert.throws(() => t.pub.setList(PHONE, 11, [G(1)]), /לא קיימת/);
+    assert.equal(t.pub.start(PHONE, { text: "שמש ים 180", list: 10 }).listName, "הפצה י");
+    // רשימה ד מוואטסאפ מסתנכרנת
+    t.pub.onLabelEdit(PHONE, { id: "40", name: "הפצה ד" });
+    t.pub.onLabelAssociation(PHONE, { type: "add", association: { type: "label_jid", chatId: G(2).id, labelId: "40" } });
+    await new Promise((r) => setTimeout(r, 30));
+    assert.equal(t.pub.getLists(PHONE)[3].groups.length, 1);
+  } finally {
+    t.cleanup();
+  }
+});
+
 test("שם משלך לרשימה: מוצג בהפצה, והסנכרון מוואטסאפ ממשיך לפי השם הרגיל", async () => {
   const t = setup();
   try {

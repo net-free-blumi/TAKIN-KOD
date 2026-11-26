@@ -567,7 +567,16 @@ export function siteSearchCard({ before, after, linkState }) {
 
 // ---------- הפצת נסיעה (ride-publisher.js) ----------
 
-const LIST_LABELS = ["הפצה", "הפצה ב", "הפצה ג"];
+const LIST_LETTERS = "אבגדהוזחטי";
+const LIST_LABELS = [...LIST_LETTERS].map((l, i) => (i === 0 ? "הפצה" : `הפצה ${l}`));
+// הרשימות שבשימוש, ועוד אחת ריקה להוספה (עד 10)
+const shownLists = (lists = []) => {
+  const used = lists.filter((l) => l.used);
+  const empty = lists.find((l) => !l.used);
+  return empty ? [...used, empty] : used;
+};
+// מה מקלידים לרשימה הזו: "הוסף להפצה" / "הוסף להפצה ב"
+const listCommandSuffix = (no) => (no > 1 ? ` ${LIST_LETTERS[no - 1]}` : "");
 const localPhone = (p) => {
   const d = String(p || "").replace(/\D/g, "");
   const local = d.startsWith("972") ? `0${d.slice(3)}` : d;
@@ -579,7 +588,7 @@ export function howPublishCard() {
   return {
     text:
       `📣 *הפצת נסיעה*\n\n` +
-      `*1. בוחרים קבוצות.* יש 3 רשימות: *הפצה*, *הפצה ב*, *הפצה ג*. אפשר לתת להן שם משלך: *שם להפצה ירושלים*.\n` +
+      `*1. בוחרים קבוצות.* אפשר עד 10 רשימות: *הפצה*, *הפצה ב*, *הפצה ג* ועד *הפצה י*. אפשר לתת להן שם משלך: *שם להפצה ירושלים*.\n` +
       `הכי פשוט: בוואטסאפ, במסננים שמעל הצ'אטים, לוחצים ➕ > רשימה חדשה, קוראים לה *הפצה* ומוסיפים קבוצות. תוך דקה הבוט מתעדכן ושולח אישור.\n` +
       `אפשר גם באפליקציה, או כאן: *הקבוצות שלי* ואז *הוסף להפצה 3 7*.\n\n` +
       `*2. מפיצים.* כותבים *הפץ* ואחריו הנסיעה, ובוחרים רשימה.\n` +
@@ -607,7 +616,7 @@ export function publishHomeCard({ linkState, publish }) {
     text:
       `📣 *הפצת נסיעה*\n\n` +
       `כתוב *הפץ* ואחריו הנסיעה, למשל:\n*הפץ שמש ים 180 עכשיו*\n\n` +
-      `📋 *הרשימות שלך:*\n${lists.map(listLine).join("\n")}`,
+      `📋 *הרשימות שלך:*\n${shownLists(lists).map(listLine).join("\n")}`,
     buttons: [{ id: CMD.publishLists, text: "📋 רשימות הפצה" }, { id: CMD.howPublish, text: "📖 איך מפיצים" }, BTN.menu],
   };
 }
@@ -622,9 +631,17 @@ export function publishPreviewCard({ text, customerPhone, lists }) {
       buttons: [{ id: CMD.publishLists, text: "📋 רשימות הפצה" }, { id: CMD.howPublish, text: "📖 איך מפיצים" }],
     };
   }
-  const buttons = ready.slice(0, 2).map((l) => ({ id: `${CMD.publishSend} ${l.no}`, text: `🚀 ${l.name} (${l.groups.length})` }));
-  buttons.push({ id: CMD.publishCancel, text: "❌ ביטול" });
-  return { text: `${body}\n\nלאיזו רשימה?`, buttons };
+  const send = (l) => ({ id: `${CMD.publishSend} ${l.no}`, text: `🚀 ${l.name} (${l.groups.length})` });
+  // עד 2 רשימות: כפתורים. יותר: תפריט לבחירה
+  if (ready.length <= 2) return { text: `${body}\n\nלאיזו רשימה?`, buttons: [...ready.map(send), { id: CMD.publishCancel, text: "❌ ביטול" }] };
+  return {
+    text: `${body}\n\nלאיזו רשימה? בחר בתפריט.`,
+    buttons: [{ id: CMD.publishCancel, text: "❌ ביטול" }],
+    menu: {
+      label: "🚀 בחר רשימה",
+      sections: [{ title: "לאן להפיץ?", rows: ready.slice(0, 10).map((l) => row(`${CMD.publishSend} ${l.no}`, `🚀 ${l.name}`.slice(0, 24), `${l.groups.length} קבוצות`)) }],
+    },
+  };
 }
 
 export function publishCancelledCard() {
@@ -857,8 +874,11 @@ export function publishFinishedCard({ job }) {
 }
 
 export function publishListsCard({ publish }) {
-  const lists = publish?.lists || [];
+  const lists = shownLists(publish?.lists || []);
   const lines = lists.map((l) => {
+    if (!l.used) {
+      return `➕ *רשימה חדשה* (${l.syncName}): *הוסף להפצה${listCommandSuffix(l.no)} 3 7*, או בוואטסאפ רשימה בשם *${l.syncName}*`;
+    }
     const from = l.source === "whatsapp" ? " · מסונכרנת מוואטסאפ" : "";
     const groups = l.groups.map((g) => `   - ${g.name}`).join("\n");
     const wa = l.syncName && l.syncName !== l.name ? ` · בוואטסאפ: ${l.syncName}` : "";
@@ -868,7 +888,7 @@ export function publishListsCard({ publish }) {
     text:
       `${lines.join("\n\n")}\n\n` +
       `*לשנות:*\n` +
-      `• בוואטסאפ: רשימה בשם *הפצה* (או *הפצה ב*, *הפצה ג*) במסננים שמעל הצ'אטים\n` +
+      `• בוואטסאפ: רשימה בשם *הפצה* (או *הפצה ב*, *הפצה ג* ועד *הפצה י*) במסננים שמעל הצ'אטים\n` +
       `• באפליקציה: הפצה > רשימות\n` +
       `• כאן: *הקבוצות שלי*, ואז *הוסף להפצה 3 7* או *הסר מהפצה ב 2*\n` +
       `• שם משלך: *שם להפצה ירושלים* או *שם להפצה ב צפון* (*מחק* מחזיר לשם הרגיל)`,
@@ -881,13 +901,14 @@ export function allGroupsCard({ groups, lists }) {
   if (!groups) {
     return { text: "⚠️ אי אפשר לקרוא את הקבוצות שלך כרגע. ודא שהוואטסאפ מחובר ונסה שוב.", buttons: [BTN.menu] };
   }
-  const MARK = ["", "✅", "🅱️", "🇬"];
-  const marks = (id) => lists.filter((l) => l.groups.some((g) => g.id === id)).map((l) => MARK[l.no]).join("");
+  // סימון לפי אות הרשימה: [א] = הפצה, [ב] = הפצה ב...
+  const marks = (id) => lists.filter((l) => l.groups.some((g) => g.id === id)).map((l) => `[${LIST_LETTERS[l.no - 1]}]`).join("");
   const shown = groups.slice(0, 150);
-  let text = `👥 *הקבוצות שלך* (${groups.length})\n✅ = בהפצה · 🅱️ = בהפצה ב · 🇬 = בהפצה ג\n\n`;
+  const legend = lists.filter((l) => l.used).map((l) => `[${LIST_LETTERS[l.no - 1]}] = ${l.name}`).join(" · ");
+  let text = `👥 *הקבוצות שלך* (${groups.length})\n${legend ? `${legend}\n` : ""}\n`;
   text += shown.map((g, i) => `${i + 1}. ${g.name}${marks(g.id) ? ` ${marks(g.id)}` : ""}`).join("\n");
   if (groups.length > shown.length) text += `\n... ועוד ${groups.length - shown.length}. את השאר מוסיפים באפליקציה או ברשימה בוואטסאפ.`;
-  text += `\n\n*להוסיף:* הוסף להפצה 3 7 12\n*להסיר:* הסר מהפצה 3\nלרשימה אחרת: *הוסף להפצה ב 4*`;
+  text += `\n\n*להוסיף:* הוסף להפצה 3 7 12\n*להסיר:* הסר מהפצה 3\nלרשימה אחרת (עד 10): *הוסף להפצה ב 4*, *הוסף להפצה ד 5*...`;
   return { text, buttons: [{ id: CMD.publishLists, text: "📋 רשימות הפצה" }] };
 }
 

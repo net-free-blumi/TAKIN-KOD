@@ -123,7 +123,7 @@ import { describeRoute } from "./driver-app-route.js";
 import { CONFIRM_RE } from "./driver-app-secure.js";
 import { createDriverApp } from "./driver-app.js";
 import { normalizeMobile } from "./driver-app-auth.js";
-import { createRidePublisher, PublishError, splitCustomerPhone, quotedIdOf, LIMITS as PUBLISH_LIMITS } from "./ride-publisher.js";
+import { createRidePublisher, PublishError, splitCustomerPhone, quotedIdOf, listNoForLetter, LIMITS as PUBLISH_LIMITS } from "./ride-publisher.js";
 
 const DEBUG_FILTER = true;
 const DEDUPE_MINUTES = 15;
@@ -2576,7 +2576,7 @@ async function handlePublishCommand(sock, jid, rawPhone, text, norm) {
       await reply(ui.publishPreviewCard({ text: body, customerPhone, lists: publisher.getLists(phone) }));
       return true;
     }
-    if ((m = norm.match(/^שלח הפצה ([123])$/))) {
+    if ((m = norm.match(/^שלח הפצה (\d{1,2})$/))) {
       const pending = pendingPublish.get(phone);
       if (!pending || Date.now() - pending.at > PUBLISH_DRAFT_MS) {
         throw new PublishError(404, "אין נסיעה שמחכה לשליחה. כתוב *הפץ* ואחריו הנסיעה.");
@@ -2672,15 +2672,15 @@ async function handlePublishCommand(sock, jid, rawPhone, text, norm) {
       return true;
     }
     // שם משלך לרשימה: "שם להפצה ירושלים", "שם להפצה ב צפון". "מחק" מחזיר לשם הרגיל
-    if ((m = raw.match(/^שם להפצה(?:\s+([בג])(?=\s))?\s+(.{1,30})$/))) {
-      const no = m[1] === "ב" ? 2 : m[1] === "ג" ? 3 : 1;
+    if ((m = raw.match(/^שם להפצה(?:\s+([בגדהוזחטי])(?=\s))?\s+(.{1,30})$/))) {
+      const no = listNoForLetter(m[1]);
       const title = m[2].trim();
       publisher.setListTitle(phone, no, /^(מחק|רגיל)$/.test(title) ? "" : title);
       await reply(ui.publishListsCard({ publish: { lists: publisher.getLists(phone) } }));
       return true;
     }
-    if ((m = norm.match(/^(הוסף ל|הסר מ)הפצה(?: ([בג]))? ([\d\s]+)$/))) {
-      const no = m[2] === "ב" ? 2 : m[2] === "ג" ? 3 : 1;
+    if ((m = norm.match(/^(הוסף ל|הסר מ)הפצה(?: ([בגדהוזחטי]))? ([\d\s]+)$/))) {
+      const no = listNoForLetter(m[2]);
       const nums = m[3].trim().split(/\s+/).map(Number).filter((n) => n > 0);
       const groups = await listDriverGroups(phone);
       if (!groups) {
@@ -2691,7 +2691,7 @@ async function handlePublishCommand(sock, jid, rawPhone, text, norm) {
       await reply(ui.listEditedCard({ list }));
       return true;
     }
-    if ((m = norm.match(/^רשימה (החלף|הוסף|השאר|מחק|שמור) ([123])$/))) {
+    if ((m = norm.match(/^רשימה (החלף|הוסף|השאר|מחק|שמור) (\d{1,2})$/))) {
       const [kind, choice] = LIST_ANSWERS[m[1]];
       await reply(ui.listAnsweredCard({ list: publisher.answer(phone, kind, Number(m[2]), choice, groupNameOf) }));
       return true;

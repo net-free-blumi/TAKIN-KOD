@@ -683,6 +683,10 @@ try {
     check("הפצה: נוסח משלך נשמר ומוצג בדוגמה", /היי יוסי, 18 ₪ בביט 050-1234567/.test(textOf(r)), textOf(r));
     r = await type(DRIVER, "שם להפצה ירושלים מהיר");
     check("הפצה: שם משלך לרשימה", /ירושלים מהיר\* \(2\)/.test(textOf(r)) && /בוואטסאפ: הפצה/.test(textOf(r)), textOf(r));
+    r = await type(DRIVER, "הוסף להפצה ד 2");
+    check("הפצה: רשימה רביעית (הפצה ד)", /עודכנה: 1 קבוצות/.test(textOf(r)), textOf(r));
+    r = await type(DRIVER, "רשימות הפצה");
+    check("הפצה: מוצגות רק רשימות בשימוש ועוד אחת חדשה", /הפצה ד/.test(textOf(r)) && /רשימה חדשה\* \(הפצה ב\)/.test(textOf(r)) && !/הפצה ה/.test(textOf(r)), textOf(r));
     r = await type(DRIVER, "הפץ שמש ים 200");
     check("הפצה: השם החדש בכפתור הבחירה", r.some((m) => m.buttons.some((b) => /ירושלים מהיר/.test(b.p.display_text || ""))), JSON.stringify(r.map((m) => m.buttons)));
   }

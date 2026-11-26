@@ -35,6 +35,12 @@ window.createPublish = function createPublish(ctx) {
     const d = String(p || '').replace(/\D/g, '');
     return d.startsWith('972') ? `0${d.slice(3)}` : d;
   };
+  const shownLists = () => {
+    const lists = data?.lists || [];
+    if (!lists.some((l) => l.used !== undefined)) return lists;
+    const empty = lists.find((l) => !l.used);
+    return [...lists.filter((l) => l.used), ...(empty ? [empty] : [])];
+  };
   const sending = () => Boolean(data?.jobs?.some((j) => j.state === 'sending' || j.state === 'queued'));
   const recent = () => Boolean(data?.jobs?.some((j) => Date.now() - j.createdAt < 30 * 60 * 1000));
 
@@ -107,8 +113,15 @@ window.createPublish = function createPublish(ctx) {
       text,
       customer,
       h('p', { className: 'muted' }, 'המספר לא יפורסם. הוא נשלח רק למי שתיתן לו את הנסיעה.'),
-      lists.length > 1
+      // 2-3 רשימות: כפתורי בחירה. יותר: שבבים שנשברים לשורות
+      lists.length > 1 && lists.length <= 3
         ? segments(lists.map((l) => [l.no, `${l.name} (${l.groups.length})`]), draft.list, (no) => { draft.list = no; ctx.refreshTab('publish'); })
+        : null,
+      lists.length > 3
+        ? h('div', { className: 'chips list-pick' }, lists.map((l) => button(`${l.name} (${l.groups.length})`, () => {
+          draft.list = l.no;
+          ctx.refreshTab('publish');
+        }, l.no === draft.list ? 'chip selected' : 'chip')))
         : null,
       lists.length ? null : h('p', { className: 'notice' }, 'כל רשימות ההפצה ריקות. בחר קבוצות למטה.'),
       go,
@@ -269,13 +282,15 @@ window.createPublish = function createPublish(ctx) {
   function listsSection() {
     return h('section', { className: 'section' },
       h('h2', null, 'רשימות הפצה'),
-      data.lists.map((l) => button(
-        [h('div', null, h('strong', null, l.name), h('span', null,
-          l.groups.length ? `${l.groups.length} קבוצות${l.source === 'whatsapp' ? ' · מסונכרנת מוואטסאפ' : ''}` : 'ריקה')),
+      // הרשימות שבשימוש, ועוד אחת ריקה להוספה (עד 10). שרת ישן בלי "used": כל הרשימות
+      shownLists().map((l) => button(
+        [h('div', null, h('strong', null, l.used === false ? '➕ רשימה חדשה' : l.name), h('span', null,
+          l.groups.length ? `${l.groups.length} קבוצות${l.source === 'whatsapp' ? ' · מסונכרנת מוואטסאפ' : ''}`
+            : l.used === false ? `בוואטסאפ: "${l.syncName}"` : 'ריקה')),
         icon('forward')],
         () => openList(l.no), 'field')),
       h('p', { className: 'muted' },
-        'אפשר לבנות את הרשימה גם בוואטסאפ: במסננים שמעל הצ\'אטים לוחצים ➕ > רשימה חדשה, קוראים לה "הפצה" (או "הפצה ב", "הפצה ג") ומוסיפים קבוצות. הבוט מתעדכן לבד תוך דקה.'),
+        'אפשר לבנות רשימה גם בוואטסאפ: במסננים שמעל הצ\'אטים לוחצים ➕ > רשימה חדשה, קוראים לה "הפצה" (או "הפצה ב", "הפצה ג" ועד "הפצה י") ומוסיפים קבוצות. הבוט מתעדכן לבד תוך דקה.'),
       h('p', { className: 'muted' }, `עד ${data.limits?.maxGroups || 25} קבוצות ברשימה ועד ${data.limits?.perHour || 6} הפצות בשעה, כדי שוואטסאפ לא יחסום את המספר שלך.`));
   }
 
