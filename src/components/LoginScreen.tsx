@@ -129,10 +129,10 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
 
           <a
             href="/nahagim.apk"
-            download="נהגים 1.9.0.apk"
+            download="נהגים 1.9.1.apk"
             className="block w-full py-3 rounded-xl border border-amber-400/40 text-amber-300 hover:bg-amber-400/10 font-bold text-sm text-center transition-colors"
           >
-            📲 הורדת אפליקציית הנהגים לאנדרואיד (1.9.0)
+            📲 הורדת אפליקציית הנהגים לאנדרואיד (1.9.1)
           </a>
 
           <p className="text-[11px] text-slate-500 leading-relaxed text-center">

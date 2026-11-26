@@ -478,3 +478,21 @@ button.sticky { position: sticky; bottom: 8px; }
 .stats .stat span { display: block; color: var(--muted); font-size: .8rem; }
 .warn { color: #e0a100; }
 pre.preview { white-space: pre-wrap; word-break: break-word; font-family: inherit; margin: 6px 0 10px; padding: 10px 12px; border-radius: 12px; background: var(--soft); font-size: .9rem; line-height: 1.45; }
+/* סדר הקבוצות ברשימת הפצה */
+.list-hero { margin-bottom: 10px; padding: 14px; border-radius: 18px; background: var(--taxi-soft); }
+.list-hero strong { font-size: 2rem; margin-left: 6px; }
+.list-hero p { margin: 6px 0 0; font-weight: bold; }
+.group-order { margin-bottom: 12px; }
+.order-row { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
+.order-row .order-main { flex: 1; display: flex; align-items: center; gap: 10px; text-align: right; min-height: 52px; }
+.order-row .order-main div { display: flex; flex-direction: column; min-width: 0; }
+.order-row .order-main span.muted { font-size: .8rem; }
+.order-row.blocked .order-main { border-color: var(--bad); }
+.order-row.blocked .order-main span.muted { color: var(--bad); }
+.order-row .pos { flex: none; width: 30px; height: 30px; line-height: 30px; border-radius: 50%; background: var(--taxi); color: #18222f; font-weight: bold; text-align: center; }
+button.round.small, .round-gap { flex: none; width: 40px; min-height: 40px; padding: 0; }
+.round-gap { display: inline-block; }
+.pick-row { display: flex; align-items: center; gap: 10px; cursor: pointer; }
+.pick-row input { width: 22px; height: 22px; flex: none; }
+.tag { display: inline-block; margin-right: 6px; padding: 1px 8px; border-radius: 10px; background: var(--soft); color: var(--muted); font-size: .75rem; }
+.item.undone > div { text-decoration: line-through; opacity: .6; }

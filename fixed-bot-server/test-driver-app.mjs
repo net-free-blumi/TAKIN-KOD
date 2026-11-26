@@ -419,6 +419,51 @@ test("נוסח משלך באפליקציה: התראה ופרסום, תצוגה 
   }
 });
 
+test("רשימות באפליקציה: סדר, הוספה, העברה, החזרה, מהירות, חסימה ומועדף ⭐", async () => {
+  const pub = createRidePublisher({ getSock: () => null });
+  const env = makeApp({ options: { getPublisher: () => pub } });
+  const g = (n) => ({ id: `12036300000000${n}@g.us`, name: `קבוצה ${n}` });
+  try {
+    const token = await login(env);
+    await call(env.app, "POST", "/api/app/publish/list", { no: 1, groups: [g(1), g(2)] }, token);
+    let r = await call(env.app, "POST", "/api/app/publish/list/add", { no: 1, groups: [g(3), g(4)] }, token);
+    assert.equal(r.body.list.groups.length, 4);
+    r = await call(env.app, "POST", "/api/app/publish/list/move", { no: 1, id: g(4).id, to: "first" }, token);
+    assert.equal(r.body.list.groups[0].id, g(4).id);
+    r = await call(env.app, "POST", "/api/app/publish/list/transfer", { no: 1, id: g(2).id, toNo: 2 }, token);
+    assert.equal(r.body.lists[1].groups[0].id, g(2).id);
+    let state = await call(env.app, "GET", "/api/app/publish", null, token);
+    assert.match(state.body.history[0].text, /הועברה/);
+    assert.equal(state.body.speeds.length, 3);
+    r = await call(env.app, "POST", "/api/app/publish/undo", { id: state.body.history[0].id }, token);
+    assert.equal(r.status, 200);
+    assert.equal(r.body.lists[1].groups.length, 0);
+    r = await call(env.app, "POST", "/api/app/publish/settings", { speed: "fast" }, token);
+    assert.equal(r.body.settings.speed, "fast");
+    state = await call(env.app, "GET", "/api/app/publish", null, token);
+    assert.equal(state.body.limits.maxGroups, 50);
+    // חסימה: לא מקבלים ממנה נסיעות, והיא נשארת ברשימת ההפצה
+    r = await call(env.app, "POST", "/api/app/publish/block", { id: g(1).id, blocked: true }, token);
+    assert.equal(r.body.blocked, true);
+    assert.equal(env.app.filterRide("972501234567", { text: "שמש ים", groupJid: g(1).id }), "קבוצה שהנהג כיבה");
+    state = await call(env.app, "GET", "/api/app/publish", null, token);
+    assert.deepEqual(state.body.blockedGroups, [g(1).id]);
+    assert.ok(state.body.lists[0].groups.some((x) => x.id === g(1).id));
+    // סדרן מועדף: נסיעה ממנו מסומנת
+    r = await call(env.app, "POST", "/api/app/favorites", { phone: "052-1111111", name: "משה" }, token);
+    assert.equal(r.body.favorites[0].phone, "972521111111");
+    env.app.addRide("972501234567", { cleanedText: "שמש ים 180", rawText: "שמש ים 180\n052-1111111", groupName: "ק" });
+    env.app.addRide("972501234567", { cleanedText: "שמש ים 190", rawText: "שמש ים 190", groupName: "ק", senderPhone: "972530000000" });
+    const rides = await call(env.app, "GET", "/api/app/rides", null, token);
+    assert.equal(rides.body.rides.find((x) => x.text === "שמש ים 180").favorite, true);
+    assert.equal(rides.body.rides.find((x) => x.text === "שמש ים 190").favorite, false);
+    const bad = await call(env.app, "POST", "/api/app/favorites", { phone: "123" }, token);
+    assert.equal(bad.status, 400);
+  } finally {
+    cleanup(env);
+  }
+});
+
 test("סיכום שבועי: שבוע ראשון עד שבת, שבוע ריק לא נשלח, מוני הפצה", () => {
   // חמישי 26.11.2026
   const thu = Date.UTC(2026, 10, 26, 10);

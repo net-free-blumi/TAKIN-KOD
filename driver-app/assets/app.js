@@ -559,7 +559,7 @@
     const card = h('article', { className: `ride${opts.full ? ' full' : ''}${telegram ? ' tg' : ''}` },
       telegram ? h('div', { className: 'source-tag' }, '✈️ טלגרם') : null,
       h('div', { className: 'top' },
-        button(ride.dispatcher ? `${ride.group} · ${ride.dispatcher}` : ride.group, () => groupSheet(ride), 'group group-link', `הקבוצה ${ride.group}`),
+        button(`${ride.favorite ? '⭐ ' : ''}${ride.dispatcher ? `${ride.group} · ${ride.dispatcher}` : ride.group}`, () => groupSheet(ride), 'group group-link', `הקבוצה ${ride.group}`),
         h('span', { className: ride.status === 'new' && Date.now() - ride.at < 120000 ? 'age fresh' : 'age' }, at)),
       route || price
         ? h('div', { className: 'headline' },
@@ -606,7 +606,19 @@
         ride.manual ? null : tool('copy', 'העתק', () => {
           native.copy(ride.text);
           toast('הנסיעה הועתקה');
-        }));
+        }),
+        // סדרן מועדף: הנסיעות שלו יגיעו מסומנות ⭐ (גם בוואטסאפ)
+        ride.contact && !ride.manual ? button(ride.favorite ? '⭐ הסר ממועדפים' : '☆ סדרן מועדף', () => toggleFavorite(ride)) : null);
+  }
+
+  async function toggleFavorite(ride) {
+    const on = !ride.favorite;
+    await api('POST', '/favorites', { phone: ride.contact, on, name: ride.dispatcher || '' });
+    for (const r of [...state.rides, ...state.mine]) if (r.contact === ride.contact) r.favorite = on;
+    ride.favorite = on;
+    toast(on ? '⭐ נוסף למועדפים. הנסיעות שלו יגיעו מסומנות' : 'הוסר מהמועדפים');
+    closeSheet();
+    render();
   }
 
   // טקסט מקוצר לפי ההגדרות. לחיצה פותחת את כולו

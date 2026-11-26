@@ -26,7 +26,6 @@ window.createPublish = function createPublish(ctx) {
   let draft = { text: '', customer: '', list: 1 };
   let groups = null; // כל הקבוצות, לעריכת רשימה
   let groupsError = '';
-  let picked = null; // Set של מזהי קבוצות בעריכה
   let filter = '';
   let seq = 0;
   let timer = null;
@@ -414,6 +413,8 @@ window.createPublish = function createPublish(ctx) {
       data.jobs.length ? h('section', { className: 'section' }, h('h2', null, 'ההפצות שלי'), data.jobs.slice(0, 8).map(jobCard)) : null,
       composer(),
       listsSection(),
+      speedSection(),
+      historySection(),
       settingsSection(),
     ];
   }
@@ -421,9 +422,7 @@ window.createPublish = function createPublish(ctx) {
   // ---------- עריכת רשימה ----------
 
   async function openList(no) {
-    const list = data.lists.find((l) => l.no === no);
     page = { list: no };
-    picked = new Set(list.groups.map((g) => g.id));
     filter = '';
     ctx.render();
     if (!groups) {
@@ -437,61 +436,207 @@ window.createPublish = function createPublish(ctx) {
     }
   }
 
-  function listScreen() {
-    const list = data.lists.find((l) => l.no === page.list);
+  // ---------- סדר הקבוצות ברשימה: העליונה מקבלת ראשונה ----------
+  const listOf = (no) => data.lists.find((l) => l.no === no);
+  const blockedSet = () => new Set(data.blockedGroups || []);
+  // באילו רשימות אחרות הקבוצה נמצאת
+  const otherLists = (id, no) => data.lists.filter((l) => l.no !== no && l.groups.some((g) => g.id === id)).map((l) => l.name);
+
+  async function moveTo(list, g, to, message) {
+    await act('/publish/list/move', { no: list.no, id: g.id, to }, message);
+  }
+
+  function askPosition(list, g) {
+    const input = h('input', { id: 'publish-position', type: 'number', inputMode: 'numeric', min: 1, max: list.groups.length, placeholder: `1 עד ${list.groups.length}` });
+    input.setAttribute('aria-label', 'מקום חדש');
+    sheet(
+      h('h2', null, `לאיזה מקום להעביר את "${g.name}"?`),
+      input,
+      button('העבר', async () => {
+        const n = Number(input.value);
+        if (!Number.isInteger(n) || n < 1 || n > list.groups.length) throw new Error(`הקלד מספר בין 1 ל-${list.groups.length}`);
+        await moveTo(list, g, n, `הוזזה למקום ${n}`);
+        closeSheet();
+      }, 'primary wide'),
+      button('ביטול', closeSheet, 'link wide'));
+  }
+
+  function chooseList(list, g) {
+    const targets = data.lists.filter((l) => l.no !== list.no && (l.used !== false || !data.lists.some((x) => x.used === false && x.no < l.no)));
+    sheet(
+      h('h2', null, `להעביר את "${g.name}" לרשימה:`),
+      targets.map((l) => button(`${l.used === false ? '➕ רשימה חדשה' : l.name} · ${l.groups.length} קבוצות`, async () => {
+        await act('/publish/list/transfer', { no: list.no, id: g.id, toNo: l.no }, `עברה ל"${l.name}"`);
+        closeSheet();
+      }, 'wide')),
+      button('ביטול', closeSheet, 'link wide'));
+  }
+
+  function groupSheet(list, g, i) {
+    const blocked = blockedSet().has(g.id);
+    const others = otherLists(g.id, list.no);
+    const last = list.groups.length;
+    const run = (fn) => async () => {
+      await fn();
+      closeSheet();
+    };
+    sheet(
+      h('h2', null, g.name),
+      h('p', { className: 'muted' }, `מקום ${i + 1} מתוך ${last} · ${list.name}`),
+      h('p', { className: 'muted' }, others.length ? `נמצאת גם ב: ${others.join(', ')}` : 'נמצאת רק ברשימה הזו'),
+      i > 0 ? button('⬆️ להעביר למקום הראשון', run(() => moveTo(list, g, 'first', 'עכשיו היא מקבלת ראשונה')), 'wide') : null,
+      last > 2 ? button('#️⃣ להעביר למקום מסוים', () => askPosition(list, g), 'wide') : null,
+      i < last - 1 ? button('⬇️ להעביר לסוף הרשימה', run(() => moveTo(list, g, 'last', 'הועברה לסוף')), 'wide') : null,
+      button('⇄ להעביר לרשימה אחרת', () => chooseList(list, g), 'wide'),
+      button(blocked ? '✅ לקבל ממנה נסיעות שוב' : '🚫 לחסום: לא לקבל ממנה נסיעות', run(async () => {
+        await act('/publish/block', { id: g.id, blocked: !blocked }, blocked ? 'מקבלים ממנה נסיעות שוב' : '🚫 לא מקבלים ממנה נסיעות. הפרסום אליה ממשיך');
+        ctx.load();
+      }), blocked ? 'wide' : 'danger wide'),
+      button('🗑️ להסיר מהרשימה', run(() => act('/publish/list/remove', { no: list.no, id: g.id }, 'הוסרה מהרשימה')), 'danger wide'),
+      button('ביטול', closeSheet, 'link wide'));
+  }
+
+  // הוספה של כמה קבוצות בבת אחת. קבוצה שכבר ברשימה אחרת מסומנת, ואפשר להסתיר אותה
+  function addSheet(list) {
+    if (!groups) throw new Error('הקבוצות עוד נטענות. נסה שוב בעוד רגע.');
     const max = data.limits?.maxGroups || 25;
-    if (groupsError) return [h('p', { className: 'banner' }, groupsError), button('נסה שוב', () => { groups = null; groupsError = ''; openList(page.list); }, 'wide')];
-    if (!groups) return [h('p', { className: 'muted' }, 'טוען את הקבוצות שלך...')];
-    // קבוצות שברשימה אבל כבר לא בוואטסאפ: נשארות עם השם השמור
-    const all = [...groups, ...list.groups.filter((g) => !groups.some((x) => x.id === g.id))];
+    const chosen = new Set();
+    let query = '';
+    let hideUsed = false;
+    const box = h('div', { className: 'group-list' });
+    const go = button('', async () => {
+      if (!chosen.size) throw new Error('סמנו קבוצות להוספה');
+      if (list.groups.length + chosen.size > max) throw new Error(`אפשר עד ${max} קבוצות ברשימה`);
+      const add = groups.filter((g) => chosen.has(g.id)).map((g) => ({ id: g.id, name: g.name }));
+      await act('/publish/list/add', { no: list.no, groups: add }, `✓ נוספו ${add.length === 1 ? 'קבוצה אחת' : `${add.length} קבוצות`}`);
+      closeSheet();
+    }, 'primary wide');
+    const label = () => {
+      go.textContent = chosen.size ? `להוסיף ${chosen.size === 1 ? 'קבוצה אחת' : `${chosen.size} קבוצות`}` : 'סמנו קבוצות להוספה';
+    };
+    const draw = () => {
+      const rows = groups
+        .filter((g) => !list.groups.some((x) => x.id === g.id))
+        .filter((g) => !query || g.name.includes(query))
+        .filter((g) => !hideUsed || !otherLists(g.id, list.no).length);
+      box.replaceChildren(...(rows.length ? rows.map((g) => {
+        const others = otherLists(g.id, list.no);
+        const check = h('input', { type: 'checkbox', checked: chosen.has(g.id) });
+        check.setAttribute('aria-label', g.name);
+        check.onchange = () => {
+          if (check.checked) chosen.add(g.id);
+          else chosen.delete(g.id);
+          label();
+        };
+        return h('label', { className: 'item pick-row' },
+          check,
+          h('div', null, g.name, others.length ? h('span', { className: 'tag' }, `כבר ב: ${others.join(', ')}`) : null));
+      }) : [h('p', { className: 'muted' }, 'אין קבוצות להוספה')]));
+    };
+    const search = h('input', { placeholder: 'חפש קבוצה', autocomplete: 'off' });
+    search.setAttribute('aria-label', 'חפש קבוצה');
+    search.oninput = () => { query = search.value; draw(); };
+    const hide = h('input', { type: 'checkbox' });
+    hide.onchange = () => { hideUsed = hide.checked; draw(); };
+    label();
+    draw();
+    sheet(
+      h('h2', null, `הוספה ל"${list.name}"`),
+      h('p', { className: 'muted' }, 'מסמנים כמה קבוצות ולוחצים להוסיף. הן נכנסות בסוף הרשימה.'),
+      search,
+      h('label', { className: 'item' }, hide, h('span', null, 'להסתיר קבוצות שכבר ברשימה אחרת')),
+      box,
+      go,
+      button('ביטול', closeSheet, 'link wide'));
+  }
+
+  function listScreen() {
+    const list = listOf(page.list);
+    const max = data.limits?.maxGroups || 25;
+    const blocked = blockedSet();
     // שם משלך לרשימה, מוצג באפליקציה ובבוט. הסנכרון מוואטסאפ ממשיך לפי השם הרגיל
     const title = h('input', { id: 'publish-list-title', maxLength: 24, value: list.name === list.syncName ? '' : list.name, placeholder: `שם לרשימה (עכשיו: ${list.syncName})` });
     title.setAttribute('aria-label', 'שם הרשימה');
     const titleBox = h('div', { className: 'list-title' },
       h('label', { className: 'muted', htmlFor: 'publish-list-title' }, 'שם הרשימה'),
       title,
+      button('שמור שם', async () => {
+        await api('POST', '/publish/list-title', { no: list.no, title: title.value.trim() });
+        await load();
+        toast('השם נשמר');
+      }, 'chip'),
       h('p', { className: 'muted' }, `בוואטסאפ הרשימה נשארת בשם "${list.syncName}".`));
-    const count = h('p', { className: 'notice' });
-    const updateCount = () => { count.textContent = `נבחרו ${picked.size} מתוך עד ${max} קבוצות`; };
-    const box = h('div', { className: 'group-list' });
+    const rows = h('div', { className: 'group-order' });
     const draw = () => {
-      const found = all.filter((g) => !filter || g.name.includes(filter));
-      // הנבחרות קודם
-      found.sort((a, b) => Number(picked.has(b.id)) - Number(picked.has(a.id)));
-      box.replaceChildren(...found.map((g) => h('div', { className: 'item' },
-        h('div', null, g.name, g.size ? h('span', { className: 'muted' }, ` · ${g.size} חברים`) : null),
-        toggle(picked.has(g.id), () => {
-          if (picked.has(g.id)) picked.delete(g.id);
-          else if (picked.size >= max) throw new Error(`אפשר עד ${max} קבוצות ברשימה`);
-          else picked.add(g.id);
-          updateCount();
-          draw();
-        }, g.name))));
+      const shown = list.groups.map((g, i) => [g, i]).filter(([g]) => !filter || g.name.includes(filter));
+      rows.replaceChildren(...(shown.length ? shown.map(([g, i]) => h('div', { className: `order-row${blocked.has(g.id) ? ' blocked' : ''}` },
+        button([
+          h('span', { className: 'pos' }, String(i + 1)),
+          h('div', null,
+            h('strong', null, g.name),
+            h('span', { className: 'muted' }, blocked.has(g.id) ? '🚫 חסומה לקבלת נסיעות' : i === 0 ? 'מקבלת ראשונה' : `מקום ${i + 1}`)),
+        ], () => groupSheet(list, g, i), 'order-main', `${g.name}, פעולות`),
+        i > 0 ? button('▲', () => moveTo(list, g, i), 'round small', 'למעלה') : h('span', { className: 'round-gap' }),
+        i < list.groups.length - 1 ? button('▼', () => moveTo(list, g, i + 2), 'round small', 'למטה') : h('span', { className: 'round-gap' })))
+        : [h('p', { className: 'muted' }, list.groups.length ? 'אין קבוצה בשם הזה' : 'הרשימה ריקה. לחצו "הוסף קבוצות".')]));
     };
-    const search = h('input', { id: 'publish-group-filter', placeholder: 'חפש קבוצה', value: filter, autocomplete: 'off' });
-    search.setAttribute('aria-label', 'חפש קבוצה');
+    const search = h('input', { id: 'publish-group-filter', placeholder: 'חיפוש ברשימה...', value: filter, autocomplete: 'off' });
+    search.setAttribute('aria-label', 'חיפוש ברשימה');
     search.oninput = () => { filter = search.value; draw(); };
-    updateCount();
     draw();
     return [
-      titleBox,
+      h('div', { className: 'list-hero' },
+        h('strong', null, String(list.groups.length)),
+        h('span', null, `קבוצות ברשימה · עד ${max}`),
+        list.groups[0] ? h('p', null, `ראשונה בתור: ${list.groups[0].name}`) : null),
       list.source === 'whatsapp'
-        ? h('p', { className: 'notice' }, 'הרשימה הזו מסונכרנת מוואטסאפ. שינוי כאן יחזור למה שבוואטסאפ ברגע שתשנה שם את הרשימה.')
+        ? h('p', { className: 'notice' }, 'הרשימה מסונכרנת מוואטסאפ. אם תשנה אותה שם, היא תתעדכן לפי וואטסאפ.')
         : null,
-      count,
-      search,
-      box,
-      button('שמור', async () => {
-        const chosen = all.filter((g) => picked.has(g.id)).map((g) => ({ id: g.id, name: g.name }));
-        const newTitle = title.value.trim();
-        if (newTitle !== (list.name === list.syncName ? '' : list.name)) {
-          await api('POST', '/publish/list-title', { no: page.list, title: newTitle });
-        }
-        await act('/publish/list', { no: page.list, groups: chosen }, 'הרשימה נשמרה');
-        page = null;
-        ctx.render();
-      }, 'primary wide sticky'),
+      groupsError ? h('p', { className: 'banner' }, groupsError) : null,
+      list.groups.length > 6 ? search : null,
+      h('p', { className: 'muted' }, 'הקבוצה העליונה מקבלת ראשונה. ▲▼ להזזה, לחיצה על קבוצה לעוד פעולות.'),
+      rows,
+      titleBox,
+      button('➕ הוסף קבוצות', () => addSheet(list), 'primary wide sticky'),
     ];
+  }
+
+  // ---------- מהירות והיסטוריה (במסך הראשי) ----------
+  function speedSection() {
+    const speeds = data.speeds || [];
+    if (!speeds.length) return null;
+    const current = data.settings?.speed || 'normal';
+    const info = speeds.find((s) => s.id === current);
+    return h('section', { className: 'section' },
+      h('h2', null, '⚡ מהירות הפצה'),
+      segments(speeds.map((s) => [s.id, s.label]), current, async (id) => {
+        if (id === current) return;
+        if (id !== 'normal' && !window.confirm('מהירות גבוהה מגדילה את הסיכון שוואטסאפ יחסום את המספר שלך. להמשיך?')) return;
+        await act('/publish/settings', { speed: id }, `מהירות: ${speeds.find((s) => s.id === id).label}`);
+      }),
+      info ? h('p', { className: current === 'normal' ? 'muted' : 'warn' }, info.note) : null);
+  }
+
+  function historySection() {
+    const items = (data.history || []).slice(0, 8);
+    if (!items.length) return null;
+    return h('section', { className: 'section' },
+      h('h2', null, '🕓 שינויים ברשימות'),
+      h('p', { className: 'muted' }, 'כל שינוי נשמר. אפשר להחזיר.'),
+      items.map((x) => h('div', { className: `item${x.undone ? ' undone' : ''}` },
+        h('div', null, x.text, h('p', { className: 'muted' }, ago(x.at))),
+        x.undone
+          ? h('span', { className: 'ok' }, '↩ הוחזר')
+          : button('החזרה', () => act('/publish/undo', { id: x.id }, 'הוחזר'), 'chip'))));
+  }
+
+  function ago(at) {
+    const min = Math.round((Date.now() - at) / 60000);
+    if (min < 1) return 'עכשיו';
+    if (min < 60) return min === 1 ? 'לפני דקה' : `לפני ${min} דק'`;
+    const hours = Math.round(min / 60);
+    if (hours < 24) return hours === 1 ? 'לפני שעה' : `לפני ${hours} שעות`;
+    return new Date(at).toLocaleDateString('he-IL');
   }
 
   return {
