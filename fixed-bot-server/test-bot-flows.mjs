@@ -27,7 +27,7 @@ patch("session-manager.js", "export function getMainBotSock() {", "export functi
 patch("session-manager.js", "export function getMainBotStatus() {", "export function getMainBotStatus() {\n  return { ...mainBotStatus, connected: globalThis.__mainUp };");
 patch("telegram-manager.js", "export async function claimTelegramRide(", "export async function claimTelegramRide() { return globalThis.__tgClaim(); }\nasync function claimTelegramRideReal(");
 patch("telegram-manager.js", "export async function requestTelegramCode(", "export async function requestTelegramCode() { return { ok: true }; }\nasync function requestTelegramCodeReal(");
-fs.appendFileSync(path.join(tmp, "index.js"), "\nexport { handleIncomingMessage as __handle, sentAlertsCache as __alerts };\n");
+fs.appendFileSync(path.join(tmp, "index.js"), "\nexport { handleIncomingMessage as __handle, sentAlertsCache as __alerts, billing as __billing };\n");
 
 const ADMIN = "972500000001";
 const DRIVER = "972500000002";
@@ -595,12 +595,12 @@ try {
     await sleep(200);
     const published = driverOut.slice(before);
     check("הפצה: יצאה לקבוצה הראשונה מהוואטסאפ של הנהג, בלי מספר הלקוח",
-      published.length === 1 && published[0].jid === G1 && published[0].content.text === "שמש ים 180", JSON.stringify(published));
+      published.length === 1 && published[0].jid === G1 && /^🚖 \| \*נסיעה חדשה\*\n━+\nשמש ים 180\n━+\n📞 \| /.test(published[0].content.text) && /🆔 \| נסיעה מספר \d+$/.test(published[0].content.text) && !/0543128890|054-312/.test(published[0].content.text), JSON.stringify(published));
     check("הפצה: כפתור עצירה", ids(r).some((id) => /^עצור הפצה \d+$/.test(id)), ids(r).join());
 
-    // הנהג רואה את ההודעה של עצמו בקבוצה: לא מגיעה אליו כנסיעה
+    // הנהג רואה את ההודעה של עצמו בקבוצה (במראה החדש): לא מגיעה אליו כנסיעה
     mark = out.length;
-    await groupMsg("OWN1", { key: { fromMe: true, participant: undefined }, message: { conversation: "שמש ים 180" } });
+    await groupMsg("OWN1", { key: { fromMe: true, participant: undefined }, message: { conversation: published[0]?.content.text || "שמש ים 180" } });
     await sleep(100);
     check("הפצה: הנסיעה שהנהג הפיץ לא חוזרת אליו כהתראה", out.length === mark, textOf(out.slice(mark)));
 
@@ -689,6 +689,107 @@ try {
     check("הפצה: מוצגות רק רשימות בשימוש ועוד אחת חדשה", /הפצה ד/.test(textOf(r)) && /רשימה חדשה\* \(הפצה ב\)/.test(textOf(r)) && !/הפצה ה/.test(textOf(r)), textOf(r));
     r = await type(DRIVER, "הפץ שמש ים 200");
     check("הפצה: השם החדש בכפתור הבחירה", r.some((m) => m.buttons.some((b) => /ירושלים מהיר/.test(b.p.display_text || ""))), JSON.stringify(r.map((m) => m.buttons)));
+  }
+
+  // ---------- מראה ההתראה, מנוי וסיכום שבועי ----------
+  {
+    const dsock = last();
+    const G9 = "120363000000000009@g.us";
+    let n = 0;
+    const rideIn = (text) => bot.__handle(dsock, { messages: [{
+      key: { remoteJid: G9, id: `BILL${++n}`, fromMe: false, participant: "972544444444@s.whatsapp.net" },
+      pushName: "משה", messageTimestamp: Math.floor(Date.now() / 1000), message: { conversation: text },
+    }] }, { isMainBot: false, driverPhone: DRIVER });
+    const billing = bot.__billing;
+    um.stopUserSearch(DRIVER);
+    await type(DRIVER, "פנוי שמש");
+    mark = out.length;
+    await rideIn("פנימי שמש 50\nמרמה ג לרמה ד");
+    await sleep(100);
+    r = out.slice(mark).filter((m) => m.jid.startsWith(DRIVER));
+    const alert = r.find((m) => /נסיעה חדשה/.test(m.text));
+    check("התראה: מראה חדש עם כותרת, קווים, סדרן, איך מבקשים ומספר", alert && alert.text.startsWith("🚖 | *נסיעה חדשה*") && /━━━/.test(alert.text) && /📞 \| /.test(alert.text) && /👇 \| /.test(alert.text) && /🆔 \| נסיעה מספר \d+/.test(alert.text), textOf(r));
+
+    // נוסח משלך להתראות: נשמר, ומהנסיעה הבאה כך היא נראית
+    r = await type(DRIVER, "נוסח התראה");
+    check("נוסח התראה: מציג את המראה הרגיל והשדות", /המראה הרגיל/.test(textOf(r)) && /\{נסיעה\}/.test(textOf(r)), textOf(r));
+    r = await type(DRIVER, "נוסח התראה\n🔔 {נסיעה}\n☎️ {סדרן}");
+    check("נוסח התראה: נשמר", /הנוסח נשמר/.test(textOf(r)) && /🔔 שמש ים 180/.test(textOf(r)), textOf(r));
+    r = await type(DRIVER, "נוסח התראה בלי שדה");
+    check("נוסח התראה: בלי {נסיעה} נדחה", /חייב לכלול/.test(textOf(r)), textOf(r));
+    mark = out.length;
+    await rideIn("פנימי שמש 55\nמרמה ב לרמה ד");
+    await sleep(100);
+    check("נוסח התראה: ההתראה הבאה בנוסח של הנהג", out.slice(mark).some((m) => m.jid.startsWith(DRIVER) && /^🔔 פנימי שמש 55/.test(m.text) && /☎️ משה/.test(m.text)), textOf(out.slice(mark)));
+    r = await type(DRIVER, "נוסח התראה רגיל");
+    check("נוסח התראה רגיל: חזרה למראה הרגיל", /חזרת למראה הרגיל/.test(textOf(r)) && /🚖 \| \*נסיעה חדשה\*/.test(textOf(r)), textOf(r));
+    r = await type(DRIVER, "נוסח פרסום");
+    check("נוסח פרסום: מציג איך נראית נסיעה שמפיצים", /👇 \| לבקשה: השיבו/.test(textOf(r)), textOf(r));
+
+    r = await type(DRIVER, "מנוי");
+    check("מנוי: כשהחיוב כבוי אין תשלום",/אין מנוי בתשלום/.test(textOf(r)), textOf(r));
+    r = await type(ADMIN, "חיוב פועל");
+    check("מנהל: חיוב פועל", billing.settings().enabled && /החיוב פועל/.test(textOf(r)), textOf(r));
+    r = await type(DRIVER, "מנוי");
+    check("מנוי: פרטי תשלום עם ביט/פייבוקס וכפתור שילמתי", /0515157166/.test(textOf(r)) && /25 ₪/.test(textOf(r)) && ids(r).includes("שילמתי"), textOf(r));
+    check("מנוי: נהג קיים קיבל ניסיון", billing.get(DRIVER).status === "trial");
+
+    // צילום מסך: מגיע למנהל עם אשר / דחה, והנהג מקבל אישור קבלה
+    mark = out.length;
+    r = await receive(DRIVER, { imageMessage: { mimetype: "image/jpeg" } });
+    const all = out.slice(mark);
+    const toAdmin = all.filter((m) => m.jid.startsWith(ADMIN));
+    const claimId = billing.claims({ pendingOnly: true })[0]?.id;
+    check("צילום: למנהל עם כפתורי אשר / דחה", claimId && ids(toAdmin).includes(`אשר תשלום ${claimId}`) && ids(toAdmin).includes(`דחה תשלום ${claimId}`), textOf(all));
+    check("צילום: הנהג קיבל 'קיבלנו'", all.some((m) => m.jid.startsWith(DRIVER) && /קיבלנו/.test(m.text)), textOf(all));
+
+    // המנוי הסתיים: אין התראות, ופקודה מקבלת "המנוי הסתיים"
+    billing.setDates(DRIVER, { end: "2020-01-01" });
+    mark = out.length;
+    await rideIn("פנימי שמש 60\nמהקריה לנחל לכיש");
+    await sleep(100);
+    check("הסתיים: לא נשלחת התראה", !out.slice(mark).some((m) => /נסיעה חדשה/.test(m.text)), textOf(out.slice(mark)));
+    r = await type(DRIVER, "פנוי ים");
+    check("הסתיים: במקום פקודה מגיע איך לחדש", /המנוי שלך הסתיים/.test(textOf(r)) && ids(r).includes("שילמתי"), textOf(r));
+
+    r = await tap(ADMIN, `אשר תשלום ${claimId}`);
+    const toDriver = out.filter((m) => m.jid.startsWith(DRIVER)).at(-1);
+    check("אישור: המנוי פעיל והנהג קיבל אישור", billing.get(DRIVER).status === "active" && /התשלום אושר/.test(toDriver?.text || ""), textOf(r));
+    r = await tap(ADMIN, `אשר תשלום ${claimId}`);
+    check("אישור כפול: לא מאריך שוב", /כבר אושרה/.test(textOf(r)), textOf(r));
+    mark = out.length;
+    await rideIn("פנימי שמש 70\nמרמה א לרמה ב");
+    await sleep(100);
+    check("אחרי אישור: ההתראות חוזרות", out.slice(mark).some((m) => /נסיעה חדשה/.test(m.text)));
+
+    r = await type(ADMIN, "שולם 0500000002 30 פייבוקס");
+    check("מנהל: שולם עם סכום ואמצעי", /נרשם תשלום 30 ₪/.test(textOf(r)) && billing.get(DRIVER).lastPayment.method === "paybox", textOf(r));
+    r = await type(ADMIN, "פטור 0500000002");
+    check("מנהל: פטור", billing.get(DRIVER).status === "exempt", textOf(r));
+    r = await type(ADMIN, "מנויים");
+    check("מנהל: מנויים מציג מצב כללי", /פטור 1/.test(textOf(r)), textOf(r));
+
+    // סיכום שבועי בבוט
+    r = await type(DRIVER, "סיכום שבועי");
+    check("השבוע: סיכום קצר עם מספר הנסיעות שהגיעו", /השבוע שלך עד עכשיו/.test(textOf(r)) && /🚖 הגיעו \d+/.test(textOf(r)), textOf(r));
+    r = await type(DRIVER, "בלי סיכום");
+    check("בלי סיכום: כבוי", /כבוי/.test(textOf(r)));
+    r = await type(DRIVER, "עם סיכום");
+    check("עם סיכום: פועל", /פועל/.test(textOf(r)));
+
+    // מסך המנויים באתר
+    const get = async (route) => (await fetch(base + route, { headers: { Authorization: `Bearer ${token}` } })).json();
+    let b = await get("/billing");
+    check("אתר: מנויים עם הגדרות, נהגים ותשלומים", b.ok && b.settings.enabled && b.drivers.some((d) => d.phone === DRIVER && d.status === "exempt") && b.payments.length >= 2, JSON.stringify(b).slice(0, 300));
+    b = await api("/billing/driver", { phone: "0500000002", action: "free" });
+    check("אתר: פעולה על נהג", b.ok && b.drivers.find((d) => d.phone === DRIVER).status === "free", JSON.stringify(b).slice(0, 200));
+    b = await api("/billing/settings", { price: 0.5, payPhone: "12" });
+    check("אתר: הגדרה לא תקינה נדחית", b.ok === false && /לא תקין/.test(b.error), JSON.stringify(b));
+    mark = out.length;
+    b = await api("/billing/announce", { endDate: "2099-01-31", message: "🎁 חינם עד {תאריך}, אחר כך {מחיר} ₪" });
+    check("אתר: הודעת פתיחה עם ניסיון לכולם", b.ok && b.trial.changed >= 1 && out.slice(mark).some((m) => /חינם עד 31\.01\.2099, אחר כך 25 ₪/.test(m.text)), JSON.stringify(b).slice(0, 300));
+    b = await api("/billing/settings", { enabled: false });
+    check("אתר: כיבוי החיוב", b.ok && b.settings.enabled === false);
   }
 
   // ---------- ניתוק מהטלפון ----------

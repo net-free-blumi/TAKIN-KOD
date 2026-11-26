@@ -7,6 +7,7 @@ import * as ui from "./bot-ui.js";
 import { extractDispatcherContact, buildQuotedRideMessage } from "./matcher.js";
 import { formatIsraeliPhone, extractPhoneFromText } from "./matcher.js";
 import { readFileSync } from "node:fs";
+import { buildRideAlertText, buildPostText, cleanTemplate, ALERT_LINE } from "./ride-alert-text.js";
 
 console.log("🧪 מתחיל בדיקות אימות מעמיקות לכל התרחישים (גרסה 3.0 - חיפושים מקבילים ובתוך/מחוץ לעיר)...\n");
 
@@ -270,9 +271,9 @@ assert(bugReports.length === 1, "דיסלייק אמיתי של נהג על הו
 assert(bugReports[0].includes("972539485860"), "הדו\"ח מכיל את מספר הנהג");
 
 // ==========================================
-// בדיקה 6: פורמט נקי של התראת נסיעה (בלי כותרת ובלי קווים)
+// בדיקה 6: מראה התראת נסיעה (ride-alert-text.js): כותרת קצרה, קווים, סדרן, איך מבקשים, קבוצה, מספר נסיעה
 // ==========================================
-console.log("\n--- בדיקה 6: פורמט נקי ללא כותרת ---");
+console.log("\n--- בדיקה 6: מראה התראת הנסיעה ---");
 
 const sampleRide = {
   cleanedText: "פנימי שמש 50 / רמה ד לרמה ג",
@@ -281,11 +282,32 @@ const sampleRide = {
   senderPhone: "0501234567"
 };
 
-const cleanAlertText = `${sampleRide.cleanedText}\n\n📍 ${sampleRide.groupName}\n👤 ${sampleRide.senderName} · ${sampleRide.senderPhone}`;
-
-assert(!cleanAlertText.includes("נסיעה מתאימה נמצאה"), "ההתראה אינה כוללת את הכותרת המעצבנת");
-assert(!cleanAlertText.includes("──────"), "ההתראה אינה כוללת קווים מפרידים מיותרים");
-assert(cleanAlertText.startsWith("פנימי שמש 50"), "ההתראה מתחילה ישירות בפרטי הנסיעה");
+const cleanAlertText = buildRideAlertText(sampleRide, { rideNo: 1234 });
+const alertLines = cleanAlertText.split("\n");
+assert(alertLines[0] === "🚖 | *נסיעה חדשה*", "שורת כותרת קצרה");
+assert(alertLines[1] === ALERT_LINE && alertLines[3] === ALERT_LINE, "קווי הפרדה סביב הנסיעה");
+assert(alertLines[2] === "פנימי שמש 50 / רמה ד לרמה ג", "הנסיעה עצמה כמו שנכתבה");
+assert(cleanAlertText.includes("📞 | יוסי · 050-1234567"), "שם וטלפון הסדרן");
+assert(cleanAlertText.includes("👇 | לבקשה: השב *ת* בציטוט"), "איך מבקשים");
+assert(cleanAlertText.includes("👥 | נסיעות בית שמש"), "שם הקבוצה");
+assert(alertLines.at(-1) === "🆔 | נסיעה מספר 1234", "מספר הנסיעה בסוף");
+assert(!cleanAlertText.includes("נסיעה מתאימה נמצאה"), "בלי הכותרת הישנה");
+assert(buildRideAlertText(sampleRide, { rideNo: 1, buttons: true }).includes("לחץ *✋ ת*"), "עם כפתורים: ההוראה מזכירה את הכפתור");
+const noPhoneAlert = buildRideAlertText({ cleanedText: "שמש ים 180", groupName: "קבוצת נסיעות", senderName: "סדרן", senderPhone: "זמין בקבוצה" });
+assert(noPhoneAlert.includes("📞 | סדרן זמין בקבוצה") && noPhoneAlert.includes("👥 | קבוצת וואטסאפ"), "בלי טלפון ובלי שם קבוצה אמיתי");
+assert(!noPhoneAlert.includes("🆔"), "בלי מספר נסיעה כשלא נמסר");
+assert(buildRideAlertText({ ...sampleRide, isTelegram: true }).includes("👥 | נסיעות בית שמש · ✈️ טלגרם"), "נסיעה מטלגרם מסומנת ליד הקבוצה");
+// נוסח משלך לנהג: נשמר אצלו, השדות מתמלאים, שורה עם שדה ריק לא נשלחת
+const myAlert = buildRideAlertText(sampleRide, { template: "🔔 {נסיעה}\n☎️ {סדרן}\n#{מספר}" });
+assert(myAlert === "🔔 פנימי שמש 50 / רמה ד לרמה ג\n☎️ יוסי · 050-1234567", `נוסח התראה משלך: ${myAlert}`);
+assert(cleanTemplate("רגיל") === "" && cleanTemplate("") === "", "רגיל / ריק = חזרה למראה הרגיל");
+let noRideField = false;
+try { cleanTemplate("בלי הנסיעה"); } catch (e) { noRideField = /\{נסיעה\}/.test(e.message); }
+assert(noRideField, "נוסח בלי {נסיעה} נדחה");
+const post = buildPostText({ text: "שמש ים 180", name: "דוד", phone: "972501234567", id: "4821" });
+assert(post.startsWith("🚖 | *נסיעה חדשה*\n" + ALERT_LINE + "\nשמש ים 180\n" + ALERT_LINE), "הפצה: אותו מראה");
+assert(post.includes("📞 | דוד · 050-1234567") && post.endsWith("🆔 | נסיעה מספר 4821"), "הפצה: מפיץ ומספר");
+assert(buildPostText({ text: "שמש ים 180" }, "{נסיעה}\nדברו איתי") === "שמש ים 180\nדברו איתי", "הפצה: נוסח משלך");
 
 console.log(`\n--- בדיקה 7: 9 המקרים החדשים שדווחו היום (גרסה 2.9) ---`);
 
@@ -701,7 +723,7 @@ const extractedPhone2 = extractDispatcherContact({
 assert(extractedPhone2 === "972542086154" || extractedPhone2 === "0542086154", `חילוץ טלפון סדרן מנסיעת מיניק: ${extractedPhone2}`);
 
 // 5. אימות פורמט נקי של ההתראה (ללא פוטר של תפיסה מהירה/חיוג)
-const sampleCleanAlert = `${bbRideText}\n\n📍 קבוצת נסיעות\n👤 סדרן · 0507787427`;
+const sampleCleanAlert = buildRideAlertText({ cleanedText: bbRideText, groupName: "קבוצת נסיעות", senderName: "סדרן", senderPhone: "0507787427" }, { rideNo: 7 });
 assert(!sampleCleanAlert.includes("לתפיסה מהירה"), "ההתראה נקייה מלשונית תפיסה מהירה");
 assert(!sampleCleanAlert.includes("חיוג מהיר"), "ההתראה נקייה מלשונית חיוג מהיר");
 

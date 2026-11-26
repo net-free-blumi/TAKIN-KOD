@@ -13,6 +13,8 @@ import { BEIT_SHEMESH_ZONES, calculateDistanceKm } from "./geo-helper.js";
 import { plainApprovalJid } from "./users-manager.js";
 import { approvedPlainText } from "./bot-ui.js";
 import { createRidePublisher } from "./ride-publisher.js";
+import { createBilling } from "./billing.js";
+import { buildWeeklySummaryText, rangeText, weekDays } from "./weekly-summary.js";
 
 let passed = 0;
 const tests = [];
@@ -322,6 +324,118 @@ test("הפצה באפליקציה: רשימה, הפצה, מבקש כהתראה, 
     pub.shutdown();
     cleanup(env);
   }
+});
+
+test("מנוי באפליקציה: מצב ב-/me, שילמתי מגיע למנהל, מנוי שהסתיים חוסם חיפוש ובקשה", async () => {
+  const clock = { t: Date.UTC(2026, 10, 26, 8) };
+  const billing = createBilling({ now: () => clock.t, onError: (e) => { throw e; } });
+  const claims = [];
+  const env = makeApp({ options: { billing, notifyPaid: async (phone, claim) => { claims.push({ phone, claim }); return true; } } });
+  try {
+    const token = await login(env);
+    let me = await call(env.app, "GET", "/api/app/me", null, token);
+    assert.equal(me.body.billing.enabled, false, "כבוי כברירת מחדל");
+    assert.equal(me.body.features.billing, true);
+    const off = await call(env.app, "POST", "/api/app/billing/paid", {}, token);
+    assert.equal(off.status, 409);
+    billing.setSettings({ enabled: true });
+    me = await call(env.app, "GET", "/api/app/me", null, token);
+    assert.equal(me.body.billing.status, "trial", "ניסיון אוטומטי");
+    assert.equal(me.body.billing.payPhone, "0515157166");
+    assert.match(me.body.billing.info, /25 ₪ לחודש/);
+    const paid = await call(env.app, "POST", "/api/app/billing/paid", {}, token);
+    assert.equal(paid.status, 200, JSON.stringify(paid.body));
+    assert.equal(paid.body.billing.pending, true);
+    assert.equal(claims.length, 1);
+    assert.equal(claims[0].claim.source, "app");
+    // לחיצה שנייה מיד: אותה בקשה, בלי עוד הודעה למנהל
+    await call(env.app, "POST", "/api/app/billing/paid", {}, token);
+    assert.equal(claims.length, 1);
+    // הסתיים: חיפוש, בקשת נסיעה והפצה חסומים
+    clock.t += 40 * 24 * 3600 * 1000;
+    me = await call(env.app, "GET", "/api/app/me", null, token);
+    assert.equal(me.body.billing.blocked, true);
+    const search = await call(env.app, "POST", "/api/app/search", { command: "פנוי שמש" }, token);
+    assert.equal(search.status, 402);
+    assert.match(search.body.error, /המנוי הסתיים/);
+    const claim = await call(env.app, "POST", "/api/app/rides/claim", { id: "x" }, token);
+    assert.equal(claim.status, 402);
+    // אחרי אישור התשלום: פתוח
+    billing.approveClaim(claims[0].claim.id, { by: "test" });
+    me = await call(env.app, "GET", "/api/app/me", null, token);
+    assert.equal(me.body.billing.blocked, false);
+    assert.equal(me.body.billing.status, "active");
+  } finally {
+    cleanup(env);
+  }
+});
+
+test("השבוע באפליקציה: התקבלו, ביקשת, ביצעת, הכנסה, הפצות, וכיבוי הסיכום", async () => {
+  const pub = createRidePublisher({ getSock: () => null });
+  const env = makeApp({ options: { getPublisher: () => pub } });
+  try {
+    const token = await login(env);
+    for (let i = 0; i < 3; i++) env.app.addRide("972501234567", { cleanedText: `שמש ים ${180 + i}`, groupName: "קבוצה" });
+    const handle = env.app.addRide("972501234567", { cleanedText: "שמש לבב 250", groupName: "קבוצה" });
+    env.app.linkAlert(handle, "alert-w");
+    env.app.markRequested("972501234567", "alert-w");
+    const done = await call(env.app, "POST", "/api/app/rides/outcome", { id: handle.id, status: "done", price: 250 }, token);
+    assert.equal(done.status, 200);
+    const week = await call(env.app, "GET", "/api/app/week", null, token);
+    assert.equal(week.status, 200, JSON.stringify(week.body));
+    assert.deepEqual(week.body.week.rides, { received: 4, requested: 1, done: 1, income: 250 });
+    assert.equal(week.body.weeklyOff, false);
+    assert.ok(week.body.lastWeek.days.length === 7);
+    const text = buildWeeklySummaryText(week.body.week);
+    assert.match(text, /🚖 הגיעו 4 · ✋ ביקשת 1 · ✅ ביצעת 1/);
+    assert.match(text, /💰 הכנסה: 250 ₪/);
+    assert.ok(!text.includes("📣"), "בלי הפצות אין שורת הפצות");
+    const off = await call(env.app, "POST", "/api/app/week/settings", { off: true }, token);
+    assert.equal(off.body.weeklyOff, true);
+    assert.equal(env.app.isWeeklyOff("972501234567"), true);
+  } finally {
+    cleanup(env);
+  }
+});
+
+test("נוסח משלך באפליקציה: התראה ופרסום, תצוגה מקדימה, שגיאה ברורה, חזרה לרגיל", async () => {
+  const env = makeApp();
+  try {
+    const token = await login(env);
+    let s = await call(env.app, "GET", "/api/app/style", null, token);
+    assert.equal(s.body.style.alert, "");
+    assert.match(s.body.style.preview.alert, /^🚖 \| \*נסיעה חדשה\*/);
+    assert.match(s.body.style.preview.post, /📞 \| נהג בדיקה · 050-1234567/);
+    s = await call(env.app, "POST", "/api/app/style", { alert: "🔔 {נסיעה}" }, token);
+    assert.equal(s.body.style.preview.alert, "🔔 שמש ים 180\nריש לקיש 12");
+    assert.equal(env.app.getStyle("972501234567").alert, "🔔 {נסיעה}");
+    const bad = await call(env.app, "POST", "/api/app/style", { post: "בלי שדה" }, token);
+    assert.equal(bad.status, 400);
+    assert.match(bad.body.error, /\{נסיעה\}/);
+    s = await call(env.app, "POST", "/api/app/style", { alert: "" }, token);
+    assert.equal(s.body.style.alert, "");
+  } finally {
+    cleanup(env);
+  }
+});
+
+test("סיכום שבועי: שבוע ראשון עד שבת, שבוע ריק לא נשלח, מוני הפצה", () => {
+  // חמישי 26.11.2026
+  const thu = Date.UTC(2026, 10, 26, 10);
+  assert.deepEqual(weekDays(thu), ["2026-11-22", "2026-11-23", "2026-11-24", "2026-11-25", "2026-11-26"]);
+  const prev = weekDays(Date.UTC(2026, 10, 29, 7), { previous: true }); // ראשון בבוקר
+  assert.deepEqual([prev[0], prev.at(-1)], ["2026-11-22", "2026-11-28"]);
+  assert.equal(rangeText(prev), "22.11–28.11");
+  assert.equal(buildWeeklySummaryText({ days: prev }), null);
+  const text = buildWeeklySummaryText({ days: prev, rides: { received: 5 }, publish: { published: 2, requesters: 3, given: 1 } });
+  assert.match(text, /📣 הפצת 2 · 🙋 מבקשים 3 · 🤝 נתת 1/);
+  assert.ok(text.split("\n").length <= 8, "קצר");
+  // מוני ההפצה נשמרים גם אחרי שההפצות נמחקות
+  let t = Date.UTC(2026, 10, 24, 10);
+  const pub = createRidePublisher({ getSock: () => ({ sendMessage: async () => ({ key: { id: "M1" } }) }), now: () => t, sleep: () => new Promise(() => {}) });
+  pub.setList("972501234567", 1, [{ id: "1-2@g.us", name: "ק" }]);
+  pub.start("972501234567", { text: "שמש ים 180" });
+  assert.deepEqual(pub.statsFor("972501234567", weekDays(Date.UTC(2026, 10, 26, 10))), { published: 1, requesters: 0, given: 0, done: 0 });
 });
 
 test("buildReport בלי נסיעה ובלי חיפוש", () => {

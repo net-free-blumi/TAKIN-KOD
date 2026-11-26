@@ -124,6 +124,9 @@ import { CONFIRM_RE } from "./driver-app-secure.js";
 import { createDriverApp } from "./driver-app.js";
 import { normalizeMobile } from "./driver-app-auth.js";
 import { createRidePublisher, PublishError, splitCustomerPhone, quotedIdOf, listNoForLetter, LIMITS as PUBLISH_LIMITS } from "./ride-publisher.js";
+import { createBilling, BillingError, normalizePhone as billingPhone, localPhone as billingLocal, METHODS as PAY_METHOD_LABELS } from "./billing.js";
+import { buildWeeklySummaryText } from "./weekly-summary.js";
+import { buildRideAlertText, buildPostText, createRideCounter, ALERT_FIELDS, POST_FIELDS } from "./ride-alert-text.js";
 
 const DEBUG_FILTER = true;
 const DEDUPE_MINUTES = 15;
@@ -754,33 +757,10 @@ export function extractPhoneFromText(rawText) {
   return null;
 }
 
-// פורמט התראת נסיעה נקי, מדויק ומלא (מבטיח שם קבוצה אמיתי ומספר סדרן ברור תמיד)
-function buildRideAlertText(rideData) {
-  let alertMsg = `${rideData.cleanedText}\n\n`;
-  const grp = (rideData.groupName && rideData.groupName !== "קבוצת נסיעות")
-    ? rideData.groupName
-    : "קבוצת וואטסאפ";
-  alertMsg += `📍 ${grp}\n`;
-
-  let senderInfo = "";
-  if (rideData.senderName && rideData.senderName !== "סדרן") {
-    senderInfo += rideData.senderName;
-  }
-
-  const phone = (rideData.senderPhone && rideData.senderPhone !== "זמין בקבוצה" && rideData.senderPhone !== "0")
-    ? rideData.senderPhone
-    : null;
-
-  if (phone) {
-    const formatted = formatIsraeliPhone(phone);
-    senderInfo = senderInfo ? `${senderInfo} · ${formatted}` : formatted;
-  } else {
-    senderInfo = senderInfo ? `${senderInfo} · זמין בקבוצה` : "סדרן זמין בקבוצה";
-  }
-
-  alertMsg += `👤 ${senderInfo}`;
-  return alertMsg.trim();
-}
+// מראה התראת הנסיעה: ride-alert-text.js. מספר הנסיעה רץ ונשמר בדיסק
+const rideCounter = createRideCounter(path.join(__dirname, "driver-app-data", "ride-seq.json"), {
+  onError: (err) => console.error("מונה נסיעות:", err?.message),
+});
 
 // שליחת הודעה עם ניסיון ציטוט, ובמקרה כשל - בלי ציטוט
 async function trySend(sock, jid, content, quoted) {
@@ -902,6 +882,8 @@ function buildSafeGroupQuote(originalMsg, fallbackText = "נסיעה") {
 
 // שליחת התראת נסיעה לנהג עם ציטוט הודעת הקבוצה המקורית
 async function deliverRideAlert(driverSock, driverPhone, rideData, originalMsg) {
+  // מנוי שהסתיים: בלי התראות בוואטסאפ, בטלגרם ובאפליקציה עד החידוש (פטור לעולם לא נחסם)
+  if (billing.isBlocked(driverPhone)) return { ok: false, blocked: true, error: "המנוי הסתיים" };
   // האפליקציה מקבלת מיד, ואחרי השליחה מקושרת לאותה רשומה כדי שנעילת התפיסה תהיה משותפת
   const appRide = driverApp.addRide(driverPhone, rideData);
   let result;
@@ -933,7 +915,15 @@ function cacheAppOnlyAlert(appRide, rideData, originalMsg) {
 }
 
 async function deliverToMessengers(driverSock, driverPhone, rideData, originalMsg) {
-  const alertMsg = rideData.customAlertText || buildRideAlertText(rideData);
+  const rideNo = rideCounter.next();
+  // הנוסח של הנהג ("נוסח התראה"), או המראה הרגיל
+  let template = "";
+  try {
+    template = driverApp.getStyle(driverPhone).alert;
+  } catch (e) {}
+  const alertMsg = rideData.customAlertText || buildRideAlertText(rideData, { rideNo, template });
+  // עם כפתור "✋ ת": אותה הודעה, וההוראה מזכירה את הכפתור
+  const buttonsMsg = rideData.customAlertText || buildRideAlertText(rideData, { rideNo, buttons: true, template });
   // בניית רשימת יעדי שליחה עם גיבוי:
   // 1. יעד ראשי (LID או מזהה מותאם)
   // 2. יעד טלפון ישיר רגיל (@s.whatsapp.net) כגיבוי בטוח אם ה-LID נכשל או מנותק!
@@ -978,7 +968,7 @@ async function deliverToMessengers(driverSock, driverPhone, rideData, originalMs
         // כפתורים (ת / טלגרם / סדרן / תפריט) - רק מהבוט הראשי ורק אם נבחר פורמט שעובד; אחרת טקסט רגיל עם ציטוט
         if (a.via === "main" && getInteractiveVariant() !== "off") {
           try {
-            sentMsg = await sendRideAlertInteractive(a.sock, jid, { body: alertMsg, quoted: quotedGroupMsg });
+            sentMsg = await sendRideAlertInteractive(a.sock, jid, { body: buttonsMsg, quoted: quotedGroupMsg });
           } catch (e) {
             console.log(`ℹ️ [כפתורים] התראה עם כפתורים נכשלה (${e.message}) - שולח טקסט`);
             sentMsg = null;
@@ -1010,6 +1000,7 @@ async function deliverToMessengers(driverSock, driverPhone, rideData, originalMs
             matchedReason: rideData.matchedReason || null,
             matchedSearch: rideData.matchedSearch || null,
             activeSearchesSnapshot: rideData.activeSearchesSnapshot || null,
+            rideNo,
             sentAt: Date.now(),
           });
           if (sentAlertsCache.size > ALERTS_CACHE_MAX) {
@@ -1583,7 +1574,9 @@ async function handleIncomingMessage(sock, upsert, sessionContext) {
     }
 
     const text = extractMessageText(m);
-    if (!text) continue;
+    // תמונה בפרטי לבוט הראשי (אולי צילום של תשלום מנוי): ממשיכה גם בלי כיתוב
+    const privateImage = !isGroup && sessionContext.isMainBot && !m.key.fromMe && Boolean(unwrapMessage(m.message)?.imageMessage);
+    if (!text && !privateImage) continue;
     // הודעה פרטית לנהג על נסיעה שהפיץ ("השב בפרטי", או "ת" בפרטי): מגיעה אליו כמבקש
     if (!isGroup && !sessionContext.isMainBot && sessionContext.driverPhone && !m.key.fromMe) {
       try {
@@ -1593,7 +1586,7 @@ async function handleIncomingMessage(sock, upsert, sessionContext) {
       }
     }
     // צ'אט AI של המנהל: זיהוי לפי jid מדויק בלבד, לפני כל מיפוי LID. העבודה רצה ברקע
-    if (!isGroup && sessionContext.isMainBot && !m.key.fromMe) {
+    if (!isGroup && sessionContext.isMainBot && !m.key.fromMe && text) {
       if (adminAi.maybeHandle({ key: m.key, text, send: (t) => (getMainBotSock() || sock).sendMessage(jid, { text: t }) })) continue;
     }
     // אישור הצ'אטים של האפליקציה מטופל בסשן של הנהג. הבוט לא עונה עליו
@@ -1676,6 +1669,12 @@ async function handleIncomingMessage(sock, upsert, sessionContext) {
       const isApproved = isUserApproved(senderPhone);
       const norm = normalizeText(text);
 
+      // תמונה מנהג: צילום של תשלום מנוי עובר למנהל עם אישור / דחייה. תמונה אחרת בלי כיתוב לא עושה כלום
+      if (privateImage) {
+        if (isApproved && !isAdmin && (await handlePaymentImage(sock, m, jid, senderPhone, pushName))) continue;
+        if (!text) continue;
+      }
+
       // בדיקת כפתורים / בחירת פורמט (מנהל ונהגים מאושרים)
       if (isAdmin || isApproved) {
         if (norm === "בדיקת כפתורים" || norm === "בדיקה כפתורים") {
@@ -1715,6 +1714,9 @@ async function handleIncomingMessage(sock, upsert, sessionContext) {
 
       // 2. מספר המנהל משמש לניהול בלבד
       if (isAdmin) {
+        // מנויים: אשר / דחה תשלום, שולם, הארך, פטור, חינם, תזכורת, מנויים, חיוב פועל / כבוי
+        if (await handleBillingAdminCommand(sock, jid, m, text, norm, senderPhone)) continue;
+
         // אישור שקט ללא שליחת הודעה לנהג: "אשר ללא 0556706325", "אשר שקט 0556706325", "אשר ללא הודעה 0556706325"
         const silentApproveMatch = text.match(/^(?:אשר\s+ללא(?:\s+הודעה)?|אשר\s+שקט)\s+([0-9+\s-]+)$/);
         if (silentApproveMatch) {
@@ -1764,7 +1766,7 @@ async function handleIncomingMessage(sock, upsert, sessionContext) {
 
         if (ui.screenForCommand(norm) === "menu") {
           await sock.sendMessage(jid, {
-            text: `🛠️ *תפריט ניהול מערכת*\n\nפקודות זמינות למנהל:\n• *אשר 0501234567* ⬅️ אישור נהג חדש ושליחת מדריך\n• *דחה 0501234567* ⬅️ דחיית בקשת הצטרפות\n• *שלח מדריך 0501234567* ⬅️ שליחה חוזרת של הודעת אישור ומדריך חיבור ווב\n• *עדכן 0501234567 ל 0507654321* ⬅️ עדכון מספר טלפון של נהג\n• *בדיקת כפתורים* ⬅️ בדיקה ובחירה של פורמט הכפתורים\n• *כפתורים כבוי* ⬅️ מעבר לטקסט בלבד`
+            text: `🛠️ *תפריט ניהול מערכת*\n\nפקודות זמינות למנהל:\n• *אשר 0501234567* ⬅️ אישור נהג חדש ושליחת מדריך\n• *דחה 0501234567* ⬅️ דחיית בקשת הצטרפות\n• *שלח מדריך 0501234567* ⬅️ שליחה חוזרת של הודעת אישור ומדריך חיבור ווב\n• *עדכן 0501234567 ל 0507654321* ⬅️ עדכון מספר טלפון של נהג\n• *בדיקת כפתורים* ⬅️ בדיקה ובחירה של פורמט הכפתורים\n• *כפתורים כבוי* ⬅️ מעבר לטקסט בלבד\n\n💳 *מנויים:*\n• *מנויים* ⬅️ מצב כללי ותשלומים שמחכים\n• *מנוי 0501234567* ⬅️ המנוי של נהג\n• *שולם 0501234567* (אפשר גם סכום) ⬅️ רישום תשלום והארכה בחודש\n• *הארך 0501234567 10* ⬅️ עוד 10 ימים\n• *פטור / חינם 0501234567*\n• *תזכורת 0501234567* ⬅️ שליחת פרטי תשלום עכשיו\n• *חיוב פועל* / *חיוב כבוי*`
           }, { quoted: m });
         }
         continue;
@@ -1800,6 +1802,20 @@ async function handleIncomingMessage(sock, upsert, sessionContext) {
       }
 
       // 4. נהג מאושר
+      // מנוי וסיכום שבועי: "מנוי", "שילמתי", "בלי סיכום", "סיכום שבועי"
+      if (await handleBillingDriverCommand(sock, jid, senderPhone, norm, pushName)) continue;
+      // נוסח משלך: "נוסח התראה" / "נוסח פרסום" ואחריו הנוסח (או "רגיל")
+      if (await handleStyleCommand(sock, jid, senderPhone, text)) continue;
+      // המנוי הסתיים: במקום כל פקודה אחרת, איך מחדשים (פעם בעשר דקות לכל היותר)
+      if (billing.isBlocked(senderPhone)) {
+        const last = blockedNoticeAt.get(senderPhone) || 0;
+        if (Date.now() - last > 10 * 60 * 1000) {
+          blockedNoticeAt.set(senderPhone, Date.now());
+          await sendCard(sock, jid, billingCard("expired", senderPhone));
+        }
+        continue;
+      }
+
       // 4.0 ניווט בתפריטים (זמין לכל נהג מאושר, גם לפני חיבור הוואטסאפ)
       const screen = ui.screenForCommand(norm);
       if (screen) {
@@ -2306,7 +2322,8 @@ async function handleIncomingMessage(sock, upsert, sessionContext) {
 
       const targetDrivers = [];
       const ownerPhone = cleanPhone(sessionContext.driverPhone);
-      if (ownerPhone && getUserSearch(ownerPhone).active) targetDrivers.push(ownerPhone);
+      // מנוי שהסתיים: לא סורקים בשבילו בכלל
+      if (ownerPhone && getUserSearch(ownerPhone).active && !billing.isBlocked(ownerPhone)) targetDrivers.push(ownerPhone);
 
       if (targetDrivers.length === 0) continue;
       
@@ -2450,6 +2467,8 @@ const publisher = createRidePublisher({
     return session?.status === "connected" && session.sock ? session.sock : null;
   },
   notify: (phone, event) => notifyPublishEvent(phone, event),
+  // אותו מראה כמו ההתראות, עם הנוסח של הנהג ("נוסח פרסום")
+  formatPost: (phone, job) => buildPostText({ text: job.text, name: driverName(phone), phone, id: job.id }, driverApp.getStyle(phone).post),
   onChange: (phone) => driverApp.publishChanged(phone),
   onError: (err) => {
     console.error("הפצת נסיעה:", err?.message || err);
@@ -2708,8 +2727,313 @@ async function handlePublishCommand(sock, jid, rawPhone, text, norm) {
   }
 }
 
+// ==========================================
+// מנוי חודשי (billing.js) וסיכום שבועי (weekly-summary.js)
+// ==========================================
+const billing = createBilling({
+  file: path.join(__dirname, "driver-app-data", "billing.json"),
+  onError: (err) => {
+    console.error("מנויים:", err?.message || err);
+    try { recordError("billing", err); } catch (e) {}
+  },
+});
+const blockedNoticeAt = new Map(); // phone -> ms
+const adminJid = () => `${cleanPhone(loadUsersData().adminPhone || "972515157166")}@s.whatsapp.net`;
+const driverName = (phone) => {
+  const p = cleanPhone(phone);
+  return (loadUsersData().approvedUsers || []).find((u) => cleanPhone(u.phone) === p)?.name || "נהג";
+};
+// הנהגים שהמנוי חל עליהם: מאושרים עם מספר אמיתי, בלי המנהל והבוט
+function billablePhones() {
+  const data = loadUsersData();
+  const skip = new Set([cleanPhone(data.adminPhone), cleanPhone(data.botPhone)]);
+  const out = new Set();
+  for (const u of data.approvedUsers || []) {
+    const p = billingPhone(u.phone);
+    if (p && !skip.has(p)) out.add(p);
+  }
+  return [...out];
+}
+
+function unwrapMessage(message) {
+  let msg = message || {};
+  for (let i = 0; i < 4; i++) {
+    const inner = msg.ephemeralMessage?.message || msg.viewOnceMessage?.message || msg.viewOnceMessageV2?.message;
+    if (!inner) break;
+    msg = inner;
+  }
+  return msg;
+}
+
+// כרטיס לנהג: הנוסח מהגדרות המנוי, וכפתורים למנוי / שילמתי
+function billingCard(kind, phone) {
+  const text = billing.text(kind, phone, { name: driverName(phone) });
+  const buttons = ["expired", "reminder", "payInfo"].includes(kind)
+    ? [{ id: "שילמתי", text: "✅ שילמתי" }, { id: "מנוי", text: "💳 המנוי שלי" }]
+    : [];
+  return { text, buttons };
+}
+
+async function sendBillingToDriver(phone, kind) {
+  const sock = getMainBotSock();
+  if (!sock || !getMainBotStatus().connected) return false;
+  await sendCard(sock, getDestinationJid(phone), billingCard(kind, phone));
+  return true;
+}
+
+function claimAdminCard(claim) {
+  const v = billing.get(claim.phone);
+  const lines = [
+    `💳 *תשלום לאישור #${claim.id}*`,
+    `👤 ${claim.name || driverName(claim.phone)} · ${billingLocal(claim.phone)}`,
+    `📋 ${v.label}${v.endText ? ` · עד ${v.endText}` : ""}`,
+    `💰 ${v.price} ₪`,
+    claim.source === "app" ? "📱 סימן באפליקציה \"שילמתי\" (בלי צילום)" : "📸 הצילום בהודעה למעלה",
+    "",
+    "✅ אישור מאריך בחודש מהמאוחר מבין היום לסוף המנוי.",
+  ];
+  return {
+    text: lines.join("\n"),
+    buttons: [
+      { id: `אשר תשלום ${claim.id}`, text: "✅ אשר" },
+      { id: `דחה תשלום ${claim.id}`, text: "❌ דחה" },
+    ],
+  };
+}
+
+// "שילמתי" מהאפליקציה: הודעה למנהל
+async function notifyAdminOfClaim(claim, forwardMsg = null) {
+  const sock = getMainBotSock();
+  if (!sock || !getMainBotStatus().connected) return false;
+  const jid = adminJid();
+  if (forwardMsg) {
+    try {
+      await sock.sendMessage(jid, { forward: forwardMsg });
+    } catch (e) {
+      console.log(`⚠️ [מנוי] העברת הצילום למנהל נכשלה: ${e?.message}`);
+    }
+  }
+  await sendCard(sock, jid, claimAdminCard(claim));
+  recordEvent("billing", `בקשת תשלום #${claim.id} מ-${claim.phone} (${claim.source === "app" ? "אפליקציה" : "צילום"})`);
+  return true;
+}
+
+async function handlePaymentImage(sock, m, jid, senderPhone, pushName) {
+  if (!billing.expectsPayment(senderPhone)) return false;
+  const { claim, isNew } = billing.addClaim(senderPhone, { name: driverName(senderPhone) || pushName });
+  // כל צילום עובר למנהל. הכרטיס עם הכפתורים רק פעם אחת לבקשה
+  if (isNew) {
+    await notifyAdminOfClaim(claim, m);
+  } else {
+    try {
+      await sock.sendMessage(adminJid(), { forward: m });
+    } catch (e) {}
+  }
+  if (isNew) await sendCard(sock, jid, { text: billing.text("received", senderPhone) });
+  return true;
+}
+
+async function handleBillingDriverCommand(sock, jid, phone, norm, pushName) {
+  if (["מנוי", "המנוי שלי", "חידוש", "חדש מנוי", "חידוש מנוי", "תשלום מנוי", "לחדש"].includes(norm)) {
+    if (!billing.settings().enabled) {
+      await sendCard(sock, jid, { text: "ℹ️ כרגע אין מנוי בתשלום. הבוט פתוח לכולם 🚖" });
+      return true;
+    }
+    const v = billing.ensure(phone);
+    if (v.status === "exempt") {
+      await sendCard(sock, jid, { text: "✅ החשבון שלך פטור מתשלום. נסיעות טובות 🚖" });
+      return true;
+    }
+    billing.markIntent(phone);
+    await sendCard(sock, jid, billingCard("payInfo", phone));
+    return true;
+  }
+  if (["שילמתי", "שילמתי מנוי", "העברתי", "שלמתי"].includes(norm)) {
+    if (!billing.settings().enabled) return false;
+    billing.markIntent(phone);
+    await sendCard(sock, jid, { text: "📸 מעולה! שלחו לכאן *צילום מסך* של התשלום, ונאשר בהקדם." });
+    return true;
+  }
+  if (["בלי סיכום", "בטל סיכום", "הפסק סיכום", "בלי סיכום שבועי"].includes(norm)) {
+    driverApp.setWeeklyOff(phone, true);
+    await sendCard(sock, jid, { text: "🔕 הסיכום השבועי כבוי. להחזרה: *עם סיכום*" });
+    return true;
+  }
+  if (["עם סיכום", "הפעל סיכום", "סיכום פועל"].includes(norm)) {
+    driverApp.setWeeklyOff(phone, false);
+    await sendCard(sock, jid, { text: "🔔 הסיכום השבועי פועל. מגיע בכל יום ראשון בבוקר." });
+    return true;
+  }
+  if (["סיכום שבועי", "השבוע", "סיכום", "סיכום השבוע"].includes(norm)) {
+    const week = driverApp.weekStats(phone);
+    const body = week && buildWeeklySummaryText({ days: week.days, rides: week.rides, publish: week.publish });
+    await sendCard(sock, jid, { text: body ? body.replace("הסיכום השבועי שלך", "השבוע שלך עד עכשיו") : "📊 השבוע עוד לא היו נסיעות. בהצלחה! 🚖" });
+    return true;
+  }
+  return false;
+}
+
+// "נוסח התראה" = איך נראות ההתראות שהנהג מקבל. "נוסח פרסום" = איך נראית נסיעה שהוא מפיץ לקבוצות
+async function handleStyleCommand(sock, jid, phone, text) {
+  const m = String(text || "").match(/^\s*נוסח\s+(התראה|התראות|פרסום|הפצה לקבוצות)\s*:?\s*([\s\S]*)$/);
+  if (!m) return false;
+  const key = m[1].startsWith("התרא") ? "alert" : "post";
+  const word = key === "alert" ? "נוסח התראה" : "נוסח פרסום";
+  const fields = (key === "alert" ? ALERT_FIELDS : POST_FIELDS).map((f) => `{${f}}`).join(" ");
+  const body = m[2].trim();
+  try {
+    if (body) driverApp.setStyle(phone, { [key]: body });
+    const state = driverApp.styleState(phone);
+    const custom = Boolean(state[key]);
+    const title = !body
+      ? `✏️ *${word}* (${custom ? "הנוסח שלך" : "המראה הרגיל"})`
+      : custom ? "✅ *הנוסח נשמר.* מעכשיו כך זה ייראה:" : "↩️ *חזרת למראה הרגיל:*";
+    await sendCard(sock, jid, {
+      text:
+        `${title}\n\n${state.preview[key]}\n\n` +
+        `לשינוי: כתוב *${word}* ובשורות הבאות את הנוסח שלך.\n` +
+        `שדות: ${fields} (חובה {נסיעה}). שורה עם שדה ריק לא נשלחת.\n` +
+        `לחזרה למראה הרגיל: *${word} רגיל*`,
+    });
+  } catch (err) {
+    await sendCard(sock, jid, { text: `⚠️ ${err.message}` });
+  }
+  return true;
+}
+
+async function handleBillingAdminCommand(sock, jid, m, text, norm, adminPhone) {
+  const reply = (body) => sock.sendMessage(jid, { text: body }, { quoted: m });
+  const by = billingLocal(adminPhone);
+  const raw = String(text || "").trim();
+  const phoneArg = (s) => {
+    const p = billingPhone(String(s || "").replace(/\s+/g, ""));
+    if (!p) throw new BillingError(400, "מספר טלפון לא תקין");
+    return p;
+  };
+  const line = (v) => `${v.label}${v.endText ? ` · עד ${v.endText}` : ""}`;
+  try {
+    let mm;
+    if ((mm = norm.match(/^(אשר|דחה) תשלום (\d+)(?: (\d{1,4}))?$/))) {
+      if (mm[1] === "אשר") {
+        const res = billing.approveClaim(Number(mm[2]), { by, amount: mm[3] ? Number(mm[3]) : undefined });
+        await sendBillingToDriver(res.claim.phone, "paid").catch(() => false);
+        await reply(`✅ תשלום #${res.claim.id} אושר. ${driverName(res.claim.phone)}: ${line(res.view)} (${res.payment.amount} ₪)`);
+        recordEvent("billing", `אושר תשלום #${res.claim.id} של ${res.claim.phone}`);
+      } else {
+        const res = billing.rejectClaim(Number(mm[2]), { by });
+        await sendBillingToDriver(res.claim.phone, "rejected").catch(() => false);
+        await reply(`❌ תשלום #${res.claim.id} נדחה. הנהג קיבל הודעה.`);
+        recordEvent("billing", `נדחה תשלום #${res.claim.id} של ${res.claim.phone}`);
+      }
+      return true;
+    }
+    if (norm === "חיוב פועל" || norm === "חיוב כבוי") {
+      const s = billing.setSettings({ enabled: norm === "חיוב פועל" });
+      await reply(s.enabled
+        ? `💳 החיוב פועל. ${s.price} ₪ לחודש, ${s.trialDays} ימי ניסיון לנהג בלי מנוי.`
+        : "⏸️ החיוב כבוי. אף נהג לא נחסם ולא נשלחות תזכורות.");
+      return true;
+    }
+    if (norm === "מנויים") {
+      const s = billing.settings();
+      const sum = billing.summary(billablePhones());
+      const pending = billing.claims({ pendingOnly: true }).slice(0, 8);
+      let body = `💳 *מנויים* · החיוב ${s.enabled ? "פועל" : "כבוי"}\n`;
+      body += `פעיל ${sum.counts.active} · ניסיון ${sum.counts.trial} · הסתיים ${sum.counts.expired} · פטור ${sum.counts.exempt} · חינם ${sum.counts.free}\n`;
+      body += `💰 החודש: ${sum.monthIncome} ₪`;
+      if (sum.soon.length) body += `\n\n⏰ *מסתיים בקרוב:*\n${sum.soon.slice(0, 10).map((v) => `• ${driverName(v.phone)} ${billingLocal(v.phone)} · ${v.endText}`).join("\n")}`;
+      if (pending.length) body += `\n\n📸 *מחכים לאישור:*\n${pending.map((c) => `• #${c.id} ${c.name || driverName(c.phone)} ${billingLocal(c.phone)}`).join("\n")}\nלאישור: *אשר תשלום 12*`;
+      await reply(body);
+      return true;
+    }
+    if ((mm = raw.match(/^מנוי\s+([0-9+\s-]{9,16})$/))) {
+      const v = billing.get(phoneArg(mm[1]));
+      const last = v.lastPayment ? `\nתשלום אחרון: ${v.lastPayment.amount} ₪ · ${new Date(v.lastPayment.at).toLocaleDateString("he-IL", { timeZone: "Asia/Jerusalem" })}` : "";
+      await reply(`💳 ${driverName(v.phone)} ${billingLocal(v.phone)}\n${line(v)} · ${v.price} ₪${last}`);
+      return true;
+    }
+    if ((mm = raw.match(/^(?:שולם|שילם)\s+([0-9+\s-]{9,16}?)(?:\s+(\d{1,4}))?(?:\s+(ביט|פייבוקס|מזומן|העברה))?$/))) {
+      const methodByName = Object.fromEntries(Object.entries(PAY_METHOD_LABELS).map(([k, label]) => [label, k]));
+      const { payment, view } = billing.recordPayment(phoneArg(mm[1]), {
+        amount: mm[2] ? Number(mm[2]) : undefined,
+        method: mm[3] ? methodByName[mm[3]] : "bit",
+        by,
+        note: "מהוואטסאפ",
+      });
+      await sendBillingToDriver(view.phone, "paid").catch(() => false);
+      await reply(`✅ נרשם תשלום ${payment.amount} ₪. ${driverName(view.phone)}: ${line(view)}`);
+      return true;
+    }
+    if ((mm = raw.match(/^הארך\s+([0-9+\s-]{9,16}?)\s+(\d{1,3})(?:\s*ימים)?$/))) {
+      const v = billing.extend(phoneArg(mm[1]), { days: Number(mm[2]) });
+      await reply(`➕ הוארך ב-${mm[2]} ימים. ${driverName(v.phone)}: ${line(v)}`);
+      return true;
+    }
+    if ((mm = raw.match(/^(פטור|חינם)\s+([0-9+\s-]{9,16})$/))) {
+      const v = billing.setPlan(phoneArg(mm[2]), mm[1] === "פטור" ? "exempt" : "free", { by });
+      await reply(`✅ ${driverName(v.phone)}: ${v.label}. לא ייחסם.`);
+      return true;
+    }
+    if ((mm = raw.match(/^תזכורת\s+([0-9+\s-]{9,16})$/))) {
+      const p = phoneArg(mm[1]);
+      const v = billing.get(p);
+      const ok = await sendBillingToDriver(p, v.status === "expired" ? "expired" : "payInfo");
+      await reply(ok ? `📨 נשלחו פרטי התשלום ל${driverName(p)}.` : "⚠️ הבוט לא מחובר כרגע.");
+      return true;
+    }
+    return false;
+  } catch (err) {
+    if (!(err instanceof BillingError)) recordError("billing_admin", err);
+    await reply(`⚠️ ${err instanceof BillingError ? err.message : "משהו השתבש"}`);
+    return true;
+  }
+}
+
+// תזכורות מנוי: כל שעה בין 9:00 ל-21:00
+cron.schedule("5 9-21 * * *", async () => {
+  try {
+    const sock = getMainBotSock();
+    if (!sock || !getMainBotStatus().connected) return;
+    for (const { phone, kind } of billing.due(billablePhones())) {
+      try {
+        await sendBillingToDriver(phone, kind);
+        if (kind === "expired") await sock.sendMessage(adminJid(), { text: `⌛ המנוי של ${driverName(phone)} (${billingLocal(phone)}) הסתיים.` });
+        recordEvent("billing", `נשלח ${kind} ל-${phone}`);
+      } catch (e) {
+        console.error(`מנוי: שליחה ל-${phone} נכשלה:`, e.message);
+      }
+      await new Promise((r) => setTimeout(r, 1500));
+    }
+  } catch (err) {
+    recordError("billing_tick", err);
+  }
+}, { timezone: "Asia/Jerusalem" });
+
+// סיכום שבועי: יום ראשון 9:00, על השבוע שהסתיים. נהג בלי פעילות לא מקבל
+cron.schedule("0 9 * * 0", async () => {
+  const sock = getMainBotSock();
+  if (!sock || !getMainBotStatus().connected) return;
+  let sent = 0;
+  for (const phone of billablePhones()) {
+    try {
+      if (driverApp.isWeeklyOff(phone) || billing.isBlocked(phone)) continue;
+      const week = driverApp.weekStats(phone, { previous: true });
+      const body = week && buildWeeklySummaryText({ days: week.days, rides: week.rides, publish: week.publish });
+      if (!body) continue;
+      await sendCard(sock, getDestinationJid(phone), { text: body });
+      sent++;
+    } catch (e) {
+      console.error(`סיכום שבועי ל-${phone} נכשל:`, e.message);
+    }
+    await new Promise((r) => setTimeout(r, 1500));
+  }
+  recordEvent("system", `סיכום שבועי נשלח ל-${sent} נהגים`);
+}, { timezone: "Asia/Jerusalem" });
+
 // אפליקציית הנהגים: הבוט הראשי שולח את קוד הכניסה
 const driverApp = createDriverApp({
+  billing,
+  notifyPaid: (phone, claim) => notifyAdminOfClaim(claim),
   dir: path.join(__dirname, "driver-app-data"),
   isApproved: (phone) => phone !== cleanPhone(loadUsersData().botPhone) && isUserApproved(phone),
   getProfile: (phone) => {
@@ -2818,6 +3142,11 @@ const driverApp = createDriverApp({
 // הפעלת לוח הבקרה ו-API ישירות בתוך הבוט
 const dashboardRuntime = {
   driverApp,
+  // מסך המנויים באתר
+  billing,
+  billablePhones,
+  driverName,
+  sendBillingToDriver,
   getUserSearch,
   setUserSearch,
   stopUserSearch,
@@ -3074,6 +3403,9 @@ async function handleGracefulShutdown(signal) {
   } catch (e) {
     console.error("שמירת ההפצות נכשלה:", e.message);
   }
+  try {
+    rideCounter.flush();
+  } catch (e) {}
   try {
     await shutdownAllSockets();
   } catch (e) {}

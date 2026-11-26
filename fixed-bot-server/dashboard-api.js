@@ -1,5 +1,6 @@
 import express from "express";
 import { isStopCommand, hasStopWord } from "./matcher.js";
+import { BillingError, DEFAULT_TEXTS, TEXT_TITLES, TEXT_FIELDS, METHODS as BILLING_METHODS, fillText } from "./billing.js";
 import os from "os";
 import crypto from "crypto";
 import { exec, spawn } from "node:child_process";
@@ -1489,6 +1490,99 @@ export function startDashboard(runtime) {
       return res.status(500).json({ ok: false, error: err.message || "שגיאה בשידור הודעה לנהגים" });
     }
   });
+
+  // ==========================================
+  // מנויים (billing.js): הגדרות, נהגים, תשלומים, אישור צילומים והודעת פתיחה
+  // ==========================================
+  const billingRoute = (fn) => async (req, res) => {
+    const billing = ctx?.billing;
+    if (!billing) return res.status(501).json({ ok: false, error: "מנויים לא זמינים בשרת" });
+    try {
+      res.json({ ok: true, ...(await fn(billing, req.body || {}, req)) });
+    } catch (err) {
+      if (err instanceof BillingError) return res.status(err.status || 400).json({ ok: false, error: err.message });
+      recordError("billing_api", err);
+      res.status(500).json({ ok: false, error: err.message || "שגיאה במנויים" });
+    }
+  };
+  const billingOverview = (billing) => {
+    const phones = ctx.billablePhones();
+    const sessions = ctx?.getAllSessions ? ctx.getAllSessions() : { drivers: [] };
+    const connected = new Set((sessions.drivers || []).filter((d) => d.status === "connected").map((d) => cleanPhone(d.phone)));
+    return {
+      settings: billing.settings(),
+      defaults: DEFAULT_TEXTS,
+      textTitles: TEXT_TITLES,
+      textFields: TEXT_FIELDS,
+      methods: BILLING_METHODS,
+      summary: billing.summary(phones),
+      drivers: billing.list(phones).map((v) => ({ ...v, name: ctx.driverName(v.phone), connected: connected.has(v.phone) })),
+      claims: billing.claims({ limit: 60 }).map((c) => ({ ...c, name: c.name || ctx.driverName(c.phone) })),
+      payments: billing.payments({ limit: 300 }).map((p) => ({ ...p, name: ctx.driverName(p.phone) })),
+    };
+  };
+  app.get("/api/billing", requireAuth, billingRoute((billing) => billingOverview(billing)));
+  app.post("/api/billing/settings", requireAuth, billingRoute((billing, body) => {
+    billing.setSettings(body);
+    recordEvent("billing", `הגדרות מנוי עודכנו מהאתר${body.enabled !== undefined ? ` (חיוב ${body.enabled ? "פועל" : "כבוי"})` : ""}`);
+    return billingOverview(billing);
+  }));
+  // פעולה על נהג אחד
+  app.post("/api/billing/driver", requireAuth, billingRoute(async (billing, body) => {
+    const phone = body.phone;
+    const by = "אתר";
+    let notice = "";
+    switch (body.action) {
+      case "paid": {
+        const { view } = billing.recordPayment(phone, { amount: body.amount, method: body.method || "bit", months: body.months || 1, note: body.note, by });
+        if (body.notify !== false) notice = (await ctx.sendBillingToDriver(view.phone, "paid").catch(() => false)) ? "הנהג קיבל אישור" : "";
+        break;
+      }
+      case "dates": billing.setDates(phone, { start: body.start, end: body.end }); break;
+      case "extend": billing.extend(phone, { days: body.days, months: body.months }); break;
+      case "exempt": case "free": case "trial": case "active": case "expired":
+        billing.setPlan(phone, body.action, { by });
+        break;
+      case "price": billing.setPrice(phone, body.price); break;
+      case "note": billing.setNote(phone, body.note); break;
+      case "removePayment": billing.removePayment(phone, String(body.id || "")); break;
+      case "remind": {
+        const v = billing.get(phone);
+        const ok = await ctx.sendBillingToDriver(v.phone, v.status === "expired" ? "expired" : "payInfo").catch(() => false);
+        if (!ok) throw new BillingError(503, "הבוט לא מחובר כרגע, ההודעה לא נשלחה");
+        notice = "פרטי התשלום נשלחו לנהג";
+        break;
+      }
+      default:
+        throw new BillingError(400, "פעולה לא מוכרת");
+    }
+    recordEvent("billing", `מנוי ${phone}: ${body.action} (מהאתר)`);
+    return { ...billingOverview(billing), notice };
+  }));
+  // צילום מסך / "שילמתי" שמחכה לאישור
+  app.post("/api/billing/claim", requireAuth, billingRoute(async (billing, body) => {
+    const approve = body.decision === "approve";
+    const res = approve
+      ? billing.approveClaim(Number(body.id), { by: "אתר", amount: body.amount, method: body.method })
+      : billing.rejectClaim(Number(body.id), { by: "אתר", note: body.note });
+    await ctx.sendBillingToDriver(res.claim.phone, approve ? "paid" : "rejected").catch(() => false);
+    recordEvent("billing", `תשלום #${res.claim.id} ${approve ? "אושר" : "נדחה"} מהאתר`);
+    return billingOverview(billing);
+  }));
+  // הודעת פתיחה: ניסיון עד תאריך לכל הנהגים, הדלקת החיוב, ושליחת ההודעה
+  app.post("/api/billing/announce", requireAuth, billingRoute(async (billing, body) => {
+    const trial = billing.trialForAll(ctx.billablePhones(), { end: body.endDate, days: body.days });
+    if (body.enable !== false) billing.setSettings({ enabled: true });
+    let broadcast = null;
+    if (body.send !== false) {
+      const template = String(body.message || "").trim() || billing.settings().texts.announce;
+      const message = fillText(template, { "מחיר": billing.settings().price, "מספר": billing.settings().payPhone, "תאריך": trial.endText, "שם": "", "ימים": "", "מצב": "" });
+      if (typeof ctx?.broadcastToDrivers !== "function") throw new BillingError(501, "שליחה לנהגים לא זמינה");
+      broadcast = await ctx.broadcastToDrivers(message, body.targetType === "connected" ? "connected" : "all");
+    }
+    recordEvent("billing", `הודעת פתיחה למנויים: ניסיון עד ${trial.endText} ל-${trial.changed} נהגים${broadcast ? `, נשלחה ל-${broadcast.sentCount}` : ""}`);
+    return { ...billingOverview(billing), trial, broadcast };
+  }));
 
   // שליטה ב-PM2 - מוגן באבטחה מלאה
   app.post("/api/bot/restart", requireAuth, async (_req, res) => {

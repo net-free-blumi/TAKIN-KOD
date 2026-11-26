@@ -6,7 +6,9 @@ import { createDriverChats } from "./driver-app-chats.js";
 import { FilterError, cleanClaimText, parseFilters, readFilters, rejectReason } from "./driver-app-filters.js";
 import { createDriverAppStore } from "./driver-app-store.js";
 import { AppError, createDriverAuth, normalizeMobile } from "./driver-app-auth.js";
-import { createDriverLog, summarize } from "./driver-app-log.js";
+import { createDriverLog, israelDate, summarize } from "./driver-app-log.js";
+import { rangeText, rideWeekStats, weekDays } from "./weekly-summary.js";
+import { ALERT_FIELDS, DEFAULT_ALERT_TEMPLATE, DEFAULT_POST_TEMPLATE, POST_FIELDS, buildPostText, buildRideAlertText, cleanTemplate } from "./ride-alert-text.js";
 import { MAX_REPORT_TEXT, buildReport, cleanDeviceInfo, createReportLimiter } from "./driver-app-report.js";
 
 export { summarize };
@@ -46,6 +48,10 @@ export function createDriverApp({
   quoteForRide = () => null,
   // הפצת נסיעה (ride-publisher.js)
   getPublisher = () => null,
+  // מנוי (billing.js). null = אין מנויים בשרת
+  billing = null,
+  // "שילמתי" מהאפליקציה: (phone, claim) -> הודעה למנהל עם אישור / דחייה
+  notifyPaid = async () => false,
   onError = console.error,
   now = Date.now,
 }) {
@@ -274,6 +280,12 @@ export function createDriverApp({
         status: "new",
         alertId: null,
       });
+      // מונה לפי יום לסיכום השבועי: התראות ישנות נמחקות מהרשימה, המונה נשאר
+      const data = store.driver(phone);
+      const day = israelDate(now());
+      data.daily ||= {};
+      data.daily[day] = { ...data.daily[day], received: (data.daily[day]?.received || 0) + 1 };
+      for (const old of Object.keys(data.daily).sort().slice(0, -60)) delete data.daily[old];
       for (const waiter of [...waiters.values()]) if (waiter.phone === phone) waiter.finish();
       return { phone, id: ride.id };
     } catch (err) {
@@ -459,6 +471,98 @@ export function createDriverApp({
   // התקדמות השליחה: המסך הפתוח מתעדכן בעצמו (GET /publish)
   function publishChanged() {}
 
+  // ---------- סיכום שבועי ----------
+  function weekStats(rawPhone, { previous = false } = {}) {
+    const phone = normalizeMobile(rawPhone);
+    if (!phone) return null;
+    const days = weekDays(now(), { previous });
+    const data = store.driver(phone);
+    let publish = { published: 0, requesters: 0, given: 0, done: 0 };
+    try {
+      publish = getPublisher()?.statsFor?.(phone, days) || publish;
+    } catch (err) {
+      onError(err);
+    }
+    return { days, range: rangeText(days), rides: rideWeekStats(data.rides, data.daily, days), publish };
+  }
+  const isWeeklyOff = (rawPhone) => {
+    const phone = normalizeMobile(rawPhone);
+    return phone ? Boolean(store.driver(phone).weeklyOff) : true;
+  };
+  function setWeeklyOff(rawPhone, off) {
+    const phone = normalizeMobile(rawPhone);
+    if (!phone) return false;
+    store.driver(phone).weeklyOff = Boolean(off);
+    store.changed(phone);
+    return Boolean(off);
+  }
+
+  // ---------- נוסח ההודעות של הנהג (התראה שמקבל, נסיעה שמפיץ). נשמר פעם אחת ולתמיד ----------
+  function getStyle(rawPhone) {
+    const phone = normalizeMobile(rawPhone);
+    const style = phone ? store.driver(phone).style || {} : {};
+    return { alert: style.alert || "", post: style.post || "" };
+  }
+  function setStyle(rawPhone, { alert, post } = {}) {
+    const phone = normalizeMobile(rawPhone);
+    if (!phone) throw new AppError(400, "מספר לא תקין");
+    const data = store.driver(phone);
+    const next = { ...getStyle(phone) };
+    try {
+      if (alert !== undefined) next.alert = cleanTemplate(alert);
+      if (post !== undefined) next.post = cleanTemplate(post);
+    } catch (err) {
+      throw new AppError(400, err.message);
+    }
+    data.style = next;
+    store.changed(phone);
+    store.flush();
+    return next;
+  }
+  function styleState(phone) {
+    const style = getStyle(phone);
+    const name = getProfile(phone)?.name || "";
+    return {
+      ...style,
+      defaults: { alert: DEFAULT_ALERT_TEMPLATE, post: DEFAULT_POST_TEMPLATE },
+      fields: { alert: ALERT_FIELDS, post: POST_FIELDS },
+      preview: {
+        alert: buildRideAlertText({ cleanedText: "שמש ים 180\nריש לקיש 12", groupName: "נהגי בית שמש", senderName: "משה", senderPhone: "0521234567" }, { rideNo: 1234, template: style.alert }),
+        post: buildPostText({ text: "שמש ים 180\nריש לקיש 12", name, phone, id: "4821" }, style.post),
+      },
+    };
+  }
+
+  // ---------- מנוי ----------
+  function billingState(phone) {
+    if (!billing) return { enabled: false };
+    const s = billing.settings();
+    if (!s.enabled) return { enabled: false };
+    const v = billing.ensure(phone);
+    return {
+      enabled: true,
+      status: v.status,
+      label: v.label,
+      end: v.end,
+      endText: v.endText,
+      daysLeft: v.daysLeft,
+      blocked: v.blocked,
+      price: v.price,
+      payPhone: s.payPhone,
+      pending: Boolean(v.pendingClaim),
+      lastPayment: v.lastPayment ? { at: v.lastPayment.at, amount: v.lastPayment.amount } : null,
+      info: billing.text("payInfo", phone),
+    };
+  }
+  // מנוי שהסתיים: אין נסיעות, חיפוש או הפצה עד החידוש
+  function requireActive(phone) {
+    if (billing?.isBlocked(phone)) throw new AppError(402, "המנוי הסתיים. לחידוש: הגדרות > מנוי ותשלום");
+  }
+  const guarded = (fn) => (args) => {
+    requireActive(args.device.phone);
+    return fn(args);
+  };
+
   const publicRoutes = {
     "POST /auth/request": ({ body, ip }) => auth.requestCode(body.phone, ip),
     "POST /auth/verify": ({ body }) => auth.verifyCode(body.challengeId, body.code, body.device),
@@ -469,12 +573,50 @@ export function createDriverApp({
       phone: device.phone,
       ...getProfile(device.phone),
       search: getSearch().get(device.phone),
-      features: { multiSearch: true, filters: true, chats: true, report: true, telegramGroups: true, publish: Boolean(getPublisher()) },
+      features: { multiSearch: true, filters: true, chats: true, report: true, telegramGroups: true, publish: Boolean(getPublisher()), week: true, style: true, billing: Boolean(billing) },
       filters: readFilters(store.driver(device.phone).filters),
       chatsReady: chats.isReady(device.id),
       stats: statsFor(device.phone),
       telegram: telegramState(device.phone),
+      billing: billingState(device.phone),
+      weeklyOff: isWeeklyOff(device.phone),
     }),
+    "GET /week": ({ device }) => ({
+      week: weekStats(device.phone),
+      lastWeek: weekStats(device.phone, { previous: true }),
+      weeklyOff: isWeeklyOff(device.phone),
+    }),
+    "POST /week/settings": ({ device, body }) => ({ weeklyOff: setWeeklyOff(device.phone, body.off === true) }),
+    "GET /style": ({ device }) => ({ style: styleState(device.phone) }),
+    "POST /style": ({ device, body }) => {
+      setStyle(device.phone, {
+        alert: body.alert === undefined ? undefined : String(body.alert),
+        post: body.post === undefined ? undefined : String(body.post),
+      });
+      return { style: styleState(device.phone) };
+    },
+    "GET /billing": ({ device }) => ({ billing: billingState(device.phone) }),
+    // "שילמתי": בקשה למנהל. הצילום עצמו נשלח לבוט בוואטסאפ
+    "POST /billing/paid": async ({ device, body }) => {
+      if (!billing?.settings().enabled) throw new AppError(409, "אין כרגע מנוי לתשלום");
+      const v = billing.get(device.phone);
+      if (v.status === "exempt") throw new AppError(409, "החשבון שלך פטור מתשלום");
+      const { claim, isNew } = billing.addClaim(device.phone, {
+        source: "app",
+        name: getProfile(device.phone)?.name || "",
+        note: String(body.note ?? "").slice(0, 200),
+      });
+      if (isNew) {
+        let sent = false;
+        try {
+          sent = await notifyPaid(device.phone, claim);
+        } catch (err) {
+          onError(err);
+        }
+        if (!sent) throw new AppError(503, "ההודעה למנהל לא נשלחה. נסה שוב בעוד רגע.");
+      }
+      return { billing: billingState(device.phone), claimId: claim.id };
+    },
     "GET /rides": ({ device, query }) => {
       let rides = store.driver(device.phone).rides;
       if (query.get("view") === "mine") rides = rides.filter((r) => r.status !== "new" && !r.removed);
@@ -502,10 +644,10 @@ export function createDriverApp({
     "GET /publish": ({ device }) => viaPublisher(() => publishState(device.phone)),
     "POST /publish/list": ({ device, body }) => viaPublisher((p) => ({ list: p.setList(device.phone, Number(body.no), body.groups, "app") })),
     "POST /publish/list-title": ({ device, body }) => viaPublisher((p) => ({ list: p.setListTitle(device.phone, Number(body.no), body.title) })),
-    "POST /publish/start": ({ device, body }) => viaPublisher((p) => ({
+    "POST /publish/start": guarded(({ device, body }) => viaPublisher((p) => ({
       job: p.start(device.phone, { text: String(body.text ?? ""), list: Number(body.list) || 1, customerPhone: body.customerPhone }),
-    })),
-    "POST /publish/continue": ({ device, body }) => viaPublisher((p) => ({ job: p.resume(device.phone, String(body.id ?? "")) })),
+    }))),
+    "POST /publish/continue": guarded(({ device, body }) => viaPublisher((p) => ({ job: p.resume(device.phone, String(body.id ?? "")) }))),
     "POST /publish/stop": ({ device, body }) => viaPublisher((p) => ({ job: p.stop(device.phone, String(body.id ?? "")) })),
     "POST /publish/give": ({ device, body }) => viaPublisher(async (p) => ({ job: await p.give(device.phone, String(body.id ?? ""), Number(body.n)) })),
     "POST /publish/outcome": ({ device, body }) => viaPublisher((p) => ({
@@ -515,7 +657,7 @@ export function createDriverApp({
       job: await p.sendThanks(device.phone, String(body.id ?? ""), Number(body.n), { price: body.price }),
     })),
     "POST /publish/price": ({ device, body }) => viaPublisher((p) => ({ job: p.setPrice(device.phone, String(body.id ?? ""), body.price) })),
-    "POST /publish/republish": ({ device, body }) => viaPublisher((p) => ({ job: p.republish(device.phone, String(body.id ?? "")) })),
+    "POST /publish/republish": guarded(({ device, body }) => viaPublisher((p) => ({ job: p.republish(device.phone, String(body.id ?? "")) }))),
     "POST /publish/edit": ({ device, body }) => viaPublisher((p) => p.edit(device.phone, String(body.id ?? ""), {
       text: body.text === undefined ? undefined : String(body.text),
       customerPhone: body.customerPhone === undefined ? undefined : String(body.customerPhone),
@@ -541,6 +683,7 @@ export function createDriverApp({
     "POST /chat/start": ({ device, body }) => chats.start(device, body),
     "POST /chat": ({ device, body, res }) => chats.handle(device, body, res),
     "POST /rides/claim": async ({ device, body }) => {
+      requireActive(device.phone);
       const ride = findRide(device.phone, body.id);
       if (ride.status !== "new") throw new AppError(409, "כבר נשלחה בקשה על הנסיעה הזו");
       if (now() - ride.at >= CLAIM_WINDOW_MS) throw new AppError(410, "הנסיעה ישנה מדי, אי אפשר לבקש אותה");
@@ -571,6 +714,7 @@ export function createDriverApp({
       return { ride: publicRide(ride) };
     },
     "POST /search": async ({ device, body }) => {
+      requireActive(device.phone);
       const command = String(body.command ?? "").trim();
       if (!command || command.length > 120) throw new AppError(400, "כתוב מה לחפש");
       const result = await getSearch().apply(device.phone, command);
@@ -578,6 +722,7 @@ export function createDriverApp({
       return { search: result.search };
     },
     "POST /search/add": async ({ device, body }) => {
+      requireActive(device.phone);
       const command = String(body.command ?? "").trim();
       if (!command || command.length > 120) throw new AppError(400, "כתוב מה לחפש");
       const current = getSearch().get(device.phone);
@@ -650,5 +795,5 @@ export function createDriverApp({
     detectApproval(upsert, phone);
   }
 
-  return { handle, addRide, linkAlert, markRequested, filterRide, ingestChats, groupMessage, publishEvent, publishChanged, shutdown };
+  return { handle, addRide, linkAlert, markRequested, filterRide, ingestChats, groupMessage, publishEvent, publishChanged, shutdown, weekStats, isWeeklyOff, setWeeklyOff, getStyle, setStyle, styleState };
 }

@@ -93,6 +93,8 @@ export function createRidePublisher({
   // מחיר הנסיעה מתוך הטקסט, לחישוב עמלה באחוזים (index.js מעביר את extractPrice של matcher.js)
   priceOf = (text) => Number(String(text || "").match(/(?<!\d)(\d{2,4})\s*(?:₪|שח|ש"ח)/)?.[1]) || 0,
   limits: customLimits = {},
+  // מה יוצא לקבוצות: (phone, job) -> טקסט. index.js עוטף במראה של ride-alert-text.js (נוסח הנהג)
+  formatPost = (phone, job) => job.text,
 } = {}) {
   // מה שלא הועבר נלקח מברירת המחדל
   const limits = { ...LIMITS, ...customLimits };
@@ -150,6 +152,25 @@ export function createRidePublisher({
     d.assoc ||= {};
     d.pendingAsk ||= {};
     return d;
+  }
+
+  // מונים לפי יום, לסיכום השבועי (ההפצות עצמן נמחקות אחרי יום). 60 יום אחורה
+  const dayOf = (ms) => new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Jerusalem" }).format(new Date(ms));
+  function bump(phone, key) {
+    const d = driver(phone);
+    d.stats ||= {};
+    const day = dayOf(now());
+    d.stats[day] ||= {};
+    d.stats[day][key] = (d.stats[day][key] || 0) + 1;
+    const old = Object.keys(d.stats).sort().slice(0, -60);
+    for (const k of old) delete d.stats[k];
+  }
+  /** סכום המונים בימים (YYYY-MM-DD) */
+  function statsFor(phone, days = []) {
+    const stats = state.drivers[phone]?.stats || {};
+    const out = { published: 0, requesters: 0, given: 0, done: 0 };
+    for (const day of days) for (const key of Object.keys(out)) out[key] += Number(stats[day]?.[key]) || 0;
+    return out;
   }
 
   function changed(phone) {
@@ -317,6 +338,7 @@ export function createRidePublisher({
       givenTo: 0,
     };
     state.jobs.push(job);
+    bump(phone, "published");
     changed(phone);
     if (job.state === "sending") run(job);
     return publicJob(job);
@@ -385,7 +407,15 @@ export function createRidePublisher({
           break;
         }
         try {
-          const sent = await sock.sendMessage(group.id, { text: job.text });
+          let body = job.text;
+          try {
+            body = formatPost(job.phone, job) || job.text;
+          } catch (err) {
+            onError(err);
+          }
+          // מה שנשלח בפועל, כדי לזהות אותו כשהוא חוזר מהקבוצה
+          if (body !== job.text && !(job.sentTexts || []).includes(body)) job.sentTexts = [...(job.sentTexts || []), body].slice(-5);
+          const sent = await sock.sendMessage(group.id, { text: body });
           group.status = "sent";
           group.msgId = sent?.key?.id || "";
           group.at = now();
@@ -449,7 +479,7 @@ export function createRidePublisher({
   // הודעה שהנהג עצמו שלח בהפצה: לא לסרוק אותה כנסיעה אצלו
   function isOwnPublished(phone, text) {
     const cutoff = now() - limits.jobTtlMs;
-    return state.jobs.some((j) => j.phone === phone && j.createdAt > cutoff && [j.text, ...(j.oldTexts || [])].some((t) => sameText(t, text)));
+    return state.jobs.some((j) => j.phone === phone && j.createdAt > cutoff && [j.text, ...(j.oldTexts || []), ...(j.sentTexts || [])].some((t) => sameText(t, text)));
   }
 
   const jobForQuote = (phone, quoted, groupJid) => state.jobs.find((j) => j.phone === phone && isLive(j) &&
@@ -507,6 +537,7 @@ export function createRidePublisher({
     }
     if (job.requesters.length >= limits.maxRequesters) return true;
     job.requesters.push(requester);
+    bump(phone, "requesters");
     if (stops && job.state === "sending") {
       job.state = "stopped";
       job.stopReason = "request";
@@ -597,6 +628,7 @@ export function createRidePublisher({
     text += `\n\nבהצלחה! 🚕`;
     await sock.sendMessage(targetOf(r), { text });
     for (const other of job.requesters) if (other !== r && other.status === "given") other.status = "cancelled";
+    if (r.status !== "given") bump(phone, "given");
     r.status = "given";
     r.givenAt = now();
     job.givenTo = Number(n);
@@ -614,6 +646,7 @@ export function createRidePublisher({
     const job = findJob(phone, id);
     const r = findRequester(job, n);
     if (!["done", "cancelled"].includes(outcome)) throw new PublishError(400, "מצב לא תקין");
+    if (outcome === "done" && r.status !== "done") bump(phone, "done");
     r.status = outcome;
     if (outcome === "done") {
       r.doneAt = now();
@@ -970,6 +1003,7 @@ export function createRidePublisher({
     templateFields: FIELDS,
     contactOf,
     jobs: jobsOf, job: (phone, id) => publicJob(findJob(phone, id)),
+    statsFor,
     isOwnPublished, repliesToMine, noteGroupText, onGroupMessage, onPrivateMessage,
     onLabelEdit, onLabelAssociation, answer,
     flush, shutdown,
